@@ -1,2 +1,2 @@
-# mmr
-Code for magnetometric resistivity data inversion
+# pymmr
+Code for magnetometric resistivity data inversion in python
