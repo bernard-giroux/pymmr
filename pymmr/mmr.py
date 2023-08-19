@@ -623,12 +623,11 @@ if __name__ == '__main__':
         if roi is not None:
             g.set_roi(roi)
 
-        g.set_solver(solver_name, tol, maxit, precon, do_perm)
+        g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
         g.verbose = verbose
-        xs_u, xo_all, ind_back, _, _, _ = check_acquisition(xs, xo)
-        g.xs = xs_u
-        g.xo = xo_all
+        g.xs = xs
+        g.xo = xo
 
         data = g.fwd_mod(sigma, calc_sens=calc_sens, cs=cs)
 
@@ -660,10 +659,6 @@ if __name__ == '__main__':
             print('Saving modelled data ... ', end='', flush=True)
         fname = basename+'_mmr.dat'
         header = 'src_x src_y src_z rcv_x rcv_y rcv_z Bx By Bz'
-        if ind_back is None:
-            np.savetxt(fname, np.c_[np.kron(xs, np.ones((xo.shape[0], 1))),
-                                    np.kron(np.ones((xs.shape[0], 1)), xo), data], header=header)
-        else:
-            np.savetxt(fname, np.c_[xs, xo, data[ind_back, :]], header=header)
+        np.savetxt(fname, np.c_[g.xs, g.xo, data], header=header)
         if verbose:
             print('done.')
