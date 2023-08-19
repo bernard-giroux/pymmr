@@ -395,6 +395,8 @@ class Inversion:
 
         WGx = WGy = WGz = None
 
+        beta = self.beta
+
         for i in range(self.max_it):
             if i == 0 or self.methode == 'Gauss-Newton':
                 if self.verbose:
@@ -445,7 +447,7 @@ class Inversion:
             if self.verbose:
                 print('    Computing perturbation with cglscd ... ', end='', flush=True)
 
-            s, err, iter1 = cglscd(J, np.zeros(xt.shape), dobs-d, self.beta, WTW,
+            s, err, iter1 = cglscd(J, np.zeros(xt.shape), dobs-d, beta, WTW,
                                    xt-m_ref[m_active], D, P=None, max_it=self.max_it_cglscd,
                                    tol=self.tol_cglscd, reg_var=self.reg_var)
             if self.show_plots:
@@ -494,9 +496,9 @@ class Inversion:
             S_save.append(sigma[m_active].copy())
             xc = xt.copy()
 
-            self.beta /= self.beta_cooling
-            if self.beta < self.beta_min:
-                self.beta = self.beta_min
+            beta /= self.beta_cooling
+            if beta < self.beta_min:
+                beta = self.beta_min
 
             if self.smooth_type == 'blocky' or self.smooth_type == 'ekblom' or self.smooth_type == 'min. support':
 
