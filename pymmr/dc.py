@@ -536,6 +536,87 @@ class GridDC(GridFV):
 
         return self.calc_WtW(Q, par, m_active, WGx, WGy, WGz), WGx, WGy, WGz
 
+    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
+        """Compute model weighting matrix.
+
+        Parameters
+        ----------
+        wt : array_like
+            Weight.
+        par :
+            Weighting parameters.
+        m_active : array_like
+            Cellules du modèles actives.
+        WGx : array_like
+            Poids de lissage des cellules en x.
+        WGy : array_like
+            Poids de lissage des cellules en y.
+        WGz : array_like
+            Poids de lissage des cellules en z.
+
+        Returns
+        -------
+        output : `csr_matrix`
+            Model weighting matrix.
+        """
+
+        # extract Gx, Gy & Gz from G
+        Gx = self.G[:self.nfx, :]
+        Gy = self.G[self.nfx:(self.nfx+self.nfy), :]
+        Gz = self.G[(self.nfx+self.nfy):, :]
+
+        if WGx is not None:
+            Gx = sp.diags(WGx.diagonal(), shape=(self.nfx, self.nfx), format='csr') @ Gx
+        if WGy is not None:
+            Gy = sp.diags(WGy.diagonal(), shape=(self.nfy, self.nfy), format='csr') @ Gy
+        if WGz is not None:
+            Gz = sp.diags(WGz.diagonal(), shape=(self.nfz, self.nfz), format='csr') @ Gz
+
+        Gs = sp.vstack((par.alx*Gx, par.aly*Gy, par.alz*Gz), format='csr')
+        V = sp.diags(np.ones((self.nc,)), format='csr')
+        Wt = sp.diags(wt, shape=(self.nc, self.nc), format='csr')
+
+        WtW = Wt.T @ (Gs.T @ Gs + par.als * V) @ Wt
+        WtW = WtW[m_active, :]
+        return WtW[:, m_active]
+
+    def calc_WdW(self, wt, dobs, par):
+        """Compute data weighting matrix.
+
+        Parameters
+        ----------
+        wt : array_like
+            Weight in %.
+        dobs : array_like
+            Observed data.
+        par :
+            Weighting parameters.
+        Returns
+        -------
+        output : `csr_matrix`
+            Data weighting matrix.
+        """
+        dtw = 0.01 * wt.flatten() * np.abs(dobs.flatten()) + par.e
+        dtw = 1. / dtw
+
+        # normalisation
+        dtw = dtw / dtw.max()
+
+        dtw[wt.flatten() > par.max_err] = 0.0
+
+        return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
+
+    def print_info(self, file=None):
+        print('    Grid: {0:d} x {1:d} x {2:d} voxels'.format(self.nx, self.ny, self.nz), file=file)
+        print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
+        print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
+        print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
+        if self.roi is not None:
+            print('    Region of interest:', file=file)
+            print('      X min: {0:e}\tX max: {1:e}'.format(self.roi[0], self.roi[1]), file=file)
+            print('      Y min: {0:e}\tY max: {1:e}'.format(self.roi[2], self.roi[3]), file=file)
+            print('      Z min: {0:e}\tZ max: {1:e}'.format(self.roi[4], self.roi[5]), file=file)
+
     def _build_A(self, sigma):
         # Build LHS matrix
         M = self.build_M(sigma)
@@ -803,76 +884,6 @@ class GridDC(GridFV):
                 u = np.c_[u, Q[ind, :].T @ d[ind]]
         return sp.csr_matrix(u)
 
-    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
-        """Compute model weighting matrix.
-
-        Parameters
-        ----------
-        wt : array_like
-            Weight.
-        par : 
-            Weighting parameters.
-        m_active : array_like
-            Cellules du modèles actives.
-        WGx : array_like
-            Poids de lissage des cellules en x.
-        WGy : array_like
-            Poids de lissage des cellules en y.
-        WGz : array_like
-            Poids de lissage des cellules en z.
-
-        Returns
-        -------
-        output : `csr_matrix`
-            Model weighting matrix.
-        """
-
-        # extract Gx, Gy & Gz from G
-        Gx = self.G[:self.nfx, :]
-        Gy = self.G[self.nfx:(self.nfx+self.nfy), :]
-        Gz = self.G[(self.nfx+self.nfy):, :]
-        
-        if WGx is not None:
-            Gx = sp.diags(WGx.diagonal(), shape=(self.nfx, self.nfx), format='csr') @ Gx
-        if WGy is not None:
-            Gy = sp.diags(WGy.diagonal(), shape=(self.nfy, self.nfy), format='csr') @ Gy
-        if WGz is not None:
-            Gz = sp.diags(WGz.diagonal(), shape=(self.nfz, self.nfz), format='csr') @ Gz
-
-        Gs = sp.vstack((par.alx*Gx, par.aly*Gy, par.alz*Gz), format='csr')
-        V = sp.diags(np.ones((self.nc,)), format='csr')
-        Wt = sp.diags(wt, shape=(self.nc, self.nc), format='csr')
-
-        WtW = Wt.T @ (Gs.T @ Gs + par.als * V) @ Wt
-        WtW = WtW[m_active, :]
-        return WtW[:, m_active]
-
-    def calc_WdW(self, wt, dobs, par):
-        """Compute data weighting matrix.
-
-        Parameters
-        ----------
-        wt : array_like
-            Weight in %.
-        dobs : array_like
-            Observed data.
-        par : 
-            Weighting parameters.
-        Returns
-        -------
-        output : `csr_matrix`
-            Data weighting matrix.
-        """
-        dtw = 0.01 * wt.flatten() * np.abs(dobs.flatten()) + par.e
-        dtw = 1. / dtw
-
-        # normalisation
-        dtw = dtw / dtw.max()
-
-        dtw[wt.flatten() > par.max_err] = 0.0
-
-        return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
-
     def _calc_Gv(self, m, m_ref, m_active, u, v):
 
         v = np.atleast_2d(v)
@@ -926,17 +937,6 @@ class GridDC(GridFV):
         A = Dm @ Gc.T @ S
         tmp = A @ self.G @ u_r
         return tmp[self.ind_roi], n
-
-    def print_info(self, file=None):
-        print('    Grid: {0:d} x {1:d} x {2:d} voxels'.format(self.nx, self.ny, self.nz), file=file)
-        print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
-        print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
-        print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
-        if self.roi is not None:
-            print('    Region of interest:', file=file)
-            print('      X min: {0:e}\tX max: {1:e}'.format(self.roi[0], self.roi[1]), file=file)
-            print('      Y min: {0:e}\tY max: {1:e}'.format(self.roi[2], self.roi[3]), file=file)
-            print('      Z min: {0:e}\tZ max: {1:e}'.format(self.roi[4], self.roi[5]), file=file)
 
     def __getstate__(self):
         self.solver_A = None   # some solvers have attributes that are not picklable

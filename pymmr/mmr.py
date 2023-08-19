@@ -189,13 +189,6 @@ class GridMMR(GridDC):
         self.nobs_mmr = np.sum(self.nobs_xs)
         self.acq_checked = True
 
-    def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
-        # add air layers
-        dz_air = calc_padding(self.gdc.hz[0], n_cells=n_crois_cells, factor=factor)
-        dz_air = np.r_[self.hz[0]+np.zeros((n_const_cells,)), dz_air]
-        z_air = np.cumsum(dz_air)
-        self.z = np.r_[self.gdc.z[0] - z_air[::-1], self.gdc.z]
-
     def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
         """Define solver to be used during forward modelling.
 
@@ -282,6 +275,19 @@ class GridMMR(GridDC):
         # noeuds additionnels pour l'air
         self.gdc.set_roi(roi)
         self.ind_roi = self.gdc.ind_roi
+
+    def data_to_obs(self, data, field_data=True):
+        if field_data:
+            data = data[self.ind_s, :]
+        else:
+            data = data[self.mask, :]
+        # on veut Bx, ensuite By et finalement Bz dans dobs, en séquence pour chaque src
+        d = data[:self.nobs_xs[0], :3].T.reshape(-1, 1)
+        i1 = self.nobs_xs[0]
+        for i in np.arange(1, self.xs_u.shape[0]):
+            d = np.r_[d, data[i1:i1+self.nobs_xs[i], :3].T.reshape(-1, 1)]
+            i1 += self.nobs_xs[i]
+        return d
 
     def fwd_mod(self, sigma, xs=None, xo=None, calc_sens=False, keep_solver=False, cs=1.0):
         """Forward modelling.
@@ -469,6 +475,22 @@ class GridMMR(GridDC):
                 data = np.r_[data, res_dc.reshape(-1, 1)]
             return data
 
+    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
+        return self.gdc.calc_WtW(wt, par, m_active, WGx, WGy, WGz)
+
+    def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
+        return self.gdc.calc_reg(Q, par, xc, xref, WGx, WGy, WGz, m_active)
+
+    def distance_weighting(self, xo, beta):
+        return self.gdc.distance_weighting(xo, beta)
+
+    def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
+        # add air layers
+        dz_air = calc_padding(self.gdc.hz[0], n_cells=n_crois_cells, factor=factor)
+        dz_air = np.r_[self.hz[0]+np.zeros((n_const_cells,)), dz_air]
+        z_air = np.cumsum(dz_air)
+        self.z = np.r_[self.gdc.z[0] - z_air[::-1], self.gdc.z]
+
     def _adj(self):
         Qx, Qy, Qz = self.Q
         Jx = Qx @ self.C_f[:self.nex, :]
@@ -511,19 +533,6 @@ class GridMMR(GridDC):
         Qz = sp.vstack(Qz)
         return Qx, Qy, Qz
 
-    def data_to_obs(self, data, field_data=True):
-        if field_data:
-            data = data[self.ind_s, :]
-        else:
-            data = data[self.mask, :]
-        # on veut Bx, ensuite By et finalement Bz dans dobs, en séquence pour chaque src
-        d = data[:self.nobs_xs[0], :3].T.reshape(-1, 1)
-        i1 = self.nobs_xs[0]
-        for i in np.arange(1, self.xs_u.shape[0]):
-            d = np.r_[d, data[i1:i1+self.nobs_xs[i], :3].T.reshape(-1, 1)]
-            i1 += self.nobs_xs[i]
-        return d
-
     def _fill_jacobian(self, n, J, u_dc, Dm, S, q, q2):
         if n == 0:
             i0 = 0
@@ -539,15 +548,6 @@ class GridMMR(GridDC):
         mask_xs = np.r_[mask_xs, mask_xs, mask_xs]
         tmp = tmp[self.gdc.ind_roi, :]
         J[:, i0:i1] = 1.e12 * tmp[:, mask_xs]  # to have pT
-
-    def distance_weighting(self, xo, beta):
-        return self.gdc.distance_weighting(xo, beta)
-
-    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
-        return self.gdc.calc_WtW(wt, par, m_active, WGx, WGy, WGz)
-
-    def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
-        return self.gdc.calc_reg(Q, par, xc, xref, WGx, WGy, WGz, m_active)
 
 
 # %% main
