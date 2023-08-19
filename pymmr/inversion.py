@@ -89,19 +89,19 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
     
         if bnrm2 == 0.0:
             bnrm2 = 1.0
-        r = P * (((zz.T @ D ) @ J).T - beta * CTC @ (x+dxc))
+        r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x+dxc))
     
         error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
     
         if error < tol:
             return x, error, it
-        
+
+        rho_1 = 1.
         for it in np.arange(max_it):
             z = M * r   # calcul du gradient modifié
             rho = (r.T @ z).item()
             if it == 0:
                 p = z.copy()
-                rho_1 = 1.
             else:
                 beta_k = rho / rho_1   # calcul du coefficient beta_k
                 p = z + beta_k * p
@@ -117,20 +117,20 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
             rho_1 = rho
     
     elif reg_var == 'model perturbation':
-        r = P * ((zz.T @ D ) @ J).T - beta * CTC @ x
+        r = P * ((zz.T @ D) @ J).T - beta * CTC @ x
         b1 = (((D*D) @ b).T @ J).T
         bnrm2 = np.linalg.norm(b1)
         error = np.linalg.norm(r) / bnrm2   # initialisation de l'erreur
         
         if error < tol:
             return x, error, it
-        
+
+        rho_1 = 1.
         for it in np.arange(max_it):
             z = M * r   # calcul du gradient modifié
             rho = (r.T @ z).item()
             if it == 0:
                 p = z.copy()
-                rho_1 = 1.
             else:
                 beta_k = rho / rho_1   # calcul du coefficient beta_k
                 p = z + beta_k * p
@@ -158,13 +158,13 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
 
         if error < tol:
             return x, error, it
-        
+
+        rho_1 = 1.
         for it in np.arange(max_it):
             z = M * r   # calcul du gradient modifié
             rho = (r.T @ z).item()
             if it == 0:
                 p = z.copy()
-                rho_1 = 1.
             else:
                 beta_k = rho / rho_1   # calcul du coefficient beta_k
                 p = z + beta_k * p
@@ -518,7 +518,7 @@ class Inversion:
         self._update_sigma(sigma, xt, m_active)
 
         if self.verbose:
-            print('    Forward modelling ... ', end='', flush=True)
+            print('      Forward modelling ... ', end='', flush=True)
         d = g.fwd_mod(sigma, keep_solver=True)
         if self.verbose:
             print('done.')
@@ -538,7 +538,7 @@ class Inversion:
             self._update_sigma(sigma, xt, m_active)
 
             if self.verbose:
-                print('    Forward modelling ... ', end='', flush=True)
+                print('      Forward modelling ... ', end='', flush=True)
             d = g.fwd_mod(sigma, keep_solver=True)
             if self.verbose:
                 print('done.')
@@ -550,8 +550,8 @@ class Inversion:
 
             fd2 = (0.5 * (d - dobs).T @ (D * D) @ (d - dobs)).item()
 
-            if self.verbose:
-                print('      fd: {0:g}   {1:g}   {2:g}'.format(fd0, fd1, fd2))
+            # if self.verbose:
+            #     print('      fd: {0:g}   {1:g}   {2:g}'.format(fd0, fd1, fd2))
 
             if fd2 < fd0 and fd1 > fd2:
                 # stationary point is egal to minimum of fitted parabola

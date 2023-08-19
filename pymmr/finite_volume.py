@@ -1209,7 +1209,7 @@ class GridFV:
             return vtk_to_numpy(data)
 
     def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
-        """Define solver to be used during forward modelling.
+        """Define parameters of solver to be used during forward modelling.
 
         Parameters
         ----------

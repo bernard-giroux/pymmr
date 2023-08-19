@@ -57,7 +57,7 @@ def all(a):
     return a.sum() == a.size
 
 
-def sortrows(a, sortback=False):
+def sortrows(a, sort_back=False):
     """
     Sort rows of 2D array
 
@@ -65,8 +65,8 @@ def sortrows(a, sortback=False):
     ----------
     a : 2D ndarray
         Array to process.
-    sortback : bool, optional
-        Returns array of indices to sortback. For this to work, all rows in
+    sort_back : bool, optional
+        Returns array of indices to sort_back. For this to work, all rows in
         input array must be different.
 
     Returns
@@ -74,13 +74,13 @@ def sortrows(a, sortback=False):
     b : 2D ndarray
         sorted array.
     ind_back : 1D ndarray
-        array of indices (if sortback is True)
+        array of indices (if sort_back is True)
 
     """
     tmp, cnt = np.unique(a, axis=0, return_counts=True)
-    if sortback:
+    if sort_back:
         if tmp.shape != a.shape:
-            raise ValueError('All rows must be different when sortback is True')
+            raise ValueError('All rows must be different when sort_back is True')
         ind_back = np.empty((a.shape[0],), dtype=int)
         for n1 in np.arange(a.shape[0]):
             for n2 in np.arange(tmp.shape[0]):
@@ -324,7 +324,7 @@ class GridDC(GridFV):
             print('\nForward modelling - DC resistivity')
             self.print_info()
             if c1c2 is not None:
-                print('    {0:d} combination of dipoles'.format(c1c2.shape[0]))
+                print('    {0:d} combinations of dipoles'.format(c1c2.shape[0]))
             self.print_solver_info()
             if self.apply_bc:
                 print('    Correction at boundary: applied')
@@ -783,12 +783,12 @@ class GridDC(GridFV):
                 raise ValueError('Number of injection and measurement dipoles must be equal.')
 
             nc = self.c1c2.shape[1]
-            tmp, self.sort_back = sortrows(np.hstack((self.c1c2, self.p1p2)), sortback=True)
+            tmp, self.sort_back = sortrows(np.hstack((self.c1c2, self.p1p2)), sort_back=True)
             self.c1c2 = tmp[:, :nc]
             self.p1p2 = tmp[:, nc:]
 
         else:
-            self.c1c2, self.sort_back = sortrows(self.c1c2, sortback=True)
+            self.c1c2, self.sort_back = sortrows(self.c1c2, sort_back=True)
 
         if self.cs is None:
             warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)

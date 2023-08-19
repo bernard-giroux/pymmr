@@ -190,7 +190,7 @@ class GridMMR(GridDC):
         self.acq_checked = True
 
     def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
-        """Define solver to be used during forward modelling.
+        """Define parameters of solver to be used during forward modelling.
 
         Parameters
         ----------
@@ -297,14 +297,14 @@ class GridMMR(GridDC):
         sigma : array_like
             Conductivity model (S/m).
         xs : array_like, optional
-            Coordinates of injection points.
+            Coordinates of injection points (m).
         xo : array_like, optional
-            Coordinates of measurement points.
+            Coordinates of measurement points (m).
         calc_sens : bool, optional
             Calculate sensitivity matrix.
         keep_solver : bool, optional
             Use solver instantiated in a previous `fwd_mod` run.
-        cs : scalar or array_like
+        cs : scalar or array_like, optional
             Current intensity at injection points, 1 A by default.
 
         Returns
@@ -389,7 +389,7 @@ class GridMMR(GridDC):
             q[(self.nfx+self.nfy-self.gdc.nfy):(self.nfx+self.nfy), i] = Jy[:, i]
             q[(self.nfx+self.nfy+self.nfz-self.gdc.nfz):, i] = Jz[:, i]
 
-        A = self.build_A()
+        A = self._build_A()
 
         if self.solver_A is None or keep_solver is False:
             self.solver_A = Solver(A, self.get_solver(), self.verbose)
@@ -418,31 +418,18 @@ class GridMMR(GridDC):
                 print('    Computing adjoint terms ... ', end='', flush=True)
 
             q = self._adj()
-
-            if np.any(np.isnan(q)):
-                print('nan in q')
-
             M = self.gdc.build_M(sigma)
-
             q_a = self.gdc.D @ M @ q
-            if np.any(np.isnan(q_a)):
-                print('nan in q_a')
             t = np.max(np.abs(q_a), axis=0)
             q_a /= np.tile(t, (q_a.shape[0], 1))
-            if np.any(np.isnan(q_a)):
-                print('nan in q_a (2)')
 
             if self.verbose:
                 print('    Solving DC adjoint problem ... ', end='', flush=True)
             self.gdc.fwd_mod(calc_J=False, q=q_a)
             if self.verbose:
                 print('done.')
-            if np.any(np.isnan(self.gdc.u)):
-                print('nan in gdc.u')
 
             q2 = self.gdc.u * np.tile(t, (self.gdc.u.shape[0], 1))
-            if np.any(np.isnan(q2)):
-                print('nan in q2')
 
             if self.verbose:
                 print('    Assembling matrices ... ', end='', flush=True)
@@ -454,6 +441,7 @@ class GridMMR(GridDC):
                 self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2)
 
             if self.in_inv is False:
+                # use order of observations
                 tmp = np.c_[self.ind_back, self.nobs_mmr+self.ind_back, 2*self.nobs_mmr+self.ind_back]
                 sens = sens[:, tmp]
 
@@ -507,7 +495,7 @@ class GridMMR(GridDC):
         q = q[ind_earth, :]
         return q
 
-    def build_A(self):
+    def _build_A(self):
         # average of permeability (scalar for now)
         M_e = M_c = 1. / (4.*np.pi*1e-7)   # ( mu_0 in H/m)
 
