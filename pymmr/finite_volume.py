@@ -354,7 +354,7 @@ class GridFV:
 
     @property
     def x(self):
-        "Node coordinates along x."
+        """Node coordinates along x."""
         return self._x
 
     @x.setter
@@ -373,7 +373,7 @@ class GridFV:
 
     @property
     def y(self):
-        "Node coordinates along y."
+        """Node coordinates along y."""
         return self._y
 
     @y.setter
@@ -392,7 +392,7 @@ class GridFV:
 
     @property
     def z(self):
-        "Node coordinates along z."
+        """Node coordinates along z."""
         return self._z
 
     @z.setter
