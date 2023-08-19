@@ -45,11 +45,11 @@ class GridMMR(GridDC):
     Parameters
     ----------
     x : array of float
-        Node coordinates along x
+        Node coordinates along x (m)
     y : array of float
-        Node coordinates along y
+        Node coordinates along y (m)
     z : array of float
-        Node coordinates along z
+        Node coordinates along z (m)
     comm : MPI Communicator or None
         If None, use MPI_COMM_WORLD
 
@@ -79,7 +79,7 @@ class GridMMR(GridDC):
 
     @property
     def xs(self):
-        """Coordinates of injection points for MMR modelling."""
+        """Coordinates of injection points for MMR modelling (m)."""
         return self._xs
 
     @xs.setter
@@ -106,7 +106,7 @@ class GridMMR(GridDC):
 
     @property
     def xo(self):
-        """Coordinates of measurement points."""
+        """Coordinates of measurement points (m)."""
         return self._xo
 
     @xo.setter
@@ -134,7 +134,7 @@ class GridMMR(GridDC):
 
     @property
     def c1c2(self):
-        """Coordinates of injection points for DC resistivity modelling."""
+        """Coordinates of injection points for DC resistivity modelling (m)."""
         return self.gdc.c1c2
 
     @c1c2.setter
@@ -143,7 +143,7 @@ class GridMMR(GridDC):
 
     @property
     def p1p2(self):
-        """Coordinates of measurement points for DC resistivity modelling."""
+        """Coordinates of measurement points for DC resistivity modelling (m)."""
         return self.gdc.p1p2
 
     @p1p2.setter

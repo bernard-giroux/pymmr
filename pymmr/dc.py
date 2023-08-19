@@ -100,11 +100,11 @@ class GridDC(GridFV):
     Parameters
     ----------
     x : array of float
-        Node coordinates along x
+        Node coordinates along x (m)
     y : array of float
-        Node coordinates along y
+        Node coordinates along y (m)
     z : array of float
-        Node coordinates along z
+        Node coordinates along z (m)
     comm : MPI Communicator or None
         If None, use MPI_COMM_WORLD
     """
@@ -134,7 +134,7 @@ class GridDC(GridFV):
 
     @property
     def c1c2(self):
-        """Coordinates of injection points."""
+        """Coordinates of injection points (m)."""
         return self._c1c2
 
     @c1c2.setter
@@ -171,7 +171,7 @@ class GridDC(GridFV):
 
     @property
     def p1p2(self):
-        """Coordinates of measurement points."""
+        """Coordinates of measurement points (m)."""
         return self._p1p2
 
     @p1p2.setter
@@ -202,6 +202,7 @@ class GridDC(GridFV):
         self.Q = None  # reset interpolation matrix because electrodes will be sorted
 
     def check_cs(self):
+        """Verify validity of current source intensity."""
         if self._cs is None:
             raise ValueError('Current source undefined')
         if self.c1c2 is not None:
@@ -458,6 +459,8 @@ class GridDC(GridFV):
             return data
 
     def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
+        """Compute regularization matrix.
+        """
         # extract Gx, Gy & Gz from G
         Gx = self.G[:self.nfx, :]
         Gy = self.G[self.nfx:(self.nfx+self.nfy), :]
