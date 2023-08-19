@@ -105,9 +105,11 @@ class GridDC(GridFV):
         Node coordinates along y
     z : array of float
         Node coordinates along z
+    comm : MPI Communicator or None
+        If None, use MPI_COMM_WORLD
     """
-    def __init__(self, x, y, z):
-        GridFV.__init__(self, x, y, z)
+    def __init__(self, x, y, z, comm=None):
+        GridFV.__init__(self, x, y, z, comm)
         self._c1c2 = None
         self._cs = None
         self._p1p2 = None

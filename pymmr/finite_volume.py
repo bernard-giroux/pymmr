@@ -165,7 +165,9 @@ class GridFV:
         Node coordinates along y
     z : array_like
         Node coordinates along z
-            
+    comm : MPI Communicator or None
+        If None, use MPI_COMM_WORLD
+
     Notes
     -----
     Voxels are sorted column major, i.e. x is the fast axis
@@ -173,7 +175,14 @@ class GridFV:
     
     """
 
-    def __init__(self, x, y, z):
+    def __init__(self, x, y, z, comm=None):
+        if comm is None:
+            from mpi4py import MPI
+        
+            comm = MPI.COMM_WORLD
+        self.comm = comm
+        self.myid = comm.rank
+
         self.x = x
         self.y = y
         self.z = z
