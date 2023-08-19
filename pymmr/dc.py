@@ -133,6 +133,8 @@ class GridDC(GridFV):
         self.roi = None
         self.ind_roi = np.arange(self.nc)
         self.in_inv = False    # set to True when grid is used in inversion
+        self.c1c2_u = None
+        self.cs12_u = None
 
     @property
     def c1c2(self):
@@ -160,6 +162,7 @@ class GridDC(GridFV):
                 raise ValueError('Source term outside grid')
         self._c1c2 = tmp
         self.electrodes_sorted = False
+        self.Q = None  # reset interpolation matrix because electrodes will be sorted
 
     @property
     def cs(self):
@@ -200,6 +203,7 @@ class GridDC(GridFV):
                     raise ValueError('Measurement point outside grid')
         self._p1p2 = tmp
         self.electrodes_sorted = False
+        self.Q = None  # reset interpolation matrix because electrodes will be sorted
 
     def check_cs(self):
         if self._cs is None:
@@ -330,10 +334,6 @@ class GridDC(GridFV):
             else:
                 print('    Correction at boundary: not applied')
 
-        if self.in_inv and calc_sens:
-            self.electrodes_sorted = False
-            self.Q = None
-
         self.cs = cs
 
         if c1c2 is not None:
@@ -439,12 +439,6 @@ class GridDC(GridFV):
 
             if self.verbose:
                 print('done.\nEnd of modelling.')
-
-            if self.in_inv:
-                # le prochain appel de la fonction sera vraisemblablement pour calc_sens == False
-                # et on doit alors reclasser les électrodes
-                self.electrodes_sorted = False
-                self.Q = None
 
             return data, sens
 
@@ -586,7 +580,7 @@ class GridDC(GridFV):
             if self.cs is None:
                 warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
                 self.cs = np.ones((c1c2.shape[0],))
-            cs = self.cs
+            cs = self.cs12_u
         else:
             c1c2 = np.vstack((self.c12_u, self.p12_u))
             # make sure electrodes are at least at the depth of the first cell center
@@ -620,7 +614,7 @@ class GridDC(GridFV):
             if self.cs is None:
                 warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
                 self.cs = np.ones((c1c2.shape[0],))
-            cs = self.cs
+            cs = self.cs12_u
         else:
             c1c2 = np.vstack((self.c12_u, self.p12_u))
             # keep track of electrodes below the surface
@@ -698,36 +692,10 @@ class GridDC(GridFV):
 
         self.q = sp.csr_matrix(A @ self.u0)
 
-    def _sort_electrodes(self, data=None):
+    def _sort_electrodes(self):
 
         if self.verbose:
             print('  Sorting electrodes ...')
-            
-        if data is not None:
-            # données d'inversion en entrée
-            dobs, d_et = data
-            self.sortback = None  # on s'assure de ne pas reclasser
-            self.c1c2_u, ind, cnt = np.unique(self.c1c2, axis=0,
-                                              return_index=True,
-                                              return_counts=True)
-            self.n_c1c2_u = self.c1c2_u.shape[0]
-            self.cs_u = self.cs[ind]
-            
-            self.ind_c1c2 = np.repeat(np.arange(ind.size), cnt, axis=0)  # différent du cas sans data car on classe p1p2 ici
-            
-            ind2 = np.repeat(ind, cnt, axis=0)
-            for i in ind:
-                ii, = np.where(i == ind2)
-                ind2[ii] = i + np.arange(ii.size)
-            
-            self.p1p2 = self.p1p2[ind2, :]
-            dobs = dobs[ind2]
-            d_et = d_et[ind2]
-            
-            if self.verbose:
-                print('    Detected {0:d} injection dipole(s)'.format(self.n_c1c2_u))
-            
-            return dobs, d_et
         
         if self.p1p2 is not None:
             if self.c1c2.shape[0] != self.p1p2.shape[0]:
@@ -746,41 +714,37 @@ class GridDC(GridFV):
             self.cs = np.ones((self.c1c2.shape[0],))
 
         # dipoles d'injection
-        if self.keep_c1c2:
-            self.c1c2_u, ind, self.ind_c1c2 = np.unique(self.c1c2, axis=0,
-                                                        return_index=True,
-                                                        return_inverse=True)
-            self.n_c1c2_u = self.c1c2_u.shape[0]
-            self.cs_u = self.cs[ind]
-        else:
-            c1c2_u, ind, self.ind_c1c2 = np.unique(self.c1c2, axis=0, return_index=True, return_inverse=True)
-            # nombre initial de dipoles
-            self.n_c1c2_u = c1c2_u.shape[0]
 
-            c12 = np.vstack((self.c1c2[:, :3], self.c1c2[:, 3:]))
-            self.c12_u = np.unique(c12, axis=0)
-            self.ind_c1 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
-            self.ind_c2 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
-            self.cs_u = np.empty((self.c12_u.shape[0],))
-            for n1 in range(self.c1c2.shape[0]):
-                for n2 in range(self.c12_u.shape[0]):
-                    if all(self.c12_u[n2, :3] == self.c1c2[n1, :3]):
-                        self.ind_c1[n1] = n2
-                        self.cs_u[n2] = self.cs[n1]
-                    if all(self.c12_u[n2, :3] == self.c1c2[n1, 3:]):
-                        self.ind_c2[n1] = n2
-                        self.cs_u[n2] = self.cs[n1]
+        self.c1c2_u, ind, self.ind_c1c2 = np.unique(self.c1c2, axis=0,
+                                                    return_index=True,
+                                                    return_inverse=True)
+        self.n_c1c2_u = self.c1c2_u.shape[0]
+        self.cs12_u = self.cs[ind]
 
-            self.ind_c1_u = np.empty((c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
-            self.ind_c2_u = np.empty((c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
-            for n1 in range(c1c2_u.shape[0]):
-                for n2 in range(self.c12_u.shape[0]):
-                    if all(self.c12_u[n2, :] == c1c2_u[n1, :3]):
-                        self.ind_c1_u[n1] = n2
-                    if all(self.c12_u[n2, :] == c1c2_u[n1, 3:]):
-                        self.ind_c2_u[n1] = n2
+        c12 = np.vstack((self.c1c2[:, :3], self.c1c2[:, 3:]))
+        self.c12_u = np.unique(c12, axis=0)
+        self.ind_c1 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
+        self.ind_c2 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
+        self.cs_u = np.empty((self.c12_u.shape[0],))
+        for n1 in range(self.c1c2.shape[0]):
+            for n2 in range(self.c12_u.shape[0]):
+                if all(self.c12_u[n2, :3] == self.c1c2[n1, :3]):
+                    self.ind_c1[n1] = n2
+                    self.cs_u[n2] = self.cs[n1]
+                if all(self.c12_u[n2, :3] == self.c1c2[n1, 3:]):
+                    self.ind_c2[n1] = n2
+                    self.cs_u[n2] = self.cs[n1]
 
-            self.c12_u = self.c12_u[:, :3]
+        self.ind_c1_u = np.empty((self.c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
+        self.ind_c2_u = np.empty((self.c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
+        for n1 in range(self.c1c2_u.shape[0]):
+            for n2 in range(self.c12_u.shape[0]):
+                if all(self.c12_u[n2, :] == self.c1c2_u[n1, :3]):
+                    self.ind_c1_u[n1] = n2
+                if all(self.c12_u[n2, :] == self.c1c2_u[n1, 3:]):
+                    self.ind_c2_u[n1] = n2
+
+        self.c12_u = self.c12_u[:, :3]
     
         if self.verbose:
             print('    Detected {0:d} injection dipole(s)'.format(self.n_c1c2_u))

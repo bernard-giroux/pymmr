@@ -454,20 +454,16 @@ class GridMMR(GridDC):
         if self.verbose:
             print('End of modelling.')
 
+        self.gdc.c1c2_u = c1c2_u_save
+        self.gdc.cs12_u = cs12_u_save
         if calc_sens:
-            if self.in_inv:
-                self.gdc.c1c2 = c1c2_dc
-                self.gdc.p1p2 = p1p2_dc
-                if c1c2_dc is not None:
-                    data = np.r_[data, 1.e3 * res_dc[0].reshape(-1, 1)]  # conversion de V à mV
-                    sens = np.c_[sens, 1.e3 * res_dc[1]]
+            if self.in_inv and self.gdc.c1c2 is not None:
+                data = np.r_[data, res_dc[0].reshape(-1, 1)]
+                sens = np.c_[sens, res_dc[1]]
             return data, sens
         else:
-            if self.in_inv:
-                self.gdc.c1c2 = c1c2_dc
-                self.gdc.p1p2 = p1p2_dc
-                if c1c2_dc is not None:
-                    data = np.r_[data, 1.e3 * res_dc.reshape(-1, 1)]
+            if self.in_inv and self.gdc.c1c2 is not None:
+                data = np.r_[data, res_dc.reshape(-1, 1)]
             return data
 
     def _adj(self):
