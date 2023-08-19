@@ -9,7 +9,7 @@ sys.path.append("/Users/giroux/GitHub/pymumps")
 
 from pymmr.finite_volume import calc_padding, GridFV
 from pymmr.mmr import GridMMR
-from pymmr.inversion import Inversion
+from pymmr.inversion import Inversion, DataMMR
 
 
 x = np.arange(-60.0 * 16, 60.01 * 16, 60)
@@ -78,20 +78,20 @@ dobs1 = g.fwd_mod(sigma)
 
 dobs = dobs1 + np.random.default_rng().normal(0.0, 0.03, dobs1.shape)
 
-data = np.c_[dobs1, c1c2, xo]
-
+data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs, wt=np.ones((3*dobs.shape[0],)))
 
 # %%
 inv = Inversion()
 inv.beta = 2500
 inv.beta_min = 100
+inv.show_plots = True
 
 m_ref = 0.001 + np.zeros((g.gdc.nc,))
 
 g.set_roi([-400, 400, -400, 400, 0, 960])
 g.verbose = False
 
-results = inv.run(g, m_ref, data_mmr=data, m_active=g.ind_roi)
+results = inv.run(g, m_ref, data_mmr=data_mmr, m_active=g.ind_roi)
 
 S_save, rms, data_inv = results
 
