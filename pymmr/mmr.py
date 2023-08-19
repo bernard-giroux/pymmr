@@ -151,6 +151,7 @@ class GridMMR(GridDC):
         self.gdc.p1p2 = val
 
     def check_acquisition(self):
+        """Check consistency of `xs` and `xo`."""
         if self.xs.shape[0] == self.xo.shape[0]:
             # on a des paires dipoles injection - pts de mesure
             self.xs_u = np.unique(self.xs, axis=0)
@@ -250,6 +251,7 @@ class GridMMR(GridDC):
         self.comm = comm
 
     def get_solver(self):
+        """Return parameters needed to instantiate Solver."""
         if self.want_mumps:
             return 'mumps', self.comm
         elif self.want_pardiso:
