@@ -341,12 +341,11 @@ class GridMMR(GridDC):
         if self.acq_checked is False:
             self.check_acquisition()
 
-        if self.in_inv:
-            c1c2_dc = copy.copy(self.gdc.c1c2)
-            p1p2_dc = copy.copy(self.gdc.p1p2)
-            if c1c2_dc is not None:
-                res_dc = self.gdc.fwd_mod(sigma, calc_sens=calc_sens)
+        if self.in_inv and self.gdc.c1c2 is not None:
+            res_dc = self.gdc.fwd_mod(sigma, calc_sens=calc_sens)
 
+        c1c2_u_save = copy.copy(self.gdc.c1c2_u)
+        cs12_u_save = copy.copy(self.gdc.cs12_u)
         self.gdc.c1c2_u = self.xs_u
         self.gdc.sort_electrodes = False
 

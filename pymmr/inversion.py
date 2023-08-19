@@ -10,6 +10,9 @@ from collections import namedtuple
 import warnings
 
 import numpy as np
+import matplotlib.pyplot as plt
+
+
 # %%  Define namedtuple for input data
 
 DataMMR = namedtuple("DataMMR", "xs xo data wt")
