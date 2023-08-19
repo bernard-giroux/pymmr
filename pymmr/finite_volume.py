@@ -426,9 +426,8 @@ class GridFV:
         True if point si inside grid
 
         """
-        return x >= self.x[0] and x <= self.x[-1] and \
-               y >= self.y[0] and y <= self.y[-1] and \
-               z >= self.z[0] and z <= self.z[-1]
+        return self.x[0] <= x <= self.x[-1] and self.y[0] <= y <= self.y[-1] and \
+            self.z[0] <= z <= self.z[-1]
 
     def volume_voxels(self):
         """Returns the volume of the voxels of the grid.
@@ -1279,6 +1278,7 @@ class GridFV:
         self.comm = comm
             
     def get_solver(self):
+        """Return parameters needed to instantiate Solver."""
         if self.want_mumps:
             return 'mumps', self.comm
         elif self.want_pardiso:
@@ -1294,7 +1294,7 @@ class GridFV:
             
     @property
     def want_pardiso(self):
-        """Utilisation du solver pardiso (si installé)."""
+        """Using solver pardiso (if available)."""
         return self._want_pardiso
 
     @want_pardiso.setter
@@ -1307,7 +1307,7 @@ class GridFV:
 
     @property
     def want_pastix(self):
-        """Utilisation du solver pastix (si installé)."""
+        """Using solver pastix (if available)."""
         return self._want_pastix
 
     @want_pastix.setter
@@ -1320,7 +1320,7 @@ class GridFV:
 
     @property
     def want_umfpack(self):
-        """Utilisation du solver umfpack (si installé)."""
+        """Using solver umfpack (if available)."""
         return self._want_umfpack
 
     @want_umfpack.setter
@@ -1333,7 +1333,7 @@ class GridFV:
 
     @property
     def want_mumps(self):
-        """Utilisation du solver mumps (si installé)."""
+        """Using solver mumps (if available)."""
         return self._want_mumps
 
     @want_mumps.setter
@@ -1621,7 +1621,7 @@ class Solver:
     
     @property
     def A(self):
-        """Matrice à inverser."""
+        """Matrix to invert."""
         return self._A
     
     @A.setter
