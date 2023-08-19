@@ -6,9 +6,14 @@ Module for inverting ERT & MMR data.
 @author: giroux
 
 """
+from collections import namedtuple
 import warnings
 
 import numpy as np
+# %%  Define namedtuple for input data
+
+DataMMR = namedtuple("DataMMR", "xs xo data wt")
+DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt")
 
 
 def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
@@ -258,11 +263,11 @@ class Inversion:
         g : Grid instance
             GridMMR (or GridDC if `data_mmr` is None)
         m_ref : array_like
-            Reference model.
-        data_mmr : array_like, optional
-            MMR data.
-        data_ert : array_like, optional
-            DC resistivity data.
+            Reference model (S/m).
+        data_mmr : DataMMR, optional
+            MMR data.  B-field units are pT.
+        data_ert : DataERT, optional
+            DC resistivity data.  Voltage should be in mV.
         m0 : array_like, optional
             Initial model (equal to m_ref if None).
         m_weight : array_like, optional
@@ -282,42 +287,29 @@ class Inversion:
         wt = None
         nobs_mmr = 0
         if data_mmr is not None:
-            if data_mmr.ndim == 2:
-                if data_mmr.shape[1] == 12 or data_mmr.shape[1] == 13:
-                    g.xs = data_mmr[:, 3:9]
-                    g.xo = data_mmr[:, 9:12]
-                    g.check_acquisition()
-                    dobs = g.data_to_obs(data_mmr[:, :3])
-                    nobs_mmr = dobs.size
-                    if data_mmr.shape[1] == 13:
-                        wt = np.tile(data_mmr[:, 12], 3)
-                    else:
-                        wt = np.ones(dobs.shape)
-            else:
+            try:
+                g.xs = data_mmr.xs
+                g.xo = data_mmr.xo
+                g.check_acquisition()
+                dobs = g.data_to_obs(data_mmr.data)
+                wt = data_mmr.wt
+                nobs_mmr = dobs.size
+            except AttributeError:
                 raise RuntimeError('Format of MMR data incorrect')
 
         if data_ert is not None:
-            if data_ert.ndim == 2:
-                if data_ert.shape[1] == 13 or data_ert.shape[1] == 14:
-                    g.c1c2 = data_ert[:, :6]
-                    g.p1p2 = data_ert[:, 6:12]
-                    if dobs is None:
-                        dobs = 1.e3 * data_ert[:, 12].reshape(-1, 1)  # conversion de V à mV
-                    else:
-                        dobs = np.r_[dobs, 1.e3 * data_ert[:, 12].reshape(-1, 1)]  # conversion de V à mV
-                    if data_ert.shape[1] == 14:
-                        if wt is None:
-                            wt = data_ert[:, 13]
-                        else:
-                            wt = np.r_[wt, data_ert[:, 13]]
-                    else:
-                        if wt is None:
-                            wt = np.ones((data_ert.shape[0], 1))
-                        else:
-                            wt = np.r_[wt, np.ones((data_ert.shape[0], 1))]
+            try:
+                g.c1c2 = data_ert.c1c2
+                g.p1p2 = data_ert.p1p2
+                if dobs is None:
+                    dobs = data_ert.data.reshape(-1, 1)
                 else:
-                    raise RuntimeError('Format of ERT data incorrect')
-            else:
+                    dobs = np.r_[dobs, data_ert.data.reshape(-1, 1)]
+                if wt is None:
+                    wt = data_ert.wt
+                else:
+                    wt = np.r_[wt, data_ert.wt]
+            except AttributeError:
                 raise RuntimeError('Format of ERT data incorrect')
 
         if self.verbose:

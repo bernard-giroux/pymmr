@@ -393,7 +393,7 @@ class GridDC(GridFV):
         if self.p1p2 is None:
             data = None
         else:
-            data = self._get_data()
+            data = 1.e3 * self._get_data()  # to get mV
 
         if calc_sens:
             if self.verbose:
@@ -430,8 +430,7 @@ class GridDC(GridFV):
 
                 sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S)
 
-            if self.sort_electrodes and self.sortback is not None:
-                sens = sens[:, self.sortback]
+            sens *= 1.e3   # we want mV for voltage units
             if self.sort_electrodes and self.sort_back is not None:
                 sens = sens[:, self.sort_back]
 
