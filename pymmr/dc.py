@@ -24,13 +24,8 @@ import re
 import sys
 import warnings
 
-from multiprocessing import Pool
-
 import numpy as np
-import matplotlib.pyplot as plt
 import scipy.sparse as sp
-from scipy.sparse.linalg import spsolve
-from scipy.sparse.csgraph import reverse_cuthill_mckee
 from scipy.stats.mstats import gmean
 
 try:
@@ -49,8 +44,7 @@ except ImportError:
             return wrapper_jit
         return decorator_jit
 
-from pymmr.finite_volume import GridFV, Solver, calc_padding, \
-    build_from_vtk
+from pymmr.finite_volume import GridFV, Solver, build_from_vtk
 
 # TODO: généraliser ROI pour voxels arbitraires
 # TODO: ajouter le courant à c1c2 plutôt qu'entrer à part
@@ -128,7 +122,7 @@ class GridDC(GridFV):
                                # sensitivity
         self.sort_electrodes = True
         self.electrodes_sorted = False
-        self.sortback = None
+        self.sort_back = None
         self.verbose = True
         self.roi = None
         self.ind_roi = np.arange(self.nc)
@@ -157,8 +151,8 @@ class GridDC(GridFV):
         else:
             raise ValueError('Size of source term must be nsrc x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) == False or \
-               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) == False:
+            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
                 raise ValueError('Source term outside grid')
         self._c1c2 = tmp
         self.electrodes_sorted = False
@@ -197,8 +191,8 @@ class GridDC(GridFV):
         else:
             raise ValueError('Measurement points should be nobs x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) == False or \
-                (self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) == False
+            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+                (self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False
                  and not np.any(tmp[ns, 3:] == np.inf)):
                     raise ValueError('Measurement point outside grid')
         self._p1p2 = tmp
@@ -299,9 +293,9 @@ class GridDC(GridFV):
 
         Returns
         -------
-        - Voltage at dipoles `p1p2` (V)
+        - Voltage at dipoles `p1p2` (mV)
         - Current density `calc_J` if True,
-        - Sensitivity matrix if `calc_sens` is True.
+        - Sensitivity matrix if `calc_sens` is True.   ( mV / S/m )
 
         Notes
         -----
@@ -311,7 +305,7 @@ class GridDC(GridFV):
 
         - It is possible do the computation for poles or dipoles at
         injection and/or measurement points.  In the case of a pole, one of
-        the coordonate must be set to np.inf.
+        the coordinate must be set to np.inf.
 
         - Sensitivity calculation currently implemented only for current
         intensity equal at all injection points.
@@ -436,6 +430,8 @@ class GridDC(GridFV):
 
             if self.sort_electrodes and self.sortback is not None:
                 sens = sens[:, self.sortback]
+            if self.sort_electrodes and self.sort_back is not None:
+                sens = sens[:, self.sort_back]
 
             if self.verbose:
                 print('done.\nEnd of modelling.')
@@ -449,8 +445,8 @@ class GridDC(GridFV):
             for ns in range(self.q.shape[1]):
                 J[:, ns] = -M @ self.G @ self.u[:, ns]
 
-            if self.sort_electrodes and self.sortback is not None:
-                J = J[:, self.sortback]
+            if self.sort_electrodes and self.sort_back is not None:
+                J = J[:, self.sort_back]
 
             if self.verbose:
                 print('done.\nEnd of modelling.')
@@ -702,12 +698,12 @@ class GridDC(GridFV):
                 raise ValueError('Number of injection and measurement dipoles must be equal.')
 
             nc = self.c1c2.shape[1]
-            tmp, self.sortback = sortrows(np.hstack((self.c1c2, self.p1p2)), sortback=True)
+            tmp, self.sort_back = sortrows(np.hstack((self.c1c2, self.p1p2)), sortback=True)
             self.c1c2 = tmp[:, :nc]
             self.p1p2 = tmp[:, nc:]
 
         else:
-            self.c1c2, self.sortback = sortrows(self.c1c2, sortback=True)
+            self.c1c2, self.sort_back = sortrows(self.c1c2, sortback=True)
 
         if self.cs is None:
             warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
@@ -787,8 +783,8 @@ class GridDC(GridFV):
             for ns in range(self.n_c1c2_u):
                 uu = u[:, self.ind_c1_u[ns]] - u[:, self.ind_c2_u[ns]]
                 data = np.r_[data, self.Q[ns] @ uu]
-        if self.sort_electrodes and self.sortback is not None:
-            data = data[self.sortback]
+        if self.sort_electrodes and self.sort_back is not None:
+            data = data[self.sort_back]
         return data
 
     def _get_u(self, d):
@@ -1134,7 +1130,7 @@ if __name__ == '__main__':
         c1c2 = None
         xo = None
         solver_name = 'umfpack'
-        maxit = 1000
+        max_it = 1000
         tol = 1e-9
         verbose = True
         calc_J = False
@@ -1166,8 +1162,8 @@ if __name__ == '__main__':
                             solver_name = getattr(mod, value)
                         else:
                             solver_name = value
-                    elif 'solver' in keyword and 'maxit' in keyword:
-                        maxit = int(value)
+                    elif 'solver' in keyword and 'max_it' in keyword:
+                        max_it = int(value)
                     elif 'solver' in keyword and 'tolerance' in keyword:
                         tol = float(value)
                     elif 'precon' in keyword:
@@ -1197,7 +1193,7 @@ if __name__ == '__main__':
         if g is None:
             raise RuntimeError('Grid not defined, check input parameters')
             
-        g.set_solver(solver_name, tol, maxit, precon, do_perm)
+        g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
         g.verbose = verbose
         g.apply_bc = apply_bc
