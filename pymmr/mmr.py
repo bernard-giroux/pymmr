@@ -32,7 +32,6 @@ import sys
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.sparse.csgraph import reverse_cuthill_mckee
 
 from pymmr.dc import GridDC
 from pymmr.finite_volume import calc_padding, build_from_vtk, GridFV, Solver
@@ -41,16 +40,18 @@ from pymmr.finite_volume import calc_padding, build_from_vtk, GridFV, Solver
 # %% class GridMMR
 
 class GridMMR(GridDC):
-    """Grid for magnetometric resistivity modellling.
+    """Grid for magnetometric resistivity modelling.
 
     Parameters
     ----------
-        x : array of float
-            Node coordinates along x
-        y : array of float
-            Node coordinates along y
-        z : array of float
-            Node coordinates along z
+    x : array of float
+        Node coordinates along x
+    y : array of float
+        Node coordinates along y
+    z : array of float
+        Node coordinates along z
+    comm : MPI Communicator or None
+        If None, use MPI_COMM_WORLD
 
     Notes
     -----
@@ -58,9 +59,9 @@ class GridMMR(GridDC):
     dipoles that are different from the source term defined for MMR modeling.
     This has been implemented for allowing joint inversion of MMR & ERT data.
     """
-    def __init__(self, x, y, z):
-        GridDC.__init__(self, x, y, z)
-        self.gdc = GridDC(x, y, z)
+    def __init__(self, x, y, z, comm=None):
+        GridDC.__init__(self, x, y, z, comm)
+        self.gdc = GridDC(x, y, z, comm)
         self.gdc.verbose = False
         self.solver_A = None
         self.acq_checked = False
@@ -195,7 +196,7 @@ class GridMMR(GridDC):
         z_air = np.cumsum(dz_air)
         self.z = np.r_[self.gdc.z[0] - z_air[::-1], self.gdc.z]
 
-    def set_solver(self, name, tol=1e-9, maxit=1000, precon=False, do_perm=False, comm=None):
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
         """Define solver to be used during forward modelling.
 
         Parameters
@@ -205,7 +206,7 @@ class GridMMR(GridDC):
             If `callable`: (iterative solver from scipy.sparse.linalg, eg bicgstab)
         tol : float, optional
             Tolerance for the iterative solver
-        maxit : int, optional
+        max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : bool, optional
             Apply preconditionning.
@@ -219,11 +220,11 @@ class GridMMR(GridDC):
         `precon` et `do_perm` are used only with iterative solvers.
 
         """
-        self.gdc.set_solver(name, tol, maxit, precon, do_perm, comm)
+        self.gdc.set_solver(name, tol, max_it, precon, do_perm, comm)
         if callable(name):
             self.solver = name
             self.tol = tol
-            self.maxit = maxit
+            self.max_it = max_it
             self.want_pardiso = False
             self.want_superlu = False
             self.want_umfpack = False
@@ -267,10 +268,10 @@ class GridMMR(GridDC):
         elif self.want_umfpack:
             return ('umfpack',)
         else:
-            return self.solver, self.tol, self.maxit, self.precon, self.do_perm
+            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
 
     def set_roi(self, roi):
-        """Define region of interest for computing sentivivity or for inversion.
+        """Define region of interest for computing sensitivity or for inversion.
 
         Parameters
         ----------
@@ -296,8 +297,8 @@ class GridMMR(GridDC):
         calc_sens : bool, optional
             Calculate sensitivity matrix.
         keep_solver : bool, optional
-            Use solver intantiated in a previous `fwd_mod` run.
-        cs : scalar or arraylike
+            Use solver instantiated in a previous `fwd_mod` run.
+        cs : scalar or array_like
             Current intensity at injection points, 1 A by default.
 
         Returns
@@ -316,7 +317,7 @@ class GridMMR(GridDC):
         - Matrix A of the MMR system depends only on grid geometry, and it is
         thus not needed to build it at each run if the grid does not change.
         This is useful if a direct solver is used, matrix A must be factorized
-        only once.  Option `keep_solver` allos this, matrix A being factorized
+        only once.  Option `keep_solver` allows this, matrix A being factorized
         when the solver is instantiated.
         """
         if self.z.size == self.gdc.z.size:
@@ -563,7 +564,7 @@ if __name__ == '__main__':
         xs = None
         xo = None
         solver_name = 'umfpack'
-        maxit = 500
+        max_it = 500
         tol = 1e-8
         verbose = False
         calc_sens = False
@@ -592,8 +593,8 @@ if __name__ == '__main__':
                             solver_name = getattr(mod, value)
                         else:
                             solver_name = value
-                    elif 'solver' in keyword and 'maxit' in keyword:
-                        maxit = int(value)
+                    elif 'solver' in keyword and 'max_it' in keyword:
+                        max_it = int(value)
                     elif 'solver' in keyword and 'tolerance' in keyword:
                         tol = float(value)
                     elif 'precon' in keyword:
