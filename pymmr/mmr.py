@@ -347,6 +347,10 @@ class GridMMR(GridDC):
         c1c2_u_save = copy.copy(self.gdc.c1c2_u)
         cs12_u_save = copy.copy(self.gdc.cs12_u)
         self.gdc.c1c2_u = self.xs_u
+        if np.isscalar(cs):
+            self.gdc.cs12_u = cs + np.zeros((self.xs_u.shape[0],))
+        else:
+            self.gdc.cs12_u = cs
         self.gdc.sort_electrodes = False
 
         if self.verbose:
@@ -359,7 +363,7 @@ class GridMMR(GridDC):
         # get current density from forward DC modeling
         if self.verbose:
             print('  Compute current density ... ', end='', flush=True)
-        _, Jdc = self.gdc.fwd_mod(sigma, calc_J=True, cs=cs)
+        _, Jdc = self.gdc.fwd_mod(sigma, calc_J=True)
         u_dc = self.gdc.u.copy()
 
         if self.verbose:
