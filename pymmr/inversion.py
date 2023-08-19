@@ -19,6 +19,8 @@ DataMMR = namedtuple("DataMMR", "xs xo data wt")
 DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt")
 
 
+# %% Some functions
+
 def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
            alpha=0, WTWt=0):
     """Compute perturbation.
@@ -201,7 +203,7 @@ class Inversion:
         self.beta_cooling = 2
         """Decrease factor of beta."""
 
-        self.maxit = 5
+        self.max_it = 5
         """Number of iterations."""
         
         # smoothing
@@ -236,7 +238,7 @@ class Inversion:
         self.model_weighting = 'distance'
         """Pondération du lissage spatial: 'distance', 'jacobian'."""
 
-        self.maxit_cglscd = 1000
+        self.max_it_cglscd = 1000
         """Maximum number of iterations in cglscd."""
 
         self.tol_cglscd = 1.e-9
@@ -257,6 +259,8 @@ class Inversion:
         """Function to transform data: 'asinh' ou None."""
 
         self.verbose = True
+
+        self.show_plots = False
 
     def run(self, g, m_ref, data_mmr=None, data_ert=None, m0=None, m_weight=None, m_active=None):
         """Run inversion.
@@ -353,7 +357,7 @@ class Inversion:
                 m_weight = np.ones(m_ref.shape)
         if m_active is None:
             m_active = np.ones(m_ref.shape, dtype=bool)
-            # TODO: if m_active is not not, this should be transfered to g
+            # TODO: if m_active is not not, this should be transferred to g
 
         if m0 is None:
             m0 = m_ref.copy()
@@ -390,7 +394,7 @@ class Inversion:
 
         WGx = WGy = WGz = None
 
-        for i in range(self.maxit):
+        for i in range(self.max_it):
             if i == 0 or self.methode == 'Gauss-Newton':
                 if self.verbose:
                     print('  *** Iteration no {0:d} ***'.format(i + 1))
@@ -441,9 +445,20 @@ class Inversion:
                 print('    Computing perturbation with cglscd ... ', end='', flush=True)
 
             s, err, iter1 = cglscd(J, np.zeros(xt.shape), dobs-d, self.beta, WTW,
-                                   xt-m_ref[m_active], D, P=None, max_it=self.maxit_cglscd,
+                                   xt-m_ref[m_active], D, P=None, max_it=self.max_it_cglscd,
                                    tol=self.tol_cglscd, reg_var=self.reg_var)
-
+            if self.show_plots:
+                fig, ax = plt.subplots(3, 3, figsize=(9, 9))
+                ax = ax.flatten()
+                ax[0].plot(s), ax[0].set_title('s')
+                ax[1].plot(WTW.diagonal()), ax[1].set_title('WTW')
+                ax[2].plot(D.diagonal()), ax[2].set_title('D')
+                ax[3].plot(dobs), ax[3].set_title('dobs')
+                ax[4].plot(d), ax[4].set_title('d')
+                ax[5].plot(dobs-d), ax[5].set_title('dobs-d')
+                ax[6].plot(xt-m_ref[m_active]), ax[6].set_title('xt-mref')
+                fig.tight_layout()
+                plt.show(block=False)
             if self.verbose:
                 print('done.\n      err = {0:e}, iter = {1:d}'.format(err, iter1))
 
@@ -534,6 +549,9 @@ class Inversion:
                 d = np.arcsinh(d)
 
             fd2 = (0.5 * (d - dobs).T @ (D * D) @ (d - dobs)).item()
+
+            if self.verbose:
+                print('      fd: {0:g}   {1:g}   {2:g}'.format(fd0, fd1, fd2))
 
             if fd2 < fd0 and fd1 > fd2:
                 # stationary point is egal to minimum of fitted parabola
