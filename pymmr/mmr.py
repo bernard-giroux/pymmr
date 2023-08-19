@@ -67,6 +67,13 @@ class GridMMR(GridDC):
         self.acq_checked = False
         self._xs = None
         self._xo = None
+        self.xs_u = None
+        self.xo_all = None
+        self.ind_back = None
+        self.ind_s = None
+        self.mask = None
+        self.nobs_xs = None
+        self.nobs_mmr = 0
 
     @property
     def in_inv(self):
@@ -98,8 +105,8 @@ class GridMMR(GridDC):
         else:
             raise ValueError('Size of source term must be nsrc x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) == False or \
-               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) == False:
+            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
                 raise ValueError('Source term outside grid')
         self._xs = tmp
         self.acq_checked = False
@@ -126,7 +133,7 @@ class GridMMR(GridDC):
             raise ValueError('Observation points should be nobs x 3')
         for ns in range(tmp.shape[0]):
             if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False:
-                    raise ValueError('Observation points outside grid')
+                raise ValueError('Observation points outside grid')
 #            if tmp[ns, 2] < self.zc[0]:
 #                tmp[ns, 2] = self.zc[0]
         self._xo = tmp
@@ -197,7 +204,7 @@ class GridMMR(GridDC):
         ----------
         name : `string` or `callable`
             If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
-            If `callable`: (iterative solver from scipy.sparse.linalg, eg bicgstab)
+            If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
         tol : float, optional
             Tolerance for the iterative solver
         max_it : int, optional
@@ -250,21 +257,6 @@ class GridMMR(GridDC):
         self.do_perm = do_perm
         self.comm = comm
 
-    def get_solver(self):
-        """Return parameters needed to instantiate Solver."""
-        if self.want_mumps:
-            return 'mumps', self.comm
-        elif self.want_pardiso:
-            return ('pardiso',)
-        elif self.want_pastix:
-            return ('pastix',)
-        elif self.want_superlu:
-            return ('superlu',)
-        elif self.want_umfpack:
-            return ('umfpack',)
-        else:
-            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
-
     def set_roi(self, roi):
         """Define region of interest for computing sensitivity or for inversion.
 
@@ -279,6 +271,7 @@ class GridMMR(GridDC):
         self.ind_roi = self.gdc.ind_roi
 
     def data_to_obs(self, data, field_data=True):
+        """Rearrange data for inversion."""
         if field_data:
             data = data[self.ind_s, :]
         else:
@@ -489,9 +482,10 @@ class GridMMR(GridDC):
 
         J = sp.hstack((Jx.T, Jy.T, Jz.T))
 
-        ind_earth = np.r_[self.ind(np.arange(self.nx-1), np.arange(self.ny), np.where(self.zc>0), 'fx'),
-                          self.nfx+self.ind(np.arange(self.nx), np.arange(self.ny-1), np.where(self.zc>0), 'fy'),
-                          self.nfx+self.nfy+self.ind(np.arange(self.nx), np.arange(self.ny), np.where(self.z[1:-1]>0), 'fz')]
+        ind_earth = np.r_[self.ind(np.arange(self.nx-1), np.arange(self.ny), np.where(self.zc > 0), 'fx'),
+                          self.nfx+self.ind(np.arange(self.nx), np.arange(self.ny-1), np.where(self.zc > 0), 'fy'),
+                          self.nfx+self.nfy+self.ind(np.arange(self.nx), np.arange(self.ny),
+                                                     np.where(self.z[1:-1] > 0), 'fz')]
 
         q = self.solver_A.solve(J)
         q = q[ind_earth, :]
