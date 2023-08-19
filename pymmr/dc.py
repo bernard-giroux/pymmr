@@ -283,7 +283,7 @@ class GridDC(GridFV):
             Calculate sensitivity matrix.
         q : array_like
             Source term (used for MMR modelling).
-        cs : scalar or arraylike
+        cs : scalar or array_like
             Current at injection points, 1 A by default.
         keep_solver : bool
             not used, included for compatibility

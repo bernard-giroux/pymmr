@@ -30,7 +30,6 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import bicgstab, spsolve, use_solver, factorized
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 
-import h5py
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 
@@ -188,7 +187,7 @@ class GridFV:
         self.z = z
         self.solver = bicgstab
         self.tol = 1e-9
-        self.maxit = 1000
+        self.max_it = 1000
         self._want_pardiso = False
         self._want_pastix = False
         self.want_superlu = False
@@ -1210,7 +1209,7 @@ class GridFV:
         else:
             return vtk_to_numpy(data)
 
-    def set_solver(self, name, tol=1e-9, maxit=1000, precon=False, do_perm=False, comm=None):
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
         """Define solver to be used during forward modelling.
 
         Parameters
@@ -1220,7 +1219,7 @@ class GridFV:
             If `callable`: (iterative solver from scipy.sparse.linalg, eg bicgstab)
         tol : float, optional
             Tolerance for the iterative solver
-        maxit : int, optional
+        max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : bool, optional
             Apply preconditionning.
@@ -1236,7 +1235,7 @@ class GridFV:
         if callable(name):
             self.solver = name
             self.tol = tol
-            self.maxit = maxit
+            self.max_it = max_it
             self.want_pardiso = False
             self.want_pastix = False
             self.want_superlu = False
@@ -1291,7 +1290,7 @@ class GridFV:
         elif self.want_umfpack:
             return ('umfpack',)
         else:
-            return self.solver, self.tol, self.maxit, self.precon, self.do_perm
+            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
             
     @property
     def want_pardiso(self):
@@ -1358,7 +1357,7 @@ class GridFV:
             print('    Solver: MUMPS')
         else:
             print('    Solver: '+self.solver.__name__)
-            print('      maxit: '+str(self.maxit))
+            print('      max_it: '+str(self.max_it))
             print('      tolerance: '+str(self.tol))
         if self.do_perm:
             print('    Inverse Cuthill-McKee Permutation: used')
@@ -1406,7 +1405,7 @@ class Solver:
 
             slv = solver[0]
             self.tol = solver[1]
-            maxit = solver[2]
+            max_it = solver[2]
             self.precon = solver[3]
             self.do_perm = solver[4]
             
@@ -1437,7 +1436,7 @@ class Solver:
                 if self.verbose:
                     print('done.')
 
-            self.solver = lambda A, b : slv(A, b, x0=self.x0, tol=self.tol, maxiter=maxit, M=self.Mpre)
+            self.solver = lambda A, b : slv(A, b, x0=self.x0, tol=self.tol, max_iter=max_it, M=self.Mpre)
         elif solver[0] == 'mumps':
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=solver[1])
             self.ctx.set_icntl(4, 1)  # print only error messages
