@@ -938,7 +938,7 @@ class GridDC(GridFV):
         u_r = self.u[:, c1c2.shape[0] + self.ind_p1[n]] - self.u[:, c1c2.shape[0] + self.ind_p2[n]]
         Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
-        tmp = A @ self.G @ u_r
+        tmp = -A @ self.G @ u_r
         return tmp[self.ind_roi], n
 
     def __getstate__(self):
