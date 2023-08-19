@@ -10,6 +10,7 @@ from collections import namedtuple
 import warnings
 
 import numpy as np
+import scipy.sparse as sp
 import matplotlib.pyplot as plt
 
 
@@ -457,8 +458,19 @@ class Inversion:
                 ax[4].plot(d), ax[4].set_title('d')
                 ax[5].plot(dobs-d), ax[5].set_title('dobs-d')
                 ax[6].plot(xt-m_ref[m_active]), ax[6].set_title('xt-mref')
+
+                ax[7].text(0.2, 0.75, 'RMS = {0:g}'.format(rms[-1]))
+                ax[7].text(0.2, 0.60, '$\\beta$ = {0:g}'.format(beta))
+                ax[7].text(0.2, 0.45, '$\|J\|$ = {0:g}'.format(np.linalg.norm(J)))
+                ax[7].text(0.2, 0.30, '$\|WTW\|$ = {0:g}'.format(sp.linalg.norm(WTW)))
+                ax[7].text(0.2, 0.15, '$\|D\|$ = {0:g}'.format(sp.linalg.norm(D)))
+                ax[7].axis('off')
+                ax[8].axis('off')
+
+                fig.suptitle(f'Iteration {i+1}')
                 fig.tight_layout()
                 plt.show(block=False)
+                plt.pause(0.1)
             if self.verbose:
                 print('done.\n      err = {0:e}, iter = {1:d}'.format(err, iter1))
 
