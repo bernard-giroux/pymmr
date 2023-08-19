@@ -1,5 +1,6 @@
 import sys
 import numpy as np
+import matplotlib.pyplot as plt
 
 sys.path.append('/Users/giroux/GitHub/pymmr')
 sys.path.append('/Users/giroux/GitHub/pymumps')
@@ -33,6 +34,7 @@ c1c2 = np.array([[-600.0, 0.0, 0.0, 600.0, 0.0, 0.0],
                  [0.0, -600.0, 0.0, 0.0, 600.0, 0.0]])
 X = np.linspace(-400, 400, 26)
 Y = np.linspace(-400, 400, 26)
+z_bh = np.linspace(20, 600, 10)
 
 p1p2 = []
 for y in Y:
@@ -45,7 +47,23 @@ for x in X:
         p1p2.append((x, Y[ny], 0.0, x, Y[ny+1], 0.0))
     for ny in range(len(Y)-2):
         p1p2.append((x, Y[ny], 0.0, x, Y[ny+2], 0.0))
+
+X = (-300.0, 300.0)
+# downhole
+for x in X:
+    for y in X:
+        for nz in range(len(z_bh)-1):
+            p1p2.append((x, y, z_bh[nz], x, y, z_bh[nz+1]))
+        for nz in range(len(z_bh)-2):
+            p1p2.append((x, y, z_bh[nz], x, y, z_bh[nz+2]))
+# crosshole
+for nz in range(len(z_bh)):
+    p1p2.append((X[0], 0.0, z_bh[nz], X[1], 0.0, z_bh[nz]))
+for nz in range(len(z_bh)):
+    p1p2.append((0.0, X[0], z_bh[nz], 0.0, X[1], z_bh[nz]))
+
 p1p2 = np.array(p1p2)
+
 tmp = np.kron(c1c2, np.ones((p1p2.shape[0], 1)))
 p1p2 = np.kron(np.ones((c1c2.shape[0], 1)), p1p2)
 c1c2 = tmp
@@ -54,7 +72,7 @@ c1c2 = tmp
 mask = np.ones((c1c2.shape[0],), dtype=bool)
 mask[50:60] = False
 mask[2000:2100] = False
-mask[-1] = False
+mask[-30:] = False
 c1c2 = c1c2[mask, :]
 p1p2 = p1p2[mask, :]
 
@@ -74,16 +92,16 @@ m_ref = 0.001 + np.zeros((g.nc,))
 data_ert = DataERT(c1c2=c1c2, p1p2=p1p2, data=data, wt=np.ones((data.shape[0],)))
 
 inv = Inversion()
-inv.max_it = 3
-inv.beta = 2500
-inv.beta_min = 100
-inv.beta_dw = 1.5
+inv.max_it = 5
+inv.beta = 1
+inv.beta_min = 0.01
+inv.beta_dw = 1.0
 #inv.smooth_type = 'blocky'
 inv.show_plots = True
 
 g.verbose = False
 results = inv.run(g, m_ref, data_ert=data_ert, m_active=g.ind_roi)
-S_save3, data_inv3, rms3 = results
+S_save, data_inv, rms = results
 g.verbose = True
 
 x, y, z = g.get_roi_nodes()
@@ -91,8 +109,17 @@ g2 = GridFV(x, y, z)
 
 fields = {}
 
-for i in range(len(S_save3)):
-    name = 'inv - iteration {0:d}'.format(i+1)
-    fields[name] = S_save3[i]
+for i in range(len(S_save)):
+    name = 'dc - iteration {0:d}'.format(i+1)
+    fields[name] = S_save[i]
 
-g2.toVTK(fields, 'dc_surface')
+g2.toVTK(fields, 'example_dc')
+
+
+# %%
+
+plt.figure()
+plt.bar(np.arange(1, 1+len(rms)), rms)
+plt.xlabel('Iteration')
+plt.title('Misfit')
+plt.show()

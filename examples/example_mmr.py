@@ -82,6 +82,7 @@ data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs, wt=np.ones((3*dobs.shape[0],)))
 
 # %%
 inv = Inversion()
+inv.max_it = 5
 inv.beta = 2500
 inv.beta_min = 100
 inv.show_plots = True
@@ -93,7 +94,7 @@ g.verbose = False
 
 results = inv.run(g, m_ref, data_mmr=data_mmr, m_active=g.ind_roi)
 
-S_save, rms, data_inv = results
+S_save, data_inv, rms = results
 
 x, y, z = g.gdc.get_roi_nodes()
 g2 = GridFV(x, y, z)
@@ -103,4 +104,13 @@ for i in range(len(S_save)):
     name = "iteration {0:d}".format(i + 1)
     fields[name] = S_save[i]
 
-g2.toVTK(fields, "mmr_surface")
+g2.toVTK(fields, "example_mmr")
+
+
+# %%
+
+plt.figure()
+plt.bar(np.arange(1, 1+len(rms)), rms)
+plt.xlabel('Iteration')
+plt.title('Misfit')
+plt.show()

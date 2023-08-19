@@ -34,7 +34,7 @@ data_ert = DataERT(c1c2=tmp[:, :6], p1p2=tmp[:, 6:12], data=1000*tmp[:, 12], wt=
 
 # %%
 inv = Inversion()
-inv.max_it = 3
+inv.max_it = 5
 inv.beta = 2500
 inv.beta_min = 100
 inv.show_plots = True
@@ -45,7 +45,7 @@ g.set_roi([-400, 400, -400, 400, 0, 960])
 
 results = inv.run(g, data_mmr=data_mmr, m_ref=m_ref, data_ert=data_ert, m_active=g.ind_roi)
 
-S_save, rms, data_inv = results
+S_save, data_inv, rms = results
 
 x, y, z = g.gdc.get_roi_nodes()
 g2 = GridFV(x, y, z)
@@ -55,4 +55,13 @@ for i in range(len(S_save)):
     name = 'iteration {0:d}'.format(i+1)
     fields[name] = S_save[i]
 
-g2.toVTK(fields, 'joint')
+g2.toVTK(fields, 'example_joint')
+
+
+# %%
+
+plt.figure()
+plt.bar(np.arange(1, 1+len(rms)), rms)
+plt.xlabel('Iteration')
+plt.title('Misfit')
+plt.show()
