@@ -24,13 +24,8 @@ import re
 import sys
 import warnings
 
-from multiprocessing import Pool
-
 import numpy as np
-import matplotlib.pyplot as plt
 import scipy.sparse as sp
-from scipy.sparse.linalg import spsolve
-from scipy.sparse.csgraph import reverse_cuthill_mckee
 from scipy.stats.mstats import gmean
 
 try:
@@ -49,8 +44,7 @@ except ImportError:
             return wrapper_jit
         return decorator_jit
 
-from pymmr.finite_volume import GridFV, Solver, calc_padding, \
-    build_from_vtk
+from pymmr.finite_volume import GridFV, Solver, build_from_vtk
 
 # TODO: généraliser ROI pour voxels arbitraires
 # TODO: ajouter le courant à c1c2 plutôt qu'entrer à part
@@ -63,7 +57,7 @@ def all(a):
     return a.sum() == a.size
 
 
-def sortrows(a, sortback=False):
+def sortrows(a, sort_back=False):
     """
     Sort rows of 2D array
 
@@ -71,8 +65,8 @@ def sortrows(a, sortback=False):
     ----------
     a : 2D ndarray
         Array to process.
-    sortback : bool, optional
-        Returns array of indices to sortback. For this to work, all rows in
+    sort_back : bool, optional
+        Returns array of indices to sort_back. For this to work, all rows in
         input array must be different.
 
     Returns
@@ -80,13 +74,13 @@ def sortrows(a, sortback=False):
     b : 2D ndarray
         sorted array.
     ind_back : 1D ndarray
-        array of indices (if sortback is True)
+        array of indices (if sort_back is True)
 
     """
     tmp, cnt = np.unique(a, axis=0, return_counts=True)
-    if sortback:
+    if sort_back:
         if tmp.shape != a.shape:
-            raise ValueError('All rows must be different when sortback is True')
+            raise ValueError('All rows must be different when sort_back is True')
         ind_back = np.empty((a.shape[0],), dtype=int)
         for n1 in np.arange(a.shape[0]):
             for n2 in np.arange(tmp.shape[0]):
@@ -106,14 +100,16 @@ class GridDC(GridFV):
     Parameters
     ----------
     x : array of float
-        Node coordinates along x
+        Node coordinates along x (m)
     y : array of float
-        Node coordinates along y
+        Node coordinates along y (m)
     z : array of float
-        Node coordinates along z
+        Node coordinates along z (m)
+    comm : MPI Communicator or None
+        If None, use MPI_COMM_WORLD
     """
-    def __init__(self, x, y, z):
-        GridFV.__init__(self, x, y, z)
+    def __init__(self, x, y, z, comm=None):
+        GridFV.__init__(self, x, y, z, comm)
         self._c1c2 = None
         self._cs = None
         self._p1p2 = None
@@ -128,15 +124,17 @@ class GridDC(GridFV):
                                # sensitivity
         self.sort_electrodes = True
         self.electrodes_sorted = False
-        self.sortback = None
+        self.sort_back = None
         self.verbose = True
         self.roi = None
         self.ind_roi = np.arange(self.nc)
         self.in_inv = False    # set to True when grid is used in inversion
+        self.c1c2_u = None
+        self.cs12_u = None
 
     @property
     def c1c2(self):
-        """Coordinates of injection points."""
+        """Coordinates of injection points (m)."""
         return self._c1c2
 
     @c1c2.setter
@@ -155,11 +153,12 @@ class GridDC(GridFV):
         else:
             raise ValueError('Size of source term must be nsrc x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) == False or \
-               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) == False:
+            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
                 raise ValueError('Source term outside grid')
         self._c1c2 = tmp
         self.electrodes_sorted = False
+        self.Q = None  # reset interpolation matrix because electrodes will be sorted
 
     @property
     def cs(self):
@@ -172,7 +171,7 @@ class GridDC(GridFV):
 
     @property
     def p1p2(self):
-        """Coordinates of measurement points."""
+        """Coordinates of measurement points (m)."""
         return self._p1p2
 
     @p1p2.setter
@@ -194,14 +193,16 @@ class GridDC(GridFV):
         else:
             raise ValueError('Measurement points should be nobs x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) == False or \
-                (self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) == False
+            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+                (self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False
                  and not np.any(tmp[ns, 3:] == np.inf)):
                     raise ValueError('Measurement point outside grid')
         self._p1p2 = tmp
         self.electrodes_sorted = False
+        self.Q = None  # reset interpolation matrix because electrodes will be sorted
 
     def check_cs(self):
+        """Verify validity of current source intensity."""
         if self._cs is None:
             raise ValueError('Current source undefined')
         if self.c1c2 is not None:
@@ -283,7 +284,7 @@ class GridDC(GridFV):
             Calculate sensitivity matrix.
         q : array_like
             Source term (used for MMR modelling).
-        cs : scalar or arraylike
+        cs : scalar or array_like
             Current at injection points, 1 A by default.
         keep_solver : bool
             not used, included for compatibility
@@ -295,9 +296,9 @@ class GridDC(GridFV):
 
         Returns
         -------
-        - Voltage at dipoles `p1p2` (V)
+        - Voltage at dipoles `p1p2` (mV)
         - Current density `calc_J` if True,
-        - Sensitivity matrix if `calc_sens` is True.
+        - Sensitivity matrix if `calc_sens` is True.   ( mV / S/m )
 
         Notes
         -----
@@ -307,7 +308,7 @@ class GridDC(GridFV):
 
         - It is possible do the computation for poles or dipoles at
         injection and/or measurement points.  In the case of a pole, one of
-        the coordonate must be set to np.inf.
+        the coordinate must be set to np.inf.
 
         - Sensitivity calculation currently implemented only for current
         intensity equal at all injection points.
@@ -323,16 +324,12 @@ class GridDC(GridFV):
             print('\nForward modelling - DC resistivity')
             self.print_info()
             if c1c2 is not None:
-                print('    {0:d} combination of dipoles'.format(c1c2.shape[0]))
+                print('    {0:d} combinations of dipoles'.format(c1c2.shape[0]))
             self.print_solver_info()
             if self.apply_bc:
                 print('    Correction at boundary: applied')
             else:
                 print('    Correction at boundary: not applied')
-
-        if self.in_inv and calc_sens:
-            self.electrodes_sorted = False
-            self.Q = None
 
         self.cs = cs
 
@@ -397,7 +394,7 @@ class GridDC(GridFV):
         if self.p1p2 is None:
             data = None
         else:
-            data = self._get_data()
+            data = 1.e3 * self._get_data()  # to get mV
 
         if calc_sens:
             if self.verbose:
@@ -434,17 +431,12 @@ class GridDC(GridFV):
 
                 sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S)
 
-            if self.sort_electrodes and self.sortback is not None:
-                sens = sens[:, self.sortback]
+            sens *= 1.e3   # we want mV for voltage units
+            if self.sort_electrodes and self.sort_back is not None:
+                sens = sens[:, self.sort_back]
 
             if self.verbose:
                 print('done.\nEnd of modelling.')
-
-            if self.in_inv:
-                # le prochain appel de la fonction sera vraisemblablement pour calc_sens == False
-                # et on doit alors reclasser les électrodes
-                self.electrodes_sorted = False
-                self.Q = None
 
             return data, sens
 
@@ -455,8 +447,8 @@ class GridDC(GridFV):
             for ns in range(self.q.shape[1]):
                 J[:, ns] = -M @ self.G @ self.u[:, ns]
 
-            if self.sort_electrodes and self.sortback is not None:
-                J = J[:, self.sortback]
+            if self.sort_electrodes and self.sort_back is not None:
+                J = J[:, self.sort_back]
 
             if self.verbose:
                 print('done.\nEnd of modelling.')
@@ -467,6 +459,8 @@ class GridDC(GridFV):
             return data
 
     def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
+        """Compute regularization matrix.
+        """
         # extract Gx, Gy & Gz from G
         Gx = self.G[:self.nfx, :]
         Gy = self.G[self.nfx:(self.nfx+self.nfy), :]
@@ -545,6 +539,87 @@ class GridDC(GridFV):
 
         return self.calc_WtW(Q, par, m_active, WGx, WGy, WGz), WGx, WGy, WGz
 
+    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
+        """Compute model weighting matrix.
+
+        Parameters
+        ----------
+        wt : array_like
+            Weight.
+        par :
+            Weighting parameters.
+        m_active : array_like
+            Cellules du modèles actives.
+        WGx : array_like
+            Poids de lissage des cellules en x.
+        WGy : array_like
+            Poids de lissage des cellules en y.
+        WGz : array_like
+            Poids de lissage des cellules en z.
+
+        Returns
+        -------
+        output : `csr_matrix`
+            Model weighting matrix.
+        """
+
+        # extract Gx, Gy & Gz from G
+        Gx = self.G[:self.nfx, :]
+        Gy = self.G[self.nfx:(self.nfx+self.nfy), :]
+        Gz = self.G[(self.nfx+self.nfy):, :]
+
+        if WGx is not None:
+            Gx = sp.diags(WGx.diagonal(), shape=(self.nfx, self.nfx), format='csr') @ Gx
+        if WGy is not None:
+            Gy = sp.diags(WGy.diagonal(), shape=(self.nfy, self.nfy), format='csr') @ Gy
+        if WGz is not None:
+            Gz = sp.diags(WGz.diagonal(), shape=(self.nfz, self.nfz), format='csr') @ Gz
+
+        Gs = sp.vstack((par.alx*Gx, par.aly*Gy, par.alz*Gz), format='csr')
+        V = sp.diags(np.ones((self.nc,)), format='csr')
+        Wt = sp.diags(wt, shape=(self.nc, self.nc), format='csr')
+
+        WtW = Wt.T @ (Gs.T @ Gs + par.als * V) @ Wt
+        WtW = WtW[m_active, :]
+        return WtW[:, m_active]
+
+    def calc_WdW(self, wt, dobs, par):
+        """Compute data weighting matrix.
+
+        Parameters
+        ----------
+        wt : array_like
+            Weight in %.
+        dobs : array_like
+            Observed data.
+        par :
+            Weighting parameters.
+        Returns
+        -------
+        output : `csr_matrix`
+            Data weighting matrix.
+        """
+        dtw = 0.01 * wt.flatten() * np.abs(dobs.flatten()) + par.e
+        dtw = 1. / dtw
+
+        # normalisation
+        dtw = dtw / dtw.max()
+
+        dtw[wt.flatten() > par.max_err] = 0.0
+
+        return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
+
+    def print_info(self, file=None):
+        print('    Grid: {0:d} x {1:d} x {2:d} voxels'.format(self.nx, self.ny, self.nz), file=file)
+        print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
+        print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
+        print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
+        if self.roi is not None:
+            print('    Region of interest:', file=file)
+            print('      X min: {0:e}\tX max: {1:e}'.format(self.roi[0], self.roi[1]), file=file)
+            print('      Y min: {0:e}\tY max: {1:e}'.format(self.roi[2], self.roi[3]), file=file)
+            print('      Z min: {0:e}\tZ max: {1:e}'.format(self.roi[4], self.roi[5]), file=file)
+
     def _build_A(self, sigma):
         # Build LHS matrix
         M = self.build_M(sigma)
@@ -586,7 +661,7 @@ class GridDC(GridFV):
             if self.cs is None:
                 warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
                 self.cs = np.ones((c1c2.shape[0],))
-            cs = self.cs
+            cs = self.cs12_u
         else:
             c1c2 = np.vstack((self.c12_u, self.p12_u))
             # make sure electrodes are at least at the depth of the first cell center
@@ -620,7 +695,7 @@ class GridDC(GridFV):
             if self.cs is None:
                 warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
                 self.cs = np.ones((c1c2.shape[0],))
-            cs = self.cs
+            cs = self.cs12_u
         else:
             c1c2 = np.vstack((self.c12_u, self.p12_u))
             # keep track of electrodes below the surface
@@ -698,89 +773,59 @@ class GridDC(GridFV):
 
         self.q = sp.csr_matrix(A @ self.u0)
 
-    def _sort_electrodes(self, data=None):
+    def _sort_electrodes(self):
 
         if self.verbose:
             print('  Sorting electrodes ...')
-            
-        if data is not None:
-            # données d'inversion en entrée
-            dobs, d_et = data
-            self.sortback = None  # on s'assure de ne pas reclasser
-            self.c1c2_u, ind, cnt = np.unique(self.c1c2, axis=0,
-                                              return_index=True,
-                                              return_counts=True)
-            self.n_c1c2_u = self.c1c2_u.shape[0]
-            self.cs_u = self.cs[ind]
-            
-            self.ind_c1c2 = np.repeat(np.arange(ind.size), cnt, axis=0)  # différent du cas sans data car on classe p1p2 ici
-            
-            ind2 = np.repeat(ind, cnt, axis=0)
-            for i in ind:
-                ii, = np.where(i == ind2)
-                ind2[ii] = i + np.arange(ii.size)
-            
-            self.p1p2 = self.p1p2[ind2, :]
-            dobs = dobs[ind2]
-            d_et = d_et[ind2]
-            
-            if self.verbose:
-                print('    Detected {0:d} injection dipole(s)'.format(self.n_c1c2_u))
-            
-            return dobs, d_et
         
         if self.p1p2 is not None:
             if self.c1c2.shape[0] != self.p1p2.shape[0]:
                 raise ValueError('Number of injection and measurement dipoles must be equal.')
 
             nc = self.c1c2.shape[1]
-            tmp, self.sortback = sortrows(np.hstack((self.c1c2, self.p1p2)), sortback=True)
+            tmp, self.sort_back = sortrows(np.hstack((self.c1c2, self.p1p2)), sort_back=True)
             self.c1c2 = tmp[:, :nc]
             self.p1p2 = tmp[:, nc:]
 
         else:
-            self.c1c2, self.sortback = sortrows(self.c1c2, sortback=True)
+            self.c1c2, self.sort_back = sortrows(self.c1c2, sort_back=True)
 
         if self.cs is None:
             warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
             self.cs = np.ones((self.c1c2.shape[0],))
 
         # dipoles d'injection
-        if self.keep_c1c2:
-            self.c1c2_u, ind, self.ind_c1c2 = np.unique(self.c1c2, axis=0,
-                                                        return_index=True,
-                                                        return_inverse=True)
-            self.n_c1c2_u = self.c1c2_u.shape[0]
-            self.cs_u = self.cs[ind]
-        else:
-            c1c2_u, ind, self.ind_c1c2 = np.unique(self.c1c2, axis=0, return_index=True, return_inverse=True)
-            # nombre initial de dipoles
-            self.n_c1c2_u = c1c2_u.shape[0]
 
-            c12 = np.vstack((self.c1c2[:, :3], self.c1c2[:, 3:]))
-            self.c12_u = np.unique(c12, axis=0)
-            self.ind_c1 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
-            self.ind_c2 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
-            self.cs_u = np.empty((self.c12_u.shape[0],))
-            for n1 in range(self.c1c2.shape[0]):
-                for n2 in range(self.c12_u.shape[0]):
-                    if all(self.c12_u[n2, :3] == self.c1c2[n1, :3]):
-                        self.ind_c1[n1] = n2
-                        self.cs_u[n2] = self.cs[n1]
-                    if all(self.c12_u[n2, :3] == self.c1c2[n1, 3:]):
-                        self.ind_c2[n1] = n2
-                        self.cs_u[n2] = self.cs[n1]
+        self.c1c2_u, ind, self.ind_c1c2 = np.unique(self.c1c2, axis=0,
+                                                    return_index=True,
+                                                    return_inverse=True)
+        self.n_c1c2_u = self.c1c2_u.shape[0]
+        self.cs12_u = self.cs[ind]
 
-            self.ind_c1_u = np.empty((c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
-            self.ind_c2_u = np.empty((c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
-            for n1 in range(c1c2_u.shape[0]):
-                for n2 in range(self.c12_u.shape[0]):
-                    if all(self.c12_u[n2, :] == c1c2_u[n1, :3]):
-                        self.ind_c1_u[n1] = n2
-                    if all(self.c12_u[n2, :] == c1c2_u[n1, 3:]):
-                        self.ind_c2_u[n1] = n2
+        c12 = np.vstack((self.c1c2[:, :3], self.c1c2[:, 3:]))
+        self.c12_u = np.unique(c12, axis=0)
+        self.ind_c1 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
+        self.ind_c2 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
+        self.cs_u = np.empty((self.c12_u.shape[0],))
+        for n1 in range(self.c1c2.shape[0]):
+            for n2 in range(self.c12_u.shape[0]):
+                if all(self.c12_u[n2, :3] == self.c1c2[n1, :3]):
+                    self.ind_c1[n1] = n2
+                    self.cs_u[n2] = self.cs[n1]
+                if all(self.c12_u[n2, :3] == self.c1c2[n1, 3:]):
+                    self.ind_c2[n1] = n2
+                    self.cs_u[n2] = self.cs[n1]
 
-            self.c12_u = self.c12_u[:, :3]
+        self.ind_c1_u = np.empty((self.c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
+        self.ind_c2_u = np.empty((self.c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
+        for n1 in range(self.c1c2_u.shape[0]):
+            for n2 in range(self.c12_u.shape[0]):
+                if all(self.c12_u[n2, :] == self.c1c2_u[n1, :3]):
+                    self.ind_c1_u[n1] = n2
+                if all(self.c12_u[n2, :] == self.c1c2_u[n1, 3:]):
+                    self.ind_c2_u[n1] = n2
+
+        self.c12_u = self.c12_u[:, :3]
     
         if self.verbose:
             print('    Detected {0:d} injection dipole(s)'.format(self.n_c1c2_u))
@@ -823,8 +868,8 @@ class GridDC(GridFV):
             for ns in range(self.n_c1c2_u):
                 uu = u[:, self.ind_c1_u[ns]] - u[:, self.ind_c2_u[ns]]
                 data = np.r_[data, self.Q[ns] @ uu]
-        if self.sort_electrodes and self.sortback is not None:
-            data = data[self.sortback]
+        if self.sort_electrodes and self.sort_back is not None:
+            data = data[self.sort_back]
         return data
 
     def _get_u(self, d):
@@ -841,76 +886,6 @@ class GridDC(GridFV):
             else:
                 u = np.c_[u, Q[ind, :].T @ d[ind]]
         return sp.csr_matrix(u)
-
-    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
-        """Compute model weighting matrix.
-
-        Parameters
-        ----------
-        wt : array_like
-            Weight.
-        par : 
-            Weighting parameters.
-        m_active : array_like
-            Cellules du modèles actives.
-        WGx : array_like
-            Poids de lissage des cellules en x.
-        WGy : array_like
-            Poids de lissage des cellules en y.
-        WGz : array_like
-            Poids de lissage des cellules en z.
-
-        Returns
-        -------
-        output : `csr_matrix`
-            Model weighting matrix.
-        """
-
-        # extract Gx, Gy & Gz from G
-        Gx = self.G[:self.nfx, :]
-        Gy = self.G[self.nfx:(self.nfx+self.nfy), :]
-        Gz = self.G[(self.nfx+self.nfy):, :]
-        
-        if WGx is not None:
-            Gx = sp.diags(WGx.diagonal(), shape=(self.nfx, self.nfx), format='csr') @ Gx
-        if WGy is not None:
-            Gy = sp.diags(WGy.diagonal(), shape=(self.nfy, self.nfy), format='csr') @ Gy
-        if WGz is not None:
-            Gz = sp.diags(WGz.diagonal(), shape=(self.nfz, self.nfz), format='csr') @ Gz
-
-        Gs = sp.vstack((par.alx*Gx, par.aly*Gy, par.alz*Gz), format='csr')
-        V = sp.diags(np.ones((self.nc,)), format='csr')
-        Wt = sp.diags(wt, shape=(self.nc, self.nc), format='csr')
-
-        WtW = Wt.T @ (Gs.T @ Gs + par.als * V) @ Wt
-        WtW = WtW[m_active, :]
-        return WtW[:, m_active]
-
-    def calc_WdW(self, wt, dobs, par):
-        """Compute data weighting matrix.
-
-        Parameters
-        ----------
-        wt : array_like
-            Weight in %.
-        dobs : array_like
-            Observed data.
-        par : 
-            Weighting parameters.
-        Returns
-        -------
-        output : `csr_matrix`
-            Data weighting matrix.
-        """
-        dtw = 0.01 * wt.flatten() * np.abs(dobs.flatten()) + par.e
-        dtw = 1. / dtw
-
-        # normalisation
-        dtw = dtw / dtw.max()
-
-        dtw[wt.flatten() > par.max_err] = 0.0
-
-        return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
 
     def _calc_Gv(self, m, m_ref, m_active, u, v):
 
@@ -963,19 +938,8 @@ class GridDC(GridFV):
         u_r = self.u[:, c1c2.shape[0] + self.ind_p1[n]] - self.u[:, c1c2.shape[0] + self.ind_p2[n]]
         Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
-        tmp = A @ self.G @ u_r
+        tmp = -A @ self.G @ u_r
         return tmp[self.ind_roi], n
-
-    def print_info(self, file=None):
-        print('    Grid: {0:d} x {1:d} x {2:d} voxels'.format(self.nx, self.ny, self.nz), file=file)
-        print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
-        print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
-        print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
-        if self.roi is not None:
-            print('    Region of interest:', file=file)
-            print('      X min: {0:e}\tX max: {1:e}'.format(self.roi[0], self.roi[1]), file=file)
-            print('      Y min: {0:e}\tY max: {1:e}'.format(self.roi[2], self.roi[3]), file=file)
-            print('      Z min: {0:e}\tZ max: {1:e}'.format(self.roi[4], self.roi[5]), file=file)
 
     def __getstate__(self):
         self.solver_A = None   # some solvers have attributes that are not picklable
@@ -1170,7 +1134,7 @@ if __name__ == '__main__':
         c1c2 = None
         xo = None
         solver_name = 'umfpack'
-        maxit = 1000
+        max_it = 1000
         tol = 1e-9
         verbose = True
         calc_J = False
@@ -1202,8 +1166,8 @@ if __name__ == '__main__':
                             solver_name = getattr(mod, value)
                         else:
                             solver_name = value
-                    elif 'solver' in keyword and 'maxit' in keyword:
-                        maxit = int(value)
+                    elif 'solver' in keyword and 'max_it' in keyword:
+                        max_it = int(value)
                     elif 'solver' in keyword and 'tolerance' in keyword:
                         tol = float(value)
                     elif 'precon' in keyword:
@@ -1233,7 +1197,7 @@ if __name__ == '__main__':
         if g is None:
             raise RuntimeError('Grid not defined, check input parameters')
             
-        g.set_solver(solver_name, tol, maxit, precon, do_perm)
+        g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
         g.verbose = verbose
         g.apply_bc = apply_bc

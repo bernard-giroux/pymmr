@@ -32,7 +32,6 @@ import sys
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.sparse.csgraph import reverse_cuthill_mckee
 
 from pymmr.dc import GridDC
 from pymmr.finite_volume import calc_padding, build_from_vtk, GridFV, Solver
@@ -41,16 +40,18 @@ from pymmr.finite_volume import calc_padding, build_from_vtk, GridFV, Solver
 # %% class GridMMR
 
 class GridMMR(GridDC):
-    """Grid for magnetometric resistivity modellling.
+    """Grid for magnetometric resistivity modelling.
 
     Parameters
     ----------
-        x : array of float
-            Node coordinates along x
-        y : array of float
-            Node coordinates along y
-        z : array of float
-            Node coordinates along z
+    x : array of float
+        Node coordinates along x (m)
+    y : array of float
+        Node coordinates along y (m)
+    z : array of float
+        Node coordinates along z (m)
+    comm : MPI Communicator or None
+        If None, use MPI_COMM_WORLD
 
     Notes
     -----
@@ -58,9 +59,9 @@ class GridMMR(GridDC):
     dipoles that are different from the source term defined for MMR modeling.
     This has been implemented for allowing joint inversion of MMR & ERT data.
     """
-    def __init__(self, x, y, z):
-        GridDC.__init__(self, x, y, z)
-        self.gdc = GridDC(x, y, z)
+    def __init__(self, x, y, z, comm=None):
+        GridDC.__init__(self, x, y, z, comm)
+        self.gdc = GridDC(x, y, z, comm)
         self.gdc.verbose = False
         self.solver_A = None
         self.acq_checked = False
@@ -78,7 +79,7 @@ class GridMMR(GridDC):
 
     @property
     def xs(self):
-        """Coordinates of injection points for MMR modelling."""
+        """Coordinates of injection points for MMR modelling (m)."""
         return self._xs
 
     @xs.setter
@@ -105,7 +106,7 @@ class GridMMR(GridDC):
 
     @property
     def xo(self):
-        """Coordinates of measurement points."""
+        """Coordinates of measurement points (m)."""
         return self._xo
 
     @xo.setter
@@ -133,7 +134,7 @@ class GridMMR(GridDC):
 
     @property
     def c1c2(self):
-        """Coordinates of injection points for DC resistivity modelling."""
+        """Coordinates of injection points for DC resistivity modelling (m)."""
         return self.gdc.c1c2
 
     @c1c2.setter
@@ -142,7 +143,7 @@ class GridMMR(GridDC):
 
     @property
     def p1p2(self):
-        """Coordinates of measurement points for DC resistivity modelling."""
+        """Coordinates of measurement points for DC resistivity modelling (m)."""
         return self.gdc.p1p2
 
     @p1p2.setter
@@ -150,6 +151,7 @@ class GridMMR(GridDC):
         self.gdc.p1p2 = val
 
     def check_acquisition(self):
+        """Check consistency of `xs` and `xo`."""
         if self.xs.shape[0] == self.xo.shape[0]:
             # on a des paires dipoles injection - pts de mesure
             self.xs_u = np.unique(self.xs, axis=0)
@@ -188,15 +190,8 @@ class GridMMR(GridDC):
         self.nobs_mmr = np.sum(self.nobs_xs)
         self.acq_checked = True
 
-    def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
-        # add air layers
-        dz_air = calc_padding(self.gdc.hz[0], n_cells=n_crois_cells, factor=factor)
-        dz_air = np.r_[self.hz[0]+np.zeros((n_const_cells,)), dz_air]
-        z_air = np.cumsum(dz_air)
-        self.z = np.r_[self.gdc.z[0] - z_air[::-1], self.gdc.z]
-
-    def set_solver(self, name, tol=1e-9, maxit=1000, precon=False, do_perm=False, comm=None):
-        """Define solver to be used during forward modelling.
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
+        """Define parameters of solver to be used during forward modelling.
 
         Parameters
         ----------
@@ -205,7 +200,7 @@ class GridMMR(GridDC):
             If `callable`: (iterative solver from scipy.sparse.linalg, eg bicgstab)
         tol : float, optional
             Tolerance for the iterative solver
-        maxit : int, optional
+        max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : bool, optional
             Apply preconditionning.
@@ -219,11 +214,11 @@ class GridMMR(GridDC):
         `precon` et `do_perm` are used only with iterative solvers.
 
         """
-        self.gdc.set_solver(name, tol, maxit, precon, do_perm, comm)
+        self.gdc.set_solver(name, tol, max_it, precon, do_perm, comm)
         if callable(name):
             self.solver = name
             self.tol = tol
-            self.maxit = maxit
+            self.max_it = max_it
             self.want_pardiso = False
             self.want_superlu = False
             self.want_umfpack = False
@@ -256,6 +251,7 @@ class GridMMR(GridDC):
         self.comm = comm
 
     def get_solver(self):
+        """Return parameters needed to instantiate Solver."""
         if self.want_mumps:
             return 'mumps', self.comm
         elif self.want_pardiso:
@@ -267,10 +263,10 @@ class GridMMR(GridDC):
         elif self.want_umfpack:
             return ('umfpack',)
         else:
-            return self.solver, self.tol, self.maxit, self.precon, self.do_perm
+            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
 
     def set_roi(self, roi):
-        """Define region of interest for computing sentivivity or for inversion.
+        """Define region of interest for computing sensitivity or for inversion.
 
         Parameters
         ----------
@@ -282,6 +278,19 @@ class GridMMR(GridDC):
         self.gdc.set_roi(roi)
         self.ind_roi = self.gdc.ind_roi
 
+    def data_to_obs(self, data, field_data=True):
+        if field_data:
+            data = data[self.ind_s, :]
+        else:
+            data = data[self.mask, :]
+        # on veut Bx, ensuite By et finalement Bz dans dobs, en séquence pour chaque src
+        d = data[:self.nobs_xs[0], :3].T.reshape(-1, 1)
+        i1 = self.nobs_xs[0]
+        for i in np.arange(1, self.xs_u.shape[0]):
+            d = np.r_[d, data[i1:i1+self.nobs_xs[i], :3].T.reshape(-1, 1)]
+            i1 += self.nobs_xs[i]
+        return d
+
     def fwd_mod(self, sigma, xs=None, xo=None, calc_sens=False, keep_solver=False, cs=1.0):
         """Forward modelling.
 
@@ -290,14 +299,14 @@ class GridMMR(GridDC):
         sigma : array_like
             Conductivity model (S/m).
         xs : array_like, optional
-            Coordinates of injection points.
+            Coordinates of injection points (m).
         xo : array_like, optional
-            Coordinates of measurement points.
+            Coordinates of measurement points (m).
         calc_sens : bool, optional
             Calculate sensitivity matrix.
         keep_solver : bool, optional
-            Use solver intantiated in a previous `fwd_mod` run.
-        cs : scalar or arraylike
+            Use solver instantiated in a previous `fwd_mod` run.
+        cs : scalar or array_like, optional
             Current intensity at injection points, 1 A by default.
 
         Returns
@@ -316,7 +325,7 @@ class GridMMR(GridDC):
         - Matrix A of the MMR system depends only on grid geometry, and it is
         thus not needed to build it at each run if the grid does not change.
         This is useful if a direct solver is used, matrix A must be factorized
-        only once.  Option `keep_solver` allos this, matrix A being factorized
+        only once.  Option `keep_solver` allows this, matrix A being factorized
         when the solver is instantiated.
         """
         if self.z.size == self.gdc.z.size:
@@ -340,13 +349,16 @@ class GridMMR(GridDC):
         if self.acq_checked is False:
             self.check_acquisition()
 
-        if self.in_inv:
-            c1c2_dc = copy.copy(self.gdc.c1c2)
-            p1p2_dc = copy.copy(self.gdc.p1p2)
-            if c1c2_dc is not None:
-                res_dc = self.gdc.fwd_mod(sigma, calc_sens=calc_sens)
+        if self.in_inv and self.gdc.c1c2 is not None:
+            res_dc = self.gdc.fwd_mod(sigma, calc_sens=calc_sens)
 
+        c1c2_u_save = copy.copy(self.gdc.c1c2_u)
+        cs12_u_save = copy.copy(self.gdc.cs12_u)
         self.gdc.c1c2_u = self.xs_u
+        if np.isscalar(cs):
+            self.gdc.cs12_u = cs + np.zeros((self.xs_u.shape[0],))
+        else:
+            self.gdc.cs12_u = cs
         self.gdc.sort_electrodes = False
 
         if self.verbose:
@@ -359,7 +371,7 @@ class GridMMR(GridDC):
         # get current density from forward DC modeling
         if self.verbose:
             print('  Compute current density ... ', end='', flush=True)
-        _, Jdc = self.gdc.fwd_mod(sigma, calc_J=True, cs=cs)
+        _, Jdc = self.gdc.fwd_mod(sigma, calc_J=True)
         u_dc = self.gdc.u.copy()
 
         if self.verbose:
@@ -379,7 +391,7 @@ class GridMMR(GridDC):
             q[(self.nfx+self.nfy-self.gdc.nfy):(self.nfx+self.nfy), i] = Jy[:, i]
             q[(self.nfx+self.nfy+self.nfz-self.gdc.nfz):, i] = Jz[:, i]
 
-        A = self.build_A()
+        A = self._build_A()
 
         if self.solver_A is None or keep_solver is False:
             self.solver_A = Solver(A, self.get_solver(), self.verbose)
@@ -408,31 +420,18 @@ class GridMMR(GridDC):
                 print('    Computing adjoint terms ... ', end='', flush=True)
 
             q = self._adj()
-
-            if np.any(np.isnan(q)):
-                print('nan in q')
-
             M = self.gdc.build_M(sigma)
-
             q_a = self.gdc.D @ M @ q
-            if np.any(np.isnan(q_a)):
-                print('nan in q_a')
             t = np.max(np.abs(q_a), axis=0)
             q_a /= np.tile(t, (q_a.shape[0], 1))
-            if np.any(np.isnan(q_a)):
-                print('nan in q_a (2)')
 
             if self.verbose:
                 print('    Solving DC adjoint problem ... ', end='', flush=True)
             self.gdc.fwd_mod(calc_J=False, q=q_a)
             if self.verbose:
                 print('done.')
-            if np.any(np.isnan(self.gdc.u)):
-                print('nan in gdc.u')
 
             q2 = self.gdc.u * np.tile(t, (self.gdc.u.shape[0], 1))
-            if np.any(np.isnan(q2)):
-                print('nan in q2')
 
             if self.verbose:
                 print('    Assembling matrices ... ', end='', flush=True)
@@ -444,6 +443,7 @@ class GridMMR(GridDC):
                 self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2)
 
             if self.in_inv is False:
+                # use order of observations
                 tmp = np.c_[self.ind_back, self.nobs_mmr+self.ind_back, 2*self.nobs_mmr+self.ind_back]
                 sens = sens[:, tmp]
 
@@ -453,21 +453,33 @@ class GridMMR(GridDC):
         if self.verbose:
             print('End of modelling.')
 
+        self.gdc.c1c2_u = c1c2_u_save
+        self.gdc.cs12_u = cs12_u_save
         if calc_sens:
-            if self.in_inv:
-                self.gdc.c1c2 = c1c2_dc
-                self.gdc.p1p2 = p1p2_dc
-                if c1c2_dc is not None:
-                    data = np.r_[data, 1.e3 * res_dc[0].reshape(-1, 1)]  # conversion de V à mV
-                    sens = np.c_[sens, 1.e3 * res_dc[1]]
+            if self.in_inv and self.gdc.c1c2 is not None:
+                data = np.r_[data, res_dc[0].reshape(-1, 1)]
+                sens = np.c_[sens, res_dc[1]]
             return data, sens
         else:
-            if self.in_inv:
-                self.gdc.c1c2 = c1c2_dc
-                self.gdc.p1p2 = p1p2_dc
-                if c1c2_dc is not None:
-                    data = np.r_[data, 1.e3 * res_dc.reshape(-1, 1)]
+            if self.in_inv and self.gdc.c1c2 is not None:
+                data = np.r_[data, res_dc.reshape(-1, 1)]
             return data
+
+    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
+        return self.gdc.calc_WtW(wt, par, m_active, WGx, WGy, WGz)
+
+    def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
+        return self.gdc.calc_reg(Q, par, xc, xref, WGx, WGy, WGz, m_active)
+
+    def distance_weighting(self, xo, beta):
+        return self.gdc.distance_weighting(xo, beta)
+
+    def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
+        # add air layers
+        dz_air = calc_padding(self.gdc.hz[0], n_cells=n_crois_cells, factor=factor)
+        dz_air = np.r_[self.hz[0]+np.zeros((n_const_cells,)), dz_air]
+        z_air = np.cumsum(dz_air)
+        self.z = np.r_[self.gdc.z[0] - z_air[::-1], self.gdc.z]
 
     def _adj(self):
         Qx, Qy, Qz = self.Q
@@ -485,7 +497,7 @@ class GridMMR(GridDC):
         q = q[ind_earth, :]
         return q
 
-    def build_A(self):
+    def _build_A(self):
         # average of permeability (scalar for now)
         M_e = M_c = 1. / (4.*np.pi*1e-7)   # ( mu_0 in H/m)
 
@@ -511,19 +523,6 @@ class GridMMR(GridDC):
         Qz = sp.vstack(Qz)
         return Qx, Qy, Qz
 
-    def data_to_obs(self, data, field_data=True):
-        if field_data:
-            data = data[self.ind_s, :]
-        else:
-            data = data[self.mask, :]
-        # on veut Bx, ensuite By et finalement Bz dans dobs, en séquence pour chaque src
-        d = data[:self.nobs_xs[0], :3].T.reshape(-1, 1)
-        i1 = self.nobs_xs[0]
-        for i in np.arange(1, self.xs_u.shape[0]):
-            d = np.r_[d, data[i1:i1+self.nobs_xs[i], :3].T.reshape(-1, 1)]
-            i1 += self.nobs_xs[i]
-        return d
-
     def _fill_jacobian(self, n, J, u_dc, Dm, S, q, q2):
         if n == 0:
             i0 = 0
@@ -540,15 +539,6 @@ class GridMMR(GridDC):
         tmp = tmp[self.gdc.ind_roi, :]
         J[:, i0:i1] = 1.e12 * tmp[:, mask_xs]  # to have pT
 
-    def distance_weighting(self, xo, beta):
-        return self.gdc.distance_weighting(xo, beta)
-
-    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
-        return self.gdc.calc_WtW(wt, par, m_active, WGx, WGy, WGz)
-
-    def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
-        return self.gdc.calc_reg(Q, par, xc, xref, WGx, WGy, WGz, m_active)
-
 
 # %% main
 
@@ -563,7 +553,7 @@ if __name__ == '__main__':
         xs = None
         xo = None
         solver_name = 'umfpack'
-        maxit = 500
+        max_it = 500
         tol = 1e-8
         verbose = False
         calc_sens = False
@@ -592,8 +582,8 @@ if __name__ == '__main__':
                             solver_name = getattr(mod, value)
                         else:
                             solver_name = value
-                    elif 'solver' in keyword and 'maxit' in keyword:
-                        maxit = int(value)
+                    elif 'solver' in keyword and 'max_it' in keyword:
+                        max_it = int(value)
                     elif 'solver' in keyword and 'tolerance' in keyword:
                         tol = float(value)
                     elif 'precon' in keyword:
@@ -622,12 +612,11 @@ if __name__ == '__main__':
         if roi is not None:
             g.set_roi(roi)
 
-        g.set_solver(solver_name, tol, maxit, precon, do_perm)
+        g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
         g.verbose = verbose
-        xs_u, xo_all, ind_back, _, _, _ = check_acquisition(xs, xo)
-        g.xs = xs_u
-        g.xo = xo_all
+        g.xs = xs
+        g.xo = xo
 
         data = g.fwd_mod(sigma, calc_sens=calc_sens, cs=cs)
 
@@ -659,10 +648,6 @@ if __name__ == '__main__':
             print('Saving modelled data ... ', end='', flush=True)
         fname = basename+'_mmr.dat'
         header = 'src_x src_y src_z rcv_x rcv_y rcv_z Bx By Bz'
-        if ind_back is None:
-            np.savetxt(fname, np.c_[np.kron(xs, np.ones((xo.shape[0], 1))),
-                                    np.kron(np.ones((xs.shape[0], 1)), xo), data], header=header)
-        else:
-            np.savetxt(fname, np.c_[xs, xo, data[ind_back, :]], header=header)
+        np.savetxt(fname, np.c_[g.xs, g.xo, data], header=header)
         if verbose:
             print('done.')

@@ -30,7 +30,6 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import bicgstab, spsolve, use_solver, factorized
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 
-import h5py
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 
@@ -165,7 +164,9 @@ class GridFV:
         Node coordinates along y
     z : array_like
         Node coordinates along z
-            
+    comm : MPI Communicator or None
+        If None, use MPI_COMM_WORLD
+
     Notes
     -----
     Voxels are sorted column major, i.e. x is the fast axis
@@ -173,13 +174,20 @@ class GridFV:
     
     """
 
-    def __init__(self, x, y, z):
+    def __init__(self, x, y, z, comm=None):
+        if comm is None:
+            from mpi4py import MPI
+        
+            comm = MPI.COMM_WORLD
+        self.comm = comm
+        self.myid = comm.rank
+
         self.x = x
         self.y = y
         self.z = z
         self.solver = bicgstab
         self.tol = 1e-9
-        self.maxit = 1000
+        self.max_it = 1000
         self._want_pardiso = False
         self._want_pastix = False
         self.want_superlu = False
@@ -346,7 +354,7 @@ class GridFV:
 
     @property
     def x(self):
-        "Node coordinates along x."
+        """Node coordinates along x."""
         return self._x
 
     @x.setter
@@ -365,7 +373,7 @@ class GridFV:
 
     @property
     def y(self):
-        "Node coordinates along y."
+        """Node coordinates along y."""
         return self._y
 
     @y.setter
@@ -384,7 +392,7 @@ class GridFV:
 
     @property
     def z(self):
-        "Node coordinates along z."
+        """Node coordinates along z."""
         return self._z
 
     @z.setter
@@ -418,9 +426,8 @@ class GridFV:
         True if point si inside grid
 
         """
-        return x >= self.x[0] and x <= self.x[-1] and \
-               y >= self.y[0] and y <= self.y[-1] and \
-               z >= self.z[0] and z <= self.z[-1]
+        return self.x[0] <= x <= self.x[-1] and self.y[0] <= y <= self.y[-1] and \
+            self.z[0] <= z <= self.z[-1]
 
     def volume_voxels(self):
         """Returns the volume of the voxels of the grid.
@@ -1201,8 +1208,8 @@ class GridFV:
         else:
             return vtk_to_numpy(data)
 
-    def set_solver(self, name, tol=1e-9, maxit=1000, precon=False, do_perm=False, comm=None):
-        """Define solver to be used during forward modelling.
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
+        """Define parameters of solver to be used during forward modelling.
 
         Parameters
         ----------
@@ -1211,7 +1218,7 @@ class GridFV:
             If `callable`: (iterative solver from scipy.sparse.linalg, eg bicgstab)
         tol : float, optional
             Tolerance for the iterative solver
-        maxit : int, optional
+        max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : bool, optional
             Apply preconditionning.
@@ -1227,7 +1234,7 @@ class GridFV:
         if callable(name):
             self.solver = name
             self.tol = tol
-            self.maxit = maxit
+            self.max_it = max_it
             self.want_pardiso = False
             self.want_pastix = False
             self.want_superlu = False
@@ -1271,6 +1278,7 @@ class GridFV:
         self.comm = comm
             
     def get_solver(self):
+        """Return parameters needed to instantiate Solver."""
         if self.want_mumps:
             return 'mumps', self.comm
         elif self.want_pardiso:
@@ -1282,11 +1290,11 @@ class GridFV:
         elif self.want_umfpack:
             return ('umfpack',)
         else:
-            return self.solver, self.tol, self.maxit, self.precon, self.do_perm
+            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
             
     @property
     def want_pardiso(self):
-        """Utilisation du solver pardiso (si installé)."""
+        """Using solver pardiso (if available)."""
         return self._want_pardiso
 
     @want_pardiso.setter
@@ -1299,7 +1307,7 @@ class GridFV:
 
     @property
     def want_pastix(self):
-        """Utilisation du solver pastix (si installé)."""
+        """Using solver pastix (if available)."""
         return self._want_pastix
 
     @want_pastix.setter
@@ -1312,7 +1320,7 @@ class GridFV:
 
     @property
     def want_umfpack(self):
-        """Utilisation du solver umfpack (si installé)."""
+        """Using solver umfpack (if available)."""
         return self._want_umfpack
 
     @want_umfpack.setter
@@ -1325,7 +1333,7 @@ class GridFV:
 
     @property
     def want_mumps(self):
-        """Utilisation du solver mumps (si installé)."""
+        """Using solver mumps (if available)."""
         return self._want_mumps
 
     @want_mumps.setter
@@ -1349,7 +1357,7 @@ class GridFV:
             print('    Solver: MUMPS')
         else:
             print('    Solver: '+self.solver.__name__)
-            print('      maxit: '+str(self.maxit))
+            print('      max_it: '+str(self.max_it))
             print('      tolerance: '+str(self.tol))
         if self.do_perm:
             print('    Inverse Cuthill-McKee Permutation: used')
@@ -1397,7 +1405,7 @@ class Solver:
 
             slv = solver[0]
             self.tol = solver[1]
-            maxit = solver[2]
+            max_it = solver[2]
             self.precon = solver[3]
             self.do_perm = solver[4]
             
@@ -1428,7 +1436,7 @@ class Solver:
                 if self.verbose:
                     print('done.')
 
-            self.solver = lambda A, b : slv(A, b, x0=self.x0, tol=self.tol, maxiter=maxit, M=self.Mpre)
+            self.solver = lambda A, b : slv(A, b, x0=self.x0, tol=self.tol, max_iter=max_it, M=self.Mpre)
         elif solver[0] == 'mumps':
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=solver[1])
             self.ctx.set_icntl(4, 1)  # print only error messages
@@ -1613,7 +1621,7 @@ class Solver:
     
     @property
     def A(self):
-        """Matrice à inverser."""
+        """Matrix to invert."""
         return self._A
     
     @A.setter

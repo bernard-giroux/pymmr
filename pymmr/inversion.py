@@ -6,10 +6,21 @@ Module for inverting ERT & MMR data.
 @author: giroux
 
 """
+from collections import namedtuple
 import warnings
 
 import numpy as np
+import scipy.sparse as sp
+import matplotlib.pyplot as plt
 
+
+# %%  Define namedtuple for input data
+
+DataMMR = namedtuple("DataMMR", "xs xo data wt")
+DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt")
+
+
+# %% Some functions
 
 def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
            alpha=0, WTWt=0):
@@ -79,19 +90,19 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
     
         if bnrm2 == 0.0:
             bnrm2 = 1.0
-        r = P * (((zz.T @ D ) @ J).T - beta * CTC @ (x+dxc))
+        r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x+dxc))
     
         error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
     
         if error < tol:
             return x, error, it
-        
+
+        rho_1 = 1.
         for it in np.arange(max_it):
             z = M * r   # calcul du gradient modifié
             rho = (r.T @ z).item()
             if it == 0:
                 p = z.copy()
-                rho_1 = 1.
             else:
                 beta_k = rho / rho_1   # calcul du coefficient beta_k
                 p = z + beta_k * p
@@ -107,20 +118,20 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
             rho_1 = rho
     
     elif reg_var == 'model perturbation':
-        r = P * ((zz.T @ D ) @ J).T - beta * CTC @ x
+        r = P * ((zz.T @ D) @ J).T - beta * CTC @ x
         b1 = (((D*D) @ b).T @ J).T
         bnrm2 = np.linalg.norm(b1)
         error = np.linalg.norm(r) / bnrm2   # initialisation de l'erreur
         
         if error < tol:
             return x, error, it
-        
+
+        rho_1 = 1.
         for it in np.arange(max_it):
             z = M * r   # calcul du gradient modifié
             rho = (r.T @ z).item()
             if it == 0:
                 p = z.copy()
-                rho_1 = 1.
             else:
                 beta_k = rho / rho_1   # calcul du coefficient beta_k
                 p = z + beta_k * p
@@ -148,13 +159,13 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
 
         if error < tol:
             return x, error, it
-        
+
+        rho_1 = 1.
         for it in np.arange(max_it):
             z = M * r   # calcul du gradient modifié
             rho = (r.T @ z).item()
             if it == 0:
                 p = z.copy()
-                rho_1 = 1.
             else:
                 beta_k = rho / rho_1   # calcul du coefficient beta_k
                 p = z + beta_k * p
@@ -193,7 +204,7 @@ class Inversion:
         self.beta_cooling = 2
         """Decrease factor of beta."""
 
-        self.maxit = 5
+        self.max_it = 5
         """Number of iterations."""
         
         # smoothing
@@ -228,7 +239,7 @@ class Inversion:
         self.model_weighting = 'distance'
         """Pondération du lissage spatial: 'distance', 'jacobian'."""
 
-        self.maxit_cglscd = 1000
+        self.max_it_cglscd = 1000
         """Maximum number of iterations in cglscd."""
 
         self.tol_cglscd = 1.e-9
@@ -250,6 +261,8 @@ class Inversion:
 
         self.verbose = True
 
+        self.show_plots = False
+
     def run(self, g, m_ref, data_mmr=None, data_ert=None, m0=None, m_weight=None, m_active=None):
         """Run inversion.
 
@@ -258,11 +271,11 @@ class Inversion:
         g : Grid instance
             GridMMR (or GridDC if `data_mmr` is None)
         m_ref : array_like
-            Reference model.
-        data_mmr : array_like, optional
-            MMR data.
-        data_ert : array_like, optional
-            DC resistivity data.
+            Reference model (S/m).
+        data_mmr : DataMMR, optional
+            MMR data.  B-field units are pT.
+        data_ert : DataERT, optional
+            DC resistivity data.  Voltage should be in mV.
         m0 : array_like, optional
             Initial model (equal to m_ref if None).
         m_weight : array_like, optional
@@ -282,42 +295,29 @@ class Inversion:
         wt = None
         nobs_mmr = 0
         if data_mmr is not None:
-            if data_mmr.ndim == 2:
-                if data_mmr.shape[1] == 12 or data_mmr.shape[1] == 13:
-                    g.xs = data_mmr[:, 3:9]
-                    g.xo = data_mmr[:, 9:12]
-                    g.check_acquisition()
-                    dobs = g.data_to_obs(data_mmr[:, :3])
-                    nobs_mmr = dobs.size
-                    if data_mmr.shape[1] == 13:
-                        wt = np.tile(data_mmr[:, 12], 3)
-                    else:
-                        wt = np.ones(dobs.shape)
-            else:
+            try:
+                g.xs = data_mmr.xs
+                g.xo = data_mmr.xo
+                g.check_acquisition()
+                dobs = g.data_to_obs(data_mmr.data)
+                wt = data_mmr.wt
+                nobs_mmr = dobs.size
+            except AttributeError:
                 raise RuntimeError('Format of MMR data incorrect')
 
         if data_ert is not None:
-            if data_ert.ndim == 2:
-                if data_ert.shape[1] == 13 or data_ert.shape[1] == 14:
-                    g.c1c2 = data_ert[:, :6]
-                    g.p1p2 = data_ert[:, 6:12]
-                    if dobs is None:
-                        dobs = 1.e3 * data_ert[:, 12].reshape(-1, 1)  # conversion de V à mV
-                    else:
-                        dobs = np.r_[dobs, 1.e3 * data_ert[:, 12].reshape(-1, 1)]  # conversion de V à mV
-                    if data_ert.shape[1] == 14:
-                        if wt is None:
-                            wt = data_ert[:, 13]
-                        else:
-                            wt = np.r_[wt, data_ert[:, 13]]
-                    else:
-                        if wt is None:
-                            wt = np.ones((data_ert.shape[0], 1))
-                        else:
-                            wt = np.r_[wt, np.ones((data_ert.shape[0], 1))]
+            try:
+                g.c1c2 = data_ert.c1c2
+                g.p1p2 = data_ert.p1p2
+                if dobs is None:
+                    dobs = data_ert.data.reshape(-1, 1)
                 else:
-                    raise RuntimeError('Format of ERT data incorrect')
-            else:
+                    dobs = np.r_[dobs, data_ert.data.reshape(-1, 1)]
+                if wt is None:
+                    wt = data_ert.wt
+                else:
+                    wt = np.r_[wt, data_ert.wt]
+            except AttributeError:
                 raise RuntimeError('Format of ERT data incorrect')
 
         if self.verbose:
@@ -358,7 +358,7 @@ class Inversion:
                 m_weight = np.ones(m_ref.shape)
         if m_active is None:
             m_active = np.ones(m_ref.shape, dtype=bool)
-            # TODO: if m_active is not not, this should be transfered to g
+            # TODO: if m_active is not not, this should be transferred to g
 
         if m0 is None:
             m0 = m_ref.copy()
@@ -395,7 +395,9 @@ class Inversion:
 
         WGx = WGy = WGz = None
 
-        for i in range(self.maxit):
+        beta = self.beta
+
+        for i in range(self.max_it):
             if i == 0 or self.methode == 'Gauss-Newton':
                 if self.verbose:
                     print('  *** Iteration no {0:d} ***'.format(i + 1))
@@ -445,10 +447,32 @@ class Inversion:
             if self.verbose:
                 print('    Computing perturbation with cglscd ... ', end='', flush=True)
 
-            s, err, iter1 = cglscd(J, np.zeros(xt.shape), dobs-d, self.beta, WTW,
-                                   xt-m_ref[m_active], D, P=None, max_it=self.maxit_cglscd,
+            s, err, iter1 = cglscd(J, np.zeros(xt.shape), dobs-d, beta, WTW,
+                                   xt-m_ref[m_active], D, P=None, max_it=self.max_it_cglscd,
                                    tol=self.tol_cglscd, reg_var=self.reg_var)
+            if self.show_plots:
+                fig, ax = plt.subplots(3, 3, figsize=(9, 9))
+                ax = ax.flatten()
+                ax[0].plot(s), ax[0].set_title('s')
+                ax[1].plot(WTW.diagonal()), ax[1].set_title('WTW')
+                ax[2].plot(D.diagonal()), ax[2].set_title('D')
+                ax[3].plot(dobs), ax[3].set_title('dobs')
+                ax[4].plot(d), ax[4].set_title('d')
+                ax[5].plot(dobs-d), ax[5].set_title('dobs-d')
+                ax[6].plot(xt-m_ref[m_active]), ax[6].set_title('xt-mref')
 
+                ax[7].text(0.2, 0.75, 'RMS = {0:g}'.format(rms[-1]))
+                ax[7].text(0.2, 0.60, '$\\beta$ = {0:g}'.format(beta))
+                ax[7].text(0.2, 0.45, '$\|J\|$ = {0:g}'.format(np.linalg.norm(J)))
+                ax[7].text(0.2, 0.30, '$\|WTW\|$ = {0:g}'.format(sp.linalg.norm(WTW)))
+                ax[7].text(0.2, 0.15, '$\|D\|$ = {0:g}'.format(sp.linalg.norm(D)))
+                ax[7].axis('off')
+                ax[8].axis('off')
+
+                fig.suptitle(f'Iteration {i+1}')
+                fig.tight_layout()
+                plt.show(block=False)
+                plt.pause(0.1)
             if self.verbose:
                 print('done.\n      err = {0:e}, iter = {1:d}'.format(err, iter1))
 
@@ -472,9 +496,9 @@ class Inversion:
             S_save.append(sigma[m_active].copy())
             xc = xt.copy()
 
-            self.beta /= self.beta_cooling
-            if self.beta < self.beta_min:
-                self.beta = self.beta_min
+            beta /= self.beta_cooling
+            if beta < self.beta_min:
+                beta = self.beta_min
 
             if self.smooth_type == 'blocky' or self.smooth_type == 'ekblom' or self.smooth_type == 'min. support':
 
@@ -508,7 +532,7 @@ class Inversion:
         self._update_sigma(sigma, xt, m_active)
 
         if self.verbose:
-            print('    Forward modelling ... ', end='', flush=True)
+            print('      Forward modelling ... ', end='', flush=True)
         d = g.fwd_mod(sigma, keep_solver=True)
         if self.verbose:
             print('done.')
@@ -528,7 +552,7 @@ class Inversion:
             self._update_sigma(sigma, xt, m_active)
 
             if self.verbose:
-                print('    Forward modelling ... ', end='', flush=True)
+                print('      Forward modelling ... ', end='', flush=True)
             d = g.fwd_mod(sigma, keep_solver=True)
             if self.verbose:
                 print('done.')
@@ -539,6 +563,9 @@ class Inversion:
                 d = np.arcsinh(d)
 
             fd2 = (0.5 * (d - dobs).T @ (D * D) @ (d - dobs)).item()
+
+            # if self.verbose:
+            #     print('      fd: {0:g}   {1:g}   {2:g}'.format(fd0, fd1, fd2))
 
             if fd2 < fd0 and fd1 > fd2:
                 # stationary point is egal to minimum of fitted parabola
