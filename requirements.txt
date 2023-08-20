@@ -1,0 +1,5 @@
+numpy~=1.25.2
+SciPy~=1.10.1
+numba~=0.57.1
+matplotlib~=3.7.2
+vtk~=9.2.6
