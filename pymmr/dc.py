@@ -118,7 +118,6 @@ class GridDC(GridFV):
         self._c1c2 = None
         self._cs = None
         self._p1p2 = None
-        self.use_log_sigma = False
         self.u0 = None
         self.u = None
         self.q = None
@@ -722,10 +721,7 @@ class GridDC(GridFV):
             cs = np.r_[self.cs_u, self.cp_u]
 
         z, y, x = np.meshgrid(self.zc, self.yc, self.xc, indexing='ij')
-        if self.use_log_sigma:
-            avg_cond = gmean(np.exp(ref_model.flatten()))
-        else:
-            avg_cond = gmean(ref_model.flatten())
+        avg_cond = gmean(ref_model.flatten())
 
         self.u0 = np.empty((self.nc, c1c2.shape[0]))
 
