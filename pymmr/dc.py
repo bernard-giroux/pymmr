@@ -105,10 +105,15 @@ class GridDC(GridFV):
         Node coordinates along y (m)
     z : array of float
         Node coordinates along z (m)
-    comm : MPI Communicator or None
+    units : str, optional
+        Units of voltage at output
+    comm : MPI Communicator, optional
         If None, use MPI_COMM_WORLD
     """
-    def __init__(self, x, y, z, comm=None):
+
+    units_scaling_factors = {'mV': 1.e3, 'V': 1.0}
+
+    def __init__(self, x, y, z, units='mV', comm=None):
         GridFV.__init__(self, x, y, z, comm)
         self._c1c2 = None
         self._cs = None
@@ -131,6 +136,7 @@ class GridDC(GridFV):
         self.in_inv = False    # set to True when grid is used in inversion
         self.c1c2_u = None
         self.cs12_u = None
+        self.units = units
 
     @property
     def c1c2(self):
@@ -200,6 +206,17 @@ class GridDC(GridFV):
         self._p1p2 = tmp
         self.electrodes_sorted = False
         self.Q = None  # reset interpolation matrix because electrodes will be sorted
+
+    @property
+    def units(self):
+        return self._units
+
+    @units.setter
+    def units(self, val):
+        if val not in GridDC.units_scaling_factors:
+            raise ValueError('Wrong units of voltage')
+        self._units = val
+        self._units_scaling = GridDC.units_scaling_factors[val]
 
     def check_cs(self):
         """Verify validity of current source intensity."""
@@ -394,7 +411,7 @@ class GridDC(GridFV):
         if self.p1p2 is None:
             data = None
         else:
-            data = 1.e3 * self._get_data()  # to get mV
+            data = self._units_scaling * self._get_data()
 
         if calc_sens:
             if self.verbose:
@@ -431,7 +448,6 @@ class GridDC(GridFV):
 
                 sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S)
 
-            sens *= 1.e3   # we want mV for voltage units
             if self.sort_electrodes and self.sort_back is not None:
                 sens = sens[:, self.sort_back]
 
@@ -938,7 +954,7 @@ class GridDC(GridFV):
         u_r = self.u[:, c1c2.shape[0] + self.ind_p1[n]] - self.u[:, c1c2.shape[0] + self.ind_p2[n]]
         Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
-        tmp = -A @ self.G @ u_r
+        tmp = -self._units_scaling * A @ self.G @ u_r
         return tmp[self.ind_roi], n
 
     def __getstate__(self):
@@ -1145,6 +1161,7 @@ if __name__ == '__main__':
         precon = False
         do_perm = False
         cs = 1.0
+        units = 'mV'
 
         kw_pattern = re.compile('\s?(.+)\s?#\s?([\w\s]+),')
 
@@ -1193,10 +1210,13 @@ if __name__ == '__main__':
                         roi = [float(x) for x in tmp]
                     elif 'boundary' in keyword and 'correction' in keyword:
                         apply_bc = int(value)
+                    elif 'units' in keyword:
+                        units = value
 
         if g is None:
             raise RuntimeError('Grid not defined, check input parameters')
-            
+
+        g.units = units
         g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
         g.verbose = verbose

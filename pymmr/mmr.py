@@ -50,18 +50,23 @@ class GridMMR(GridDC):
         Node coordinates along y (m)
     z : array of float
         Node coordinates along z (m)
-    comm : MPI Communicator or None
+    units : str, optional
+        B-field units
+    comm : MPI Communicator, optional
         If None, use MPI_COMM_WORLD
 
     Notes
     -----
-    - It is possible to compute the DC resistvity response for injection 
+    - It is possible to compute the DC resistvity response for injection
     dipoles that are different from the source term defined for MMR modeling.
     This has been implemented for allowing joint inversion of MMR & ERT data.
     """
-    def __init__(self, x, y, z, comm=None):
-        GridDC.__init__(self, x, y, z, comm)
-        self.gdc = GridDC(x, y, z, comm)
+
+    units_scaling_factors = {'pT': 1.e12, 'nT': 1.e9}
+
+    def __init__(self, x, y, z, units='pT', comm=None):
+        GridDC.__init__(self, x, y, z, units=units, comm=comm)
+        self.gdc = GridDC(x, y, z, units='mV', comm=comm)
         self.gdc.verbose = False
         self.solver_A = None
         self.acq_checked = False
@@ -74,6 +79,7 @@ class GridMMR(GridDC):
         self.mask = None
         self.nobs_xs = None
         self.nobs_mmr = 0
+        self.units = units
 
     @property
     def in_inv(self):
@@ -156,6 +162,17 @@ class GridMMR(GridDC):
     @p1p2.setter
     def p1p2(self, val):
         self.gdc.p1p2 = val
+
+    @property
+    def units(self):
+        return self._units
+
+    @units.setter
+    def units(self, val):
+        if val not in GridMMR.units_scaling_factors:
+            raise ValueError('Wrong units of B-field')
+        self._units = val
+        self._units_scaling = GridMMR.units_scaling_factors[val]
 
     def check_acquisition(self):
         """Check consistency of `xs` and `xo`."""
@@ -391,9 +408,9 @@ class GridMMR(GridDC):
         self.u = self.solver_A.solve(q)
 
         B = self.C_f @ self.u
-        Bx = 1.e12 * B[:self.nex, :]
-        By = 1.e12 * B[self.nex:(self.nex+self.ney), :]
-        Bz = 1.e12 * B[(self.nex+self.ney):, :]
+        Bx = self._units_scaling * B[:self.nex, :]
+        By = self._units_scaling * B[self.nex:(self.nex+self.ney), :]
+        Bz = self._units_scaling * B[(self.nex+self.ney):, :]
 
         no = self.xo_all.shape[0]
         data = np.empty((no*q.shape[1], self.xo_all.shape[1]))
@@ -531,7 +548,7 @@ class GridMMR(GridDC):
         mask_xs = self.mask[n*self.xo_all.shape[0]:(n+1)*self.xo_all.shape[0]]
         mask_xs = np.r_[mask_xs, mask_xs, mask_xs]
         tmp = tmp[self.gdc.ind_roi, :]
-        J[:, i0:i1] = 1.e12 * tmp[:, mask_xs]  # to have pT
+        J[:, i0:i1] = self._units_scaling * tmp[:, mask_xs]
 
 
 # %% main
@@ -555,6 +572,7 @@ if __name__ == '__main__':
         cs = 1.0
         precon = False
         do_perm = False
+        units = 'pT'
 
         kw_pattern = re.compile('\s?(.+)\s?#\s?([\w\s]+),')
 
@@ -599,13 +617,15 @@ if __name__ == '__main__':
                         if len(tmp) != 6:
                             raise ValueError('6 values needed to define ROI (xmin xmax ymin ymax zmin zmax')
                         roi = [float(x) for x in tmp]
+                    elif 'units' in keyword:
+                        units = value
 
         if g is None:
             raise RuntimeError('Grid not defined, check input parameters')
 
         if roi is not None:
             g.set_roi(roi)
-
+        g.units = units
         g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
         g.verbose = verbose
