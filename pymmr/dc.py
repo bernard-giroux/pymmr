@@ -152,12 +152,12 @@ class GridDC(GridFV):
             if tmp.size == 6:
                 tmp = tmp.reshape((1, 6))
             else:
-                raise ValueError('Size of source term must be nsrc x 6')
+                raise ValueError('Size of source term must be nobs x 6')
         elif tmp.ndim == 2:
             if tmp.shape[1] != 6:
-                raise ValueError('Size of source term must be nsrc x 6')
+                raise ValueError('Size of source term must be nobs x 6')
         else:
-            raise ValueError('Size of source term must be nsrc x 6')
+            raise ValueError('Size of source term must be nobs x 6')
         for ns in range(tmp.shape[0]):
             if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
                self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
