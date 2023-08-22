@@ -905,6 +905,62 @@ class GridFV:
         # assemblage
         return sp.vstack((Gx, Gy, Gz), format='csr')
 
+    def build_G_faces(self):
+        """Construction of gradient matrix to use with vector defined on edges.
+
+        Returns
+        -------
+        csr_matrix
+            Gradient matrix
+        """
+        # Gx
+
+        dVf = 0.5 * (self.hx[1:] + self.hx[:-1])
+
+        M = self.nx - 1
+        N = self.nx
+        i = np.hstack((np.arange(M), np.arange(M)))
+        j = np.hstack((np.arange(M), np.arange(1, N)))
+        nval = i.size
+        ii = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
+        jj = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
+        for n in np.arange(self.ny*self.nz):
+            ii[(n*nval):((n+1)*nval)] = i + n*M
+            jj[(n*nval):((n+1)*nval)] = j + n*N
+        s = np.tile(np.hstack((0.5*self.hx[:-1]/dVf, 0.5*self.hx[1:]/dVf)), (self.ny*self.nz,))
+        Gx = sp.coo_matrix((s, (ii, jj)))
+
+        # Gy
+
+        dVf = 0.5 * (self.hy[1:] + self.hy[:-1])
+
+        M = self.nx*(self.ny-1)
+        N = self.nx*self.ny
+        i = np.hstack((np.arange(M), np.arange(M)))
+        j = np.hstack((np.arange(M), self.nx+np.arange(M)))
+        nval = i.size
+        ii = np.zeros((self.nz*nval,), dtype=np.int64)
+        jj = np.zeros((self.nz*nval,), dtype=np.int64)
+        for n in np.arange(self.nz):
+            ii[(n*nval):((n+1)*nval)] = i + n*M
+            jj[(n*nval):((n+1)*nval)] = j + n*N
+        s = np.hstack((np.kron(0.5*self.hy[:-1]/dVf, np.ones((self.nx,))),
+                       np.kron(0.5*self.hy[1:]/dVf, np.ones((self.nx,)))))
+        s = np.tile(s, (self.nz,))
+        Gy = sp.coo_matrix((s, (ii, jj)))
+
+        # Gz
+
+        dVf = 0.5 * (self.hz[1:] + self.hz[:-1])
+
+        i = np.hstack((np.arange(self.nfz), np.arange(self.nfz)))
+        j = np.hstack((np.arange(self.nfz),
+                       self.nx*self.ny+np.arange(self.nfz)))
+        s = np.hstack((np.kron(0.5*self.hz[:-1]/dVf, np.ones((self.nx*self.ny,))),
+                       np.kron(0.5*self.hz[1:]/dVf, np.ones((self.nx*self.ny,)))))
+        Gz = sp.coo_matrix((s, (i, j)))
+
+        return sp.vstack((Gx, Gy, Gz), format='csr')
 
     def build_C(self, to_faces=True):
         """Construction of curl matrix.

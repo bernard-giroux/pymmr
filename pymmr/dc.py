@@ -24,6 +24,8 @@ import re
 import sys
 import warnings
 
+# from multiprocessing import Pool
+
 import numpy as np
 import scipy.sparse as sp
 from scipy.stats.mstats import gmean
@@ -428,7 +430,9 @@ class GridDC(GridFV):
             if self.verbose:
                 print('  Filling sensitivity matrix ... ', end='', flush=True)
 
-            # items = [(n, c1c2, Dm, S) for n in range(self.c1c2.shape[0])]
+            Gf = self.build_G_faces()
+
+            # items = [(n, c1c2, Dm, S, Gf) for n in range(self.c1c2.shape[0])]
             # with Pool() as pool:
             #     results = pool.starmap_async(self._fill_jacobian, items)
             #     for tmp, n in results.get():
@@ -448,7 +452,7 @@ class GridDC(GridFV):
                     msg = pre_msg+'  term '+str(n+1)+' of '+str(self.c1c2.shape[0])+' '
                     print(msg, end='', flush=True)
 
-                sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S)
+                sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S, Gf)
 
             if self.sort_electrodes and self.sort_back is not None:
                 sens = sens[:, self.sort_back]
@@ -948,10 +952,12 @@ class GridDC(GridFV):
             gu[:, i] = gui.flatten()
         return np.sum(gu, axis=1)
 
-    def _fill_jacobian(self, n, c1c2, Dm, S):
+    def _fill_jacobian(self, n, c1c2, Dm, S, Gf):
         u = self.u[:, self.ind_c1[n]] - self.u[:, self.ind_c2[n]]
         u_r = self.u[:, c1c2.shape[0] + self.ind_p1[n]] - self.u[:, c1c2.shape[0] + self.ind_p2[n]]
-        Gc = self.build_G(self.G @ u)
+        v = sp.diags(self.G @ u)
+        Gc = v @ Gf
+        # Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
         tmp = -self._units_scaling * A @ self.G @ u_r
         return tmp[self.ind_roi], n
