@@ -78,7 +78,7 @@ def calc_padding(dx, n_cells=15, factor=1.3):
     Returns
     -------
     ndarray
-        Paddaing array holding cell sizes.
+        Padding array holding cell sizes.
 
     Notes
     -----
@@ -92,7 +92,7 @@ def calc_padding(dx, n_cells=15, factor=1.3):
     return dx * factor**np.arange(1, n_cells+1)
 
 
-def build_from_vtk(grid_class, filename):
+def build_from_vtk(grid_class, filename, comm=None):
     """Create grid from VTK file.
 
     The file must contain a rectilinear grid
@@ -103,6 +103,8 @@ def build_from_vtk(grid_class, filename):
         Class for building grid (must be derived from GridFV)
     filename : string
         Name of VTK file
+    comm : MPI Communicator, optional
+        If None,  MPI_COMM_WORLD will be used
 
     Returns
     -------
@@ -114,7 +116,7 @@ def build_from_vtk(grid_class, filename):
     x = vtk_to_numpy(reader.GetOutput().GetXCoordinates())
     y = vtk_to_numpy(reader.GetOutput().GetYCoordinates())
     z = vtk_to_numpy(reader.GetOutput().GetZCoordinates())
-    return grid_class(x, y, z)
+    return grid_class(x, y, z, comm=comm)
 
 
 def _get_umf_family(A):
@@ -164,7 +166,7 @@ class GridFV:
         Node coordinates along y
     z : array_like
         Node coordinates along z
-    comm : MPI Communicator or None
+    comm : MPI Communicator, optional
         If None, use MPI_COMM_WORLD
 
     Notes
@@ -185,6 +187,7 @@ class GridFV:
         self.x = x
         self.y = y
         self.z = z
+        self.verbose = False
         self.solver = bicgstab
         self.tol = 1e-9
         self.max_it = 1000
@@ -1273,14 +1276,15 @@ class GridFV:
         else:
             raise RuntimeError('Solver '+name+' not implemented')
 
+        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
         self.precon = precon
         self.do_perm = do_perm
         self.comm = comm
             
-    def get_solver(self):
+    def get_solver_params(self):
         """Return parameters needed to instantiate Solver."""
         if self.want_mumps:
-            return 'mumps', self.comm
+            return ('mumps',)
         elif self.want_pardiso:
             return ('pardiso',)
         elif self.want_pastix:
@@ -1344,48 +1348,28 @@ class GridFV:
         else:
             self._want_mumps = val
 
-    def print_solver_info(self, file=None):
-        if self.want_pardiso:
-            print('    Solver: pardiso')
-        elif self.want_pastix:
-            print('    Solver: PaStiX')
-        elif self.want_umfpack:
-            print('    Solver: UMFPACK')
-        elif self.want_superlu:
-            print('    Solver: SuperLU')
-        elif self.want_mumps:
-            print('    Solver: MUMPS')
-        else:
-            print('    Solver: '+self.solver.__name__)
-            print('      max_it: '+str(self.max_it))
-            print('      tolerance: '+str(self.tol))
-        if self.do_perm:
-            print('    Inverse Cuthill-McKee Permutation: used')
-        else:
-            print('    Inverse Cuthill-McKee Permutation: not used')
-        if self.precon:
-            print('    Preconditionning: used')
-        else:
-            print('    Preconditionning: not used')
-
 
 # %% Solveur
 
 class Solver:
     """
-    Classe pour solutionner un système Ax = b avec un choix of solveurs
+    Class to solver a system Ax = b with a choice of solvers
     
     Parameters
     ----------
-    A : spmatrix
-        terme du gauche du système
-    solver : string or callable
-        Si string: nom du solveur (pardiso, umfpack, or mumps)
-        Si callable (solver itératif of scipy.sparse.linalg, eg bicgstab)
-    verbose : bool, optionel
-        Affiche des messages informatifs
+    solver_par : tuple
+        Parameters of the solver, 1st element can be str or callable
+        If str: name of solver (pardiso, umfpack, or mumps)
+        If callable (iterative solver of scipy.sparse.linalg, eg `bicgstab`), the remaining elements are:
+        `tol`, `max_it`, `precon`, `do_perm`
+    A : spmatrix, optional
+        Matrix on left-hand side
+    verbose : bool, optional
+        Display progress messages
+        comm : MPI Communicator or None
+            for mumps solver
     """
-    def __init__(self, A, solver, verbose=False):
+    def __init__(self, solver_par, A=None, verbose=False, comm=None):
         self._A = A
         self.precon = False
         self.do_perm = False
@@ -1395,19 +1379,24 @@ class Solver:
         self.x0 = None
         self.verbose = verbose
         self.ctx = None
+        self.want_pardiso = False
         self.want_umfpack = False
         self.want_superlu = False
+        self.want_pastix = False
         self.pastix_solver = None
         self.umfpack = None
         self.pardiso = False
-        if len(solver) == 5:
+        if callable(solver_par[0]):
             # solveur itératif
 
-            slv = solver[0]
-            self.tol = solver[1]
-            max_it = solver[2]
-            self.precon = solver[3]
-            self.do_perm = solver[4]
+            slv = solver_par[0]
+            self.tol = solver_par[1]
+            max_it = solver_par[2]
+            self.precon = solver_par[3]
+            self.do_perm = solver_par[4]
+
+            if A is None:
+                return
             
             if self.do_perm:
                 if self.verbose:
@@ -1437,9 +1426,11 @@ class Solver:
                     print('done.')
 
             self.solver = lambda A, b : slv(A, b, x0=self.x0, tol=self.tol, max_iter=max_it, M=self.Mpre)
-        elif solver[0] == 'mumps':
-            self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=solver[1])
+        elif solver_par[0] == 'mumps':
+            self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages
+            if A is None:
+                return
             if self.ctx.myid == 0:
                 self.ctx.set_centralized_sparse(A)
             if verbose:
@@ -1448,14 +1439,20 @@ class Solver:
             if verbose:
                 print('done.')
             self.solver = self._solve_mumps
-        elif solver[0] == 'pardiso':
+        elif solver_par[0] == 'pardiso':
+            self.want_pardiso = True
             self.solver = pypardiso.spsolve
             self.pardiso = True
-        elif solver[0] == 'pastix':
+        elif solver_par[0] == 'pastix':
+            self.want_pastix = True
+            if A is None:
+                return
             self.pastix_solver = pypastix.solver(A)
             self.solver = lambda A, b : self.pastix_solver.solve(b.flatten(), refine=False)
-        elif solver[0] == 'umfpack':
+        elif solver_par[0] == 'umfpack':
             self.want_umfpack = True
+            if A is None:
+                return
             umf_family, A = _get_umf_family(A.tocsc().sorted_indices())
             self.umfpack = um.UmfpackContext(umf_family)
             self.umfpack.control[um.UMFPACK_PRL]
@@ -1475,7 +1472,7 @@ class Solver:
                     # umf.report_info()
                 return result
             self.solver = slv
-        elif solver[0] == 'superlu':
+        elif solver_par[0] == 'superlu':
             self.want_superlu = True
             use_solver(useUmfpack=False)
             if verbose:
@@ -1627,8 +1624,12 @@ class Solver:
     @A.setter
     def A(self, val):
         self._A = val
-        if self.pastix_solver is not None:
-            self.pastix_solver.setup(val)
+        if self.want_pastix:
+            if self.pastix_solver is not None:
+                self.pastix_solver.setup(val)
+            else:
+                self.pastix_solver = pypastix.solver(val)
+                self.solver = lambda A, b: self.pastix_solver.solve(b.flatten(), refine=False)
         elif self.want_umfpack:
             umf_family, A = _get_umf_family(val.tocsc().sorted_indices())
             self.umfpack = um.UmfpackContext(umf_family)
@@ -1694,6 +1695,30 @@ class Solver:
         if self.ctx.myid == 0:
             return x
     
+    def print_info(self, file=None):
+        if self.want_pardiso:
+            print('    Solver: pardiso')
+        elif self.want_pastix:
+            print('    Solver: PaStiX')
+        elif self.want_umfpack:
+            print('    Solver: UMFPACK')
+        elif self.want_superlu:
+            print('    Solver: SuperLU')
+        elif self.ctx is not None:
+            print('    Solver: MUMPS')
+        else:
+            print('    Solver: '+self.solver.__name__)
+            print('      max_it: '+str(self.max_it))
+            print('      tolerance: '+str(self.tol))
+            if self.do_perm:
+                print('    Inverse Cuthill-McKee Permutation: used')
+            else:
+                print('    Inverse Cuthill-McKee Permutation: not used')
+            if self.precon:
+                print('    Preconditionning: used')
+            else:
+                print('    Preconditionning: not used')
+
 
 # %% main
 if __name__ == '__main__':

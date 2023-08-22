@@ -341,7 +341,7 @@ class Inversion:
                 print('    Function applied to data: '+self.data_transf)
             print('    Type of smoothing: '+self.smooth_type)
             print('    Regularization variable: '+self.reg_var)
-            g.print_solver_info()
+            g.solver_A.print_info()
 
         if m_weight is None:
             if self.model_weighting == 'distance':

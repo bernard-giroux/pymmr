@@ -108,7 +108,7 @@ class GridDC(GridFV):
     units : str, optional
         Units of voltage at output
     comm : MPI Communicator, optional
-        If None, use MPI_COMM_WORLD
+        If None, MPI_COMM_WORLD will be used
     """
 
     units_scaling_factors = {'mV': 1.e3, 'V': 1.0}
@@ -129,7 +129,6 @@ class GridDC(GridFV):
         self.sort_electrodes = True
         self.electrodes_sorted = False
         self.sort_back = None
-        self.verbose = True
         self.roi = None
         self.ind_roi = np.arange(self.nc)
         self.in_inv = False    # set to True when grid is used in inversion
@@ -281,8 +280,8 @@ class GridDC(GridFV):
 
             return self.x[ind_x], self.y[ind_y], self.z[ind_z]
 
-    def fwd_mod(self, sigma=None, c1c2=None, p1p2=None, calc_J=False,
-                   calc_sens=False, q=None, cs=1.0, keep_solver=False):
+    def fwd_mod(self, sigma=None, c1c2=None, p1p2=None, calc_J=False, calc_sens=False, q=None, cs=1.0,
+                keep_solver=True):
         """
         Forward modelling.
 
@@ -303,7 +302,7 @@ class GridDC(GridFV):
         cs : scalar or array_like
             Current at injection points, 1 A by default.
         keep_solver : bool
-            not used, included for compatibility
+            Keep solver if already instantiated
 
         Raises
         ------
@@ -341,11 +340,12 @@ class GridDC(GridFV):
             self.print_info()
             if c1c2 is not None:
                 print('    {0:d} combinations of dipoles'.format(c1c2.shape[0]))
-            self.print_solver_info()
             if self.apply_bc:
                 print('    Correction at boundary: applied')
             else:
                 print('    Correction at boundary: not applied')
+            if self.solver_A is not None:
+                self.solver_A.print_info()
 
         self.cs = cs
 
@@ -400,7 +400,10 @@ class GridDC(GridFV):
 
         if sigma is not None:
             A, M = self._build_A(sigma)
-            self.solver_A = Solver(A, self.get_solver(), self.verbose)
+            if self.solver_A is None or keep_solver is False:
+                self.solver_A = Solver(self.get_solver_params(), A, self.verbose)
+            else:
+                self.solver_A.A = A
         elif self.solver_A is None:
             raise RuntimeError('Variable sigma should be given as input.')
 
@@ -953,11 +956,6 @@ class GridDC(GridFV):
         tmp = -self._units_scaling * A @ self.G @ u_r
         return tmp[self.ind_roi], n
 
-    def __getstate__(self):
-        self.solver_A = None   # some solvers have attributes that are not picklable
-        state = self.__dict__.copy()
-        return state
-
 
 # %% Solutions analytiques
 
@@ -1137,6 +1135,9 @@ class VerticalDyke():
 
 if __name__ == '__main__':
 
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+
     # %% read arguments
     if len(sys.argv) > 1:
 
@@ -1169,7 +1170,7 @@ if __name__ == '__main__':
                     value = kw_match[1].rstrip()
                     keyword = kw_match[2].rstrip()
                     if 'model' in keyword:
-                        g = build_from_vtk(GridDC, value)
+                        g = build_from_vtk(GridDC, value, comm=comm)
                         sigma = g.fromVTK('Conductivity', value)
                     elif 'basename' in keyword:
                         basename = value
@@ -1213,16 +1214,14 @@ if __name__ == '__main__':
             raise RuntimeError('Grid not defined, check input parameters')
 
         g.units = units
-        g.set_solver(solver_name, tol, max_it, precon, do_perm)
-
         g.verbose = verbose
+        g.set_solver(solver_name, tol, max_it, precon, do_perm)
         g.apply_bc = apply_bc
 
         if roi is not None:
             g.set_roi(roi)
 
-        out = g.fwd_mod(sigma, c1c2, p1p2, calc_J=calc_J,
-                           calc_sens=calc_sens, cs=cs)
+        out = g.fwd_mod(sigma, c1c2, p1p2, calc_J=calc_J, calc_sens=calc_sens, cs=cs)
 
         if calc_sens:
             if verbose:

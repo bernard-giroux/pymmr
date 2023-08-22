@@ -53,11 +53,11 @@ class GridMMR(GridDC):
     units : str, optional
         B-field units
     comm : MPI Communicator, optional
-        If None, use MPI_COMM_WORLD
+        If None, MPI_COMM_WORLD will be used
 
     Notes
     -----
-    - It is possible to compute the DC resistvity response for injection
+    - It is possible to compute the DC resistivity response for injection
     dipoles that are different from the source term defined for MMR modeling.
     This has been implemented for allowing joint inversion of MMR & ERT data.
     """
@@ -68,7 +68,6 @@ class GridMMR(GridDC):
         GridDC.__init__(self, x, y, z, units=units, comm=comm)
         self.gdc = GridDC(x, y, z, units='mV', comm=comm)
         self.gdc.verbose = False
-        self.solver_A = None
         self.acq_checked = False
         self._xs = None
         self._xo = None
@@ -270,6 +269,7 @@ class GridMMR(GridDC):
         else:
             raise RuntimeError('Solver '+name+' not implemented')
 
+        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
         self.precon = precon
         self.do_perm = do_perm
         self.comm = comm
@@ -354,7 +354,8 @@ class GridMMR(GridDC):
         if self.verbose:
             print('\nForward modelling - Magnetometric resistivity')
             self.gdc.print_info()
-            self.print_solver_info()
+            if self.solver_A is not None:
+                self.solver_A.print_info()
 
         if self.acq_checked is False:
             self.check_acquisition()
@@ -404,7 +405,7 @@ class GridMMR(GridDC):
         A = self._build_A()
 
         if self.solver_A is None or keep_solver is False:
-            self.solver_A = Solver(A, self.get_solver(), self.verbose)
+            self.solver_A = Solver(self.get_solver_params(), A, self.verbose)
         self.u = self.solver_A.solve(q)
 
         B = self.C_f @ self.u
@@ -626,9 +627,9 @@ if __name__ == '__main__':
         if roi is not None:
             g.set_roi(roi)
         g.units = units
+        g.verbose = verbose
         g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
-        g.verbose = verbose
         g.xs = xs
         g.xo = xo
 
