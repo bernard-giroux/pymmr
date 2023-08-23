@@ -27,10 +27,12 @@ g.set_solver('mumps')
 g.verbose = False
 
 tmp = np.loadtxt('data_mmr_j.dat')
-data_mmr = DataMMR(xs=tmp[:, 3:9], xo=tmp[:, 9:12], data=tmp[:, :3], wt=np.ones((3*tmp.shape[0],)))
+data_mmr = DataMMR(xs=tmp[:, 3:9], xo=tmp[:, 9:12], data=tmp[:, :3], wt=np.ones((3*tmp.shape[0],)),
+                   cs=np.ones((tmp.shape[0],)))
 
 tmp = np.loadtxt('data_ert_j.dat')
-data_ert = DataERT(c1c2=tmp[:, :6], p1p2=tmp[:, 6:12], data=1000*tmp[:, 12], wt=np.ones((tmp.shape[0],)))
+data_ert = DataERT(c1c2=tmp[:, :6], p1p2=tmp[:, 6:12], data=1000*tmp[:, 12], wt=np.ones((tmp.shape[0],)),
+                   cs=np.ones((tmp.shape[0],)))
 
 # %%
 inv = Inversion()
