@@ -24,6 +24,8 @@ import re
 import sys
 import warnings
 
+# from multiprocessing import Pool
+
 import numpy as np
 import scipy.sparse as sp
 from scipy.stats.mstats import gmean
@@ -105,15 +107,19 @@ class GridDC(GridFV):
         Node coordinates along y (m)
     z : array of float
         Node coordinates along z (m)
-    comm : MPI Communicator or None
-        If None, use MPI_COMM_WORLD
+    units : str, optional
+        Units of voltage at output
+    comm : MPI Communicator, optional
+        If None, MPI_COMM_WORLD will be used
     """
-    def __init__(self, x, y, z, comm=None):
+
+    units_scaling_factors = {'mV': 1.e3, 'V': 1.0}
+
+    def __init__(self, x, y, z, units='mV', comm=None):
         GridFV.__init__(self, x, y, z, comm)
         self._c1c2 = None
         self._cs = None
         self._p1p2 = None
-        self.use_log_sigma = False
         self.u0 = None
         self.u = None
         self.q = None
@@ -125,12 +131,12 @@ class GridDC(GridFV):
         self.sort_electrodes = True
         self.electrodes_sorted = False
         self.sort_back = None
-        self.verbose = True
         self.roi = None
         self.ind_roi = np.arange(self.nc)
         self.in_inv = False    # set to True when grid is used in inversion
         self.c1c2_u = None
         self.cs12_u = None
+        self.units = units
 
     @property
     def c1c2(self):
@@ -146,12 +152,12 @@ class GridDC(GridFV):
             if tmp.size == 6:
                 tmp = tmp.reshape((1, 6))
             else:
-                raise ValueError('Size of source term must be nsrc x 6')
+                raise ValueError('Size of source term must be nobs x 6')
         elif tmp.ndim == 2:
             if tmp.shape[1] != 6:
-                raise ValueError('Size of source term must be nsrc x 6')
+                raise ValueError('Size of source term must be nobs x 6')
         else:
-            raise ValueError('Size of source term must be nsrc x 6')
+            raise ValueError('Size of source term must be nobs x 6')
         for ns in range(tmp.shape[0]):
             if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
                self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
@@ -200,6 +206,17 @@ class GridDC(GridFV):
         self._p1p2 = tmp
         self.electrodes_sorted = False
         self.Q = None  # reset interpolation matrix because electrodes will be sorted
+
+    @property
+    def units(self):
+        return self._units
+
+    @units.setter
+    def units(self, val):
+        if val not in GridDC.units_scaling_factors:
+            raise ValueError('Wrong units of voltage')
+        self._units = val
+        self._units_scaling = GridDC.units_scaling_factors[val]
 
     def check_cs(self):
         """Verify validity of current source intensity."""
@@ -265,8 +282,8 @@ class GridDC(GridFV):
 
             return self.x[ind_x], self.y[ind_y], self.z[ind_z]
 
-    def fwd_mod(self, sigma=None, c1c2=None, p1p2=None, calc_J=False,
-                   calc_sens=False, q=None, cs=1.0, keep_solver=False):
+    def fwd_mod(self, sigma=None, c1c2=None, p1p2=None, calc_J=False, calc_sens=False, q=None, cs=1.0,
+                keep_solver=True):
         """
         Forward modelling.
 
@@ -287,7 +304,7 @@ class GridDC(GridFV):
         cs : scalar or array_like
             Current at injection points, 1 A by default.
         keep_solver : bool
-            not used, included for compatibility
+            Keep solver if already instantiated
 
         Raises
         ------
@@ -325,11 +342,12 @@ class GridDC(GridFV):
             self.print_info()
             if c1c2 is not None:
                 print('    {0:d} combinations of dipoles'.format(c1c2.shape[0]))
-            self.print_solver_info()
             if self.apply_bc:
                 print('    Correction at boundary: applied')
             else:
                 print('    Correction at boundary: not applied')
+            if self.solver_A is not None:
+                self.solver_A.print_info()
 
         self.cs = cs
 
@@ -384,7 +402,10 @@ class GridDC(GridFV):
 
         if sigma is not None:
             A, M = self._build_A(sigma)
-            self.solver_A = Solver(A, self.get_solver(), self.verbose)
+            if self.solver_A is None or keep_solver is False:
+                self.solver_A = Solver(self.get_solver_params(), A, self.verbose)
+            else:
+                self.solver_A.A = A
         elif self.solver_A is None:
             raise RuntimeError('Variable sigma should be given as input.')
 
@@ -394,7 +415,7 @@ class GridDC(GridFV):
         if self.p1p2 is None:
             data = None
         else:
-            data = 1.e3 * self._get_data()  # to get mV
+            data = self._units_scaling * self._get_data()
 
         if calc_sens:
             if self.verbose:
@@ -409,7 +430,9 @@ class GridDC(GridFV):
             if self.verbose:
                 print('  Filling sensitivity matrix ... ', end='', flush=True)
 
-            # items = [(n, c1c2, Dm, S) for n in range(self.c1c2.shape[0])]
+            Gf = self.build_G_faces()
+
+            # items = [(n, c1c2, Dm, S, Gf) for n in range(self.c1c2.shape[0])]
             # with Pool() as pool:
             #     results = pool.starmap_async(self._fill_jacobian, items)
             #     for tmp, n in results.get():
@@ -429,9 +452,8 @@ class GridDC(GridFV):
                     msg = pre_msg+'  term '+str(n+1)+' of '+str(self.c1c2.shape[0])+' '
                     print(msg, end='', flush=True)
 
-                sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S)
+                sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S, Gf)
 
-            sens *= 1.e3   # we want mV for voltage units
             if self.sort_electrodes and self.sort_back is not None:
                 sens = sens[:, self.sort_back]
 
@@ -620,6 +642,59 @@ class GridDC(GridFV):
             print('      Y min: {0:e}\tY max: {1:e}'.format(self.roi[2], self.roi[3]), file=file)
             print('      Z min: {0:e}\tZ max: {1:e}'.format(self.roi[4], self.roi[5]), file=file)
 
+    def save_sensitivity(self, sens, basename):
+        """Save sensitivity to VTK files.
+
+        Parameters
+        ----------
+        sens : ndarray
+            Sensitivity
+        basename : str
+            basename for output files (1 per dipole).
+        """
+        x, y, z = g.get_roi_nodes()
+        # grille temporaire pour sauvegarder sens
+        g2 = GridFV(x, y, z)
+        # make 1 file for each injection dipole
+        for n in range(self.n_c1c2_u):
+            (ind,) = np.where(n == self.ind_c1c2)
+            fields = {}
+            for i in ind:
+                name = "∂d/∂m - P1: " + str(self.p1p2[i, 0]) + " " + str(self.p1p2[i, 1]) + " "
+                name += str(self.p1p2[i, 2]) + ", "
+                name += "P2: " + str(self.p1p2[i, 3]) + " " + str(self.p1p2[i, 4]) + " " + str(self.p1p2[i, 5])
+        
+                fields[name] = sens[:, i]
+
+            src = "C1: " + str(self.c1c2_u[n, 0]) + " " + str(self.c1c2_u[n, 1]) + " " + str(self.c1c2_u[n, 2])
+            src += ", C2: " + str(self.c1c2_u[n, 3]) + " " + str(self.c1c2_u[n, 4]) + " " + str(self.c1c2_u[n, 5])
+            metadata = {"Source dipole": src}
+            filename = basename + "_dc_sens_dip" + str(n + 1)
+            g2.toVTK(fields, filename, metadata=metadata)
+
+    def save_current_density(self, J, basename):
+        """Save current density to VTK files.
+
+        Parameters
+        ----------
+        J : ndarray
+            Current density
+        basename : str
+            basename for output files (1 per dipole).
+        """
+        # make 1 file for each injection dipole
+        for n in range(self.n_c1c2_u):
+            src = "C1: " + str(self.c1c2_u[n, 0]) + " " + str(self.c1c2_u[n, 1]) + " " + str(self.c1c2_u[n, 2])
+            src += ", C2: " + str(self.c1c2_u[n, 3]) + " " + str(self.c1c2_u[n, 4]) + " " + str(self.c1c2_u[n, 5])
+            metadata = {"Source dipole": src}
+            
+            filename = basename+'_Jx_dc_dip'+str(n+1)
+            g.toVTK({'Jx': J[:self.nfx, n]}, filename, component='x', metadata=metadata)
+            filename = basename+'_Jy_dc_dip'+str(n+1)
+            g.toVTK({'Jy': J[self.nfx:(self.nfx+self.nfy), n]}, filename, component='y', metadata=metadata)
+            filename = basename+'_Jz_dc_dip'+str(n+1)
+            g.toVTK({'Jz': J[(self.nfx+self.nfy):, n]}, filename, component='z', metadata=metadata)
+
     def _build_A(self, sigma):
         # Build LHS matrix
         M = self.build_M(sigma)
@@ -706,10 +781,7 @@ class GridDC(GridFV):
             cs = np.r_[self.cs_u, self.cp_u]
 
         z, y, x = np.meshgrid(self.zc, self.yc, self.xc, indexing='ij')
-        if self.use_log_sigma:
-            avg_cond = gmean(np.exp(ref_model.flatten()))
-        else:
-            avg_cond = gmean(ref_model.flatten())
+        avg_cond = gmean(ref_model.flatten())
 
         self.u0 = np.empty((self.nc, c1c2.shape[0]))
 
@@ -933,18 +1005,15 @@ class GridDC(GridFV):
             gu[:, i] = gui.flatten()
         return np.sum(gu, axis=1)
 
-    def _fill_jacobian(self, n, c1c2, Dm, S):
+    def _fill_jacobian(self, n, c1c2, Dm, S, Gf):
         u = self.u[:, self.ind_c1[n]] - self.u[:, self.ind_c2[n]]
         u_r = self.u[:, c1c2.shape[0] + self.ind_p1[n]] - self.u[:, c1c2.shape[0] + self.ind_p2[n]]
-        Gc = self.build_G(self.G @ u)
+        v = sp.diags(self.G @ u)
+        Gc = v @ Gf
+        # Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
-        tmp = -A @ self.G @ u_r
+        tmp = -self._units_scaling * A @ self.G @ u_r
         return tmp[self.ind_roi], n
-
-    def __getstate__(self):
-        self.solver_A = None   # some solvers have attributes that are not picklable
-        state = self.__dict__.copy()
-        return state
 
 
 # %% Solutions analytiques
@@ -1125,6 +1194,9 @@ class VerticalDyke():
 
 if __name__ == '__main__':
 
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+
     # %% read arguments
     if len(sys.argv) > 1:
 
@@ -1145,6 +1217,7 @@ if __name__ == '__main__':
         precon = False
         do_perm = False
         cs = 1.0
+        units = 'mV'
 
         kw_pattern = re.compile('\s?(.+)\s?#\s?([\w\s]+),')
 
@@ -1156,7 +1229,7 @@ if __name__ == '__main__':
                     value = kw_match[1].rstrip()
                     keyword = kw_match[2].rstrip()
                     if 'model' in keyword:
-                        g = build_from_vtk(GridDC, value)
+                        g = build_from_vtk(GridDC, value, comm=comm)
                         sigma = g.fromVTK('Conductivity', value)
                     elif 'basename' in keyword:
                         basename = value
@@ -1193,20 +1266,21 @@ if __name__ == '__main__':
                         roi = [float(x) for x in tmp]
                     elif 'boundary' in keyword and 'correction' in keyword:
                         apply_bc = int(value)
+                    elif 'units' in keyword:
+                        units = value
 
         if g is None:
             raise RuntimeError('Grid not defined, check input parameters')
-            
-        g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
+        g.units = units
         g.verbose = verbose
+        g.set_solver(solver_name, tol, max_it, precon, do_perm)
         g.apply_bc = apply_bc
 
         if roi is not None:
             g.set_roi(roi)
 
-        out = g.fwd_mod(sigma, c1c2, p1p2, calc_J=calc_J,
-                           calc_sens=calc_sens, cs=cs)
+        out = g.fwd_mod(sigma, c1c2, p1p2, calc_J=calc_J, calc_sens=calc_sens, cs=cs)
 
         if calc_sens:
             if verbose:

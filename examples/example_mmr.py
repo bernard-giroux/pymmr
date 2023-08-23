@@ -23,6 +23,7 @@ y = np.r_[y[0] - pad[::-1], y, y[-1] + pad]
 z = np.r_[z, z[-1] + pad]
 
 g = GridMMR(x, y, z)
+g.verbose = True
 g.set_solver("mumps")
 
 

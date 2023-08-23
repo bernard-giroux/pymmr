@@ -50,23 +50,44 @@ class GridMMR(GridDC):
         Node coordinates along y (m)
     z : array of float
         Node coordinates along z (m)
-    comm : MPI Communicator or None
-        If None, use MPI_COMM_WORLD
+    units : str, optional
+        B-field units
+    comm : MPI Communicator, optional
+        If None, MPI_COMM_WORLD will be used
 
     Notes
     -----
-    - It is possible to compute the DC resistvity response for injection 
+    - It is possible to compute the DC resistivity response for injection
     dipoles that are different from the source term defined for MMR modeling.
     This has been implemented for allowing joint inversion of MMR & ERT data.
     """
-    def __init__(self, x, y, z, comm=None):
-        GridDC.__init__(self, x, y, z, comm)
-        self.gdc = GridDC(x, y, z, comm)
+
+    units_scaling_factors = {'pT': 1.e12, 'nT': 1.e9}
+
+    def __init__(self, x, y, z, units='pT', comm=None):
+        GridDC.__init__(self, x, y, z, units=units, comm=comm)
+        self.gdc = GridDC(x, y, z, units='mV', comm=comm)
         self.gdc.verbose = False
-        self.solver_A = None
         self.acq_checked = False
         self._xs = None
         self._xo = None
+        self.xs_u = None
+        self.xo_all = None
+        self.ind_back = None
+        self.ind_s = None
+        self.mask = None
+        self.nobs_xs = None
+        self.nobs_mmr = 0
+        self.units = units
+
+    @property
+    def apply_bc(self):
+        return self.gdc.apply_bc
+
+    @apply_bc.setter
+    def apply_bc(self, val):
+        if "gdc" in self.__dict__:
+            self.gdc.apply_bc = val
 
     @property
     def in_inv(self):
@@ -98,8 +119,8 @@ class GridMMR(GridDC):
         else:
             raise ValueError('Size of source term must be nsrc x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) == False or \
-               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) == False:
+            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
                 raise ValueError('Source term outside grid')
         self._xs = tmp
         self.acq_checked = False
@@ -126,7 +147,7 @@ class GridMMR(GridDC):
             raise ValueError('Observation points should be nobs x 3')
         for ns in range(tmp.shape[0]):
             if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False:
-                    raise ValueError('Observation points outside grid')
+                raise ValueError('Observation points outside grid')
 #            if tmp[ns, 2] < self.zc[0]:
 #                tmp[ns, 2] = self.zc[0]
         self._xo = tmp
@@ -149,6 +170,17 @@ class GridMMR(GridDC):
     @p1p2.setter
     def p1p2(self, val):
         self.gdc.p1p2 = val
+
+    @property
+    def units(self):
+        return self._units
+
+    @units.setter
+    def units(self, val):
+        if val not in GridMMR.units_scaling_factors:
+            raise ValueError('Wrong units of B-field')
+        self._units = val
+        self._units_scaling = GridMMR.units_scaling_factors[val]
 
     def check_acquisition(self):
         """Check consistency of `xs` and `xo`."""
@@ -197,7 +229,7 @@ class GridMMR(GridDC):
         ----------
         name : `string` or `callable`
             If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
-            If `callable`: (iterative solver from scipy.sparse.linalg, eg bicgstab)
+            If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
         tol : float, optional
             Tolerance for the iterative solver
         max_it : int, optional
@@ -246,24 +278,10 @@ class GridMMR(GridDC):
         else:
             raise RuntimeError('Solver '+name+' not implemented')
 
+        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
         self.precon = precon
         self.do_perm = do_perm
         self.comm = comm
-
-    def get_solver(self):
-        """Return parameters needed to instantiate Solver."""
-        if self.want_mumps:
-            return 'mumps', self.comm
-        elif self.want_pardiso:
-            return ('pardiso',)
-        elif self.want_pastix:
-            return ('pastix',)
-        elif self.want_superlu:
-            return ('superlu',)
-        elif self.want_umfpack:
-            return ('umfpack',)
-        else:
-            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
 
     def set_roi(self, roi):
         """Define region of interest for computing sensitivity or for inversion.
@@ -279,6 +297,7 @@ class GridMMR(GridDC):
         self.ind_roi = self.gdc.ind_roi
 
     def data_to_obs(self, data, field_data=True):
+        """Rearrange data for inversion."""
         if field_data:
             data = data[self.ind_s, :]
         else:
@@ -344,7 +363,8 @@ class GridMMR(GridDC):
         if self.verbose:
             print('\nForward modelling - Magnetometric resistivity')
             self.gdc.print_info()
-            self.print_solver_info()
+            if self.solver_A is not None:
+                self.solver_A.print_info()
 
         if self.acq_checked is False:
             self.check_acquisition()
@@ -394,13 +414,13 @@ class GridMMR(GridDC):
         A = self._build_A()
 
         if self.solver_A is None or keep_solver is False:
-            self.solver_A = Solver(A, self.get_solver(), self.verbose)
+            self.solver_A = Solver(self.get_solver_params(), A, self.verbose)
         self.u = self.solver_A.solve(q)
 
         B = self.C_f @ self.u
-        Bx = 1.e12 * B[:self.nex, :]
-        By = 1.e12 * B[self.nex:(self.nex+self.ney), :]
-        Bz = 1.e12 * B[(self.nex+self.ney):, :]
+        Bx = self._units_scaling * B[:self.nex, :]
+        By = self._units_scaling * B[self.nex:(self.nex+self.ney), :]
+        Bz = self._units_scaling * B[(self.nex+self.ney):, :]
 
         no = self.xo_all.shape[0]
         data = np.empty((no*q.shape[1], self.xo_all.shape[1]))
@@ -442,11 +462,6 @@ class GridMMR(GridDC):
             for ns in range(self.xs_u.shape[0]):
                 self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2)
 
-            if self.in_inv is False:
-                # use order of observations
-                tmp = np.c_[self.ind_back, self.nobs_mmr+self.ind_back, 2*self.nobs_mmr+self.ind_back]
-                sens = sens[:, tmp]
-
             if self.verbose:
                 print('done.')
 
@@ -474,6 +489,49 @@ class GridMMR(GridDC):
     def distance_weighting(self, xo, beta):
         return self.gdc.distance_weighting(xo, beta)
 
+    def get_roi_nodes(self):
+        return self.gdc.get_roi_nodes()
+
+    def save_sensitivity(self, sens, basename):
+        """Save sensitivity to VTK files.
+
+        Parameters
+        ----------
+        sens : ndarray
+            Sensitivity
+        basename : str
+            basename for output files (1 per dipole).
+        """
+        x, y, z = self.gdc.get_roi_nodes()
+        # grille temporaire pour sauvegarder sens
+        g2 = GridFV(x, y, z)
+        xo = self.xo[self.ind_s, :]
+
+        # make 1 file for each injection dipole
+        for ns in range(self.xs_u.shape[0]):
+            if ns == 0:
+                i = i0 = 0
+            else:
+                i = np.sum(self.nobs_xs[:ns])
+                i0 = np.sum(self.nobs_xs[:ns] * 3)
+            sens_data = {}
+            for nr in range(self.nobs_xs[ns]):
+                xo_x = xo[i + nr, 0]
+                xo_y = xo[i + nr, 1]
+                xo_z = xo[i + nr, 2]
+                name = '∂d/∂m - Bx: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
+                sens_data[name] = sens[:, i0 + nr]
+                name = '∂d/∂m - By: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
+                sens_data[name] = sens[:, i0 + nr + self.nobs_xs[ns]]
+                name = '∂d/∂m - Bz: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
+                sens_data[name] = sens[:, i0 + nr + 2 * self.nobs_xs[ns]]
+
+            src = "C1: " + str(self.xs_u[ns, 0]) + " " + str(self.xs_u[ns, 1]) + " " + str(self.xs_u[ns, 2])
+            src += ", C2: " + str(self.xs_u[ns, 3]) + " " + str(self.xs_u[ns, 4]) + " " + str(self.xs_u[ns, 5])
+            metadata = {"Source dipole": src}
+            filename = basename+'_mmr_sens_dip'+str(ns+1)
+            g2.toVTK(sens_data, filename, metadata=metadata)
+
     def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
         # add air layers
         dz_air = calc_padding(self.gdc.hz[0], n_cells=n_crois_cells, factor=factor)
@@ -489,9 +547,10 @@ class GridMMR(GridDC):
 
         J = sp.hstack((Jx.T, Jy.T, Jz.T))
 
-        ind_earth = np.r_[self.ind(np.arange(self.nx-1), np.arange(self.ny), np.where(self.zc>0), 'fx'),
-                          self.nfx+self.ind(np.arange(self.nx), np.arange(self.ny-1), np.where(self.zc>0), 'fy'),
-                          self.nfx+self.nfy+self.ind(np.arange(self.nx), np.arange(self.ny), np.where(self.z[1:-1]>0), 'fz')]
+        ind_earth = np.r_[self.ind(np.arange(self.nx-1), np.arange(self.ny), np.where(self.zc > 0), 'fx'),
+                          self.nfx+self.ind(np.arange(self.nx), np.arange(self.ny-1), np.where(self.zc > 0), 'fy'),
+                          self.nfx+self.nfy+self.ind(np.arange(self.nx), np.arange(self.ny),
+                                                     np.where(self.z[1:-1] > 0), 'fz')]
 
         q = self.solver_A.solve(J)
         q = q[ind_earth, :]
@@ -537,7 +596,7 @@ class GridMMR(GridDC):
         mask_xs = self.mask[n*self.xo_all.shape[0]:(n+1)*self.xo_all.shape[0]]
         mask_xs = np.r_[mask_xs, mask_xs, mask_xs]
         tmp = tmp[self.gdc.ind_roi, :]
-        J[:, i0:i1] = 1.e12 * tmp[:, mask_xs]  # to have pT
+        J[:, i0:i1] = self._units_scaling * tmp[:, mask_xs]
 
 
 # %% main
@@ -561,6 +620,7 @@ if __name__ == '__main__':
         cs = 1.0
         precon = False
         do_perm = False
+        units = 'pT'
 
         kw_pattern = re.compile('\s?(.+)\s?#\s?([\w\s]+),')
 
@@ -605,16 +665,18 @@ if __name__ == '__main__':
                         if len(tmp) != 6:
                             raise ValueError('6 values needed to define ROI (xmin xmax ymin ymax zmin zmax')
                         roi = [float(x) for x in tmp]
+                    elif 'units' in keyword:
+                        units = value
 
         if g is None:
             raise RuntimeError('Grid not defined, check input parameters')
 
         if roi is not None:
             g.set_roi(roi)
-
+        g.units = units
+        g.verbose = verbose
         g.set_solver(solver_name, tol, max_it, precon, do_perm)
 
-        g.verbose = verbose
         g.xs = xs
         g.xo = xo
 
