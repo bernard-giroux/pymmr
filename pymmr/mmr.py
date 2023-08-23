@@ -453,11 +453,6 @@ class GridMMR(GridDC):
             for ns in range(self.xs_u.shape[0]):
                 self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2)
 
-            if self.in_inv is False:
-                # use order of observations
-                tmp = np.c_[self.ind_back, self.nobs_mmr+self.ind_back, 2*self.nobs_mmr+self.ind_back]
-                sens = sens[:, tmp]
-
             if self.verbose:
                 print('done.')
 
@@ -484,6 +479,49 @@ class GridMMR(GridDC):
 
     def distance_weighting(self, xo, beta):
         return self.gdc.distance_weighting(xo, beta)
+
+    def get_roi_nodes(self):
+        return self.gdc.get_roi_nodes()
+
+    def save_sensitivity(self, sens, basename):
+        """Save sensitivity to VTK files.
+
+        Parameters
+        ----------
+        sens : ndarray
+            Sensitivity
+        basename : str
+            basename for output files (1 per dipole).
+        """
+        x, y, z = self.gdc.get_roi_nodes()
+        # grille temporaire pour sauvegarder sens
+        g2 = GridFV(x, y, z)
+        xo = self.xo[self.ind_s, :]
+
+        # make 1 file for each injection dipole
+        for ns in range(self.xs_u.shape[0]):
+            if ns == 0:
+                i = i0 = 0
+            else:
+                i = np.sum(self.nobs_xs[:ns])
+                i0 = np.sum(self.nobs_xs[:ns] * 3)
+            sens_data = {}
+            for nr in range(self.nobs_xs[ns]):
+                xo_x = xo[i + nr, 0]
+                xo_y = xo[i + nr, 1]
+                xo_z = xo[i + nr, 2]
+                name = '∂d/∂m - Bx: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
+                sens_data[name] = sens[:, i0 + nr]
+                name = '∂d/∂m - By: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
+                sens_data[name] = sens[:, i0 + nr + self.nobs_xs[ns]]
+                name = '∂d/∂m - Bz: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
+                sens_data[name] = sens[:, i0 + nr + 2 * self.nobs_xs[ns]]
+
+            src = "C1: " + str(self.xs_u[ns, 0]) + " " + str(self.xs_u[ns, 1]) + " " + str(self.xs_u[ns, 2])
+            src += ", C2: " + str(self.xs_u[ns, 3]) + " " + str(self.xs_u[ns, 4]) + " " + str(self.xs_u[ns, 5])
+            metadata = {"Source dipole": src}
+            filename = basename+'_mmr_sens_dip'+str(ns+1)
+            g2.toVTK(sens_data, filename, metadata=metadata)
 
     def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
         # add air layers

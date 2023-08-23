@@ -642,6 +642,59 @@ class GridDC(GridFV):
             print('      Y min: {0:e}\tY max: {1:e}'.format(self.roi[2], self.roi[3]), file=file)
             print('      Z min: {0:e}\tZ max: {1:e}'.format(self.roi[4], self.roi[5]), file=file)
 
+    def save_sensitivity(self, sens, basename):
+        """Save sensitivity to VTK files.
+
+        Parameters
+        ----------
+        sens : ndarray
+            Sensitivity
+        basename : str
+            basename for output files (1 per dipole).
+        """
+        x, y, z = g.get_roi_nodes()
+        # grille temporaire pour sauvegarder sens
+        g2 = GridFV(x, y, z)
+        # make 1 file for each injection dipole
+        for n in range(self.n_c1c2_u):
+            (ind,) = np.where(n == self.ind_c1c2)
+            fields = {}
+            for i in ind:
+                name = "∂d/∂m - P1: " + str(self.p1p2[i, 0]) + " " + str(self.p1p2[i, 1]) + " "
+                name += str(self.p1p2[i, 2]) + ", "
+                name += "P2: " + str(self.p1p2[i, 3]) + " " + str(self.p1p2[i, 4]) + " " + str(self.p1p2[i, 5])
+        
+                fields[name] = sens[:, i]
+
+            src = "C1: " + str(self.c1c2_u[n, 0]) + " " + str(self.c1c2_u[n, 1]) + " " + str(self.c1c2_u[n, 2])
+            src += ", C2: " + str(self.c1c2_u[n, 3]) + " " + str(self.c1c2_u[n, 4]) + " " + str(self.c1c2_u[n, 5])
+            metadata = {"Source dipole": src}
+            filename = basename + "_dc_sens_dip" + str(n + 1)
+            g2.toVTK(fields, filename, metadata=metadata)
+
+    def save_current_density(self, J, basename):
+        """Save current density to VTK files.
+
+        Parameters
+        ----------
+        J : ndarray
+            Current density
+        basename : str
+            basename for output files (1 per dipole).
+        """
+        # make 1 file for each injection dipole
+        for n in range(self.n_c1c2_u):
+            src = "C1: " + str(self.c1c2_u[n, 0]) + " " + str(self.c1c2_u[n, 1]) + " " + str(self.c1c2_u[n, 2])
+            src += ", C2: " + str(self.c1c2_u[n, 3]) + " " + str(self.c1c2_u[n, 4]) + " " + str(self.c1c2_u[n, 5])
+            metadata = {"Source dipole": src}
+            
+            filename = basename+'_Jx_dc_dip'+str(n+1)
+            g.toVTK({'Jx': J[:self.nfx, n]}, filename, component='x', metadata=metadata)
+            filename = basename+'_Jy_dc_dip'+str(n+1)
+            g.toVTK({'Jy': J[self.nfx:(self.nfx+self.nfy), n]}, filename, component='y', metadata=metadata)
+            filename = basename+'_Jz_dc_dip'+str(n+1)
+            g.toVTK({'Jz': J[(self.nfx+self.nfy):, n]}, filename, component='z', metadata=metadata)
+
     def _build_A(self, sigma):
         # Build LHS matrix
         M = self.build_M(sigma)
