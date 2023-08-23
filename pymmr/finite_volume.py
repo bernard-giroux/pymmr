@@ -1148,7 +1148,7 @@ class GridFV:
                           sp.hstack((Dxz, sp.csr_matrix((self.ney, self.nfy)), -Dzx), format='csr'),
                           sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nez, self.nfz))), format='csr')))
 
-    def toVTK(self, fields, filename, component='s', on_face=True):
+    def toVTK(self, fields, filename, component='s', on_face=True, metadata=None):
         """
         Save a field in a vtk file.
 
@@ -1166,6 +1166,8 @@ class GridFV:
             - 'z' : Z component of the field
         on_face : bool, optional
             field component is defined on faces (True), or on edges (False)
+        metadata : dict[str, str], optional
+            metadata to store in field data
         """
 
         if type(fields) != dict:
@@ -1234,6 +1236,14 @@ class GridFV:
                 rgrid.GetCellData().AddArray(data)
             else:
                 rgrid.GetPointData().AddArray(data)
+
+        if metadata is not None:
+            string_array = vtk.vtkStringArray()
+            string_array.SetNumberOfTuples(len(metadata))
+            for nm, key in enumerate(metadata):
+                string_array.SetValue(nm, metadata[key])
+                string_array.SetName(key)
+            rgrid.GetFieldData().AddArray(string_array)
 
         writer = vtk.vtkXMLRectilinearGridWriter()
         writer.SetInputData(rgrid)

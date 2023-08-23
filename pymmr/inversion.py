@@ -16,8 +16,8 @@ import matplotlib.pyplot as plt
 
 # %%  Define namedtuple for input data
 
-DataMMR = namedtuple("DataMMR", "xs xo data wt")
-DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt")
+DataMMR = namedtuple("DataMMR", "xs xo data wt cs")
+DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt cs")
 
 
 # %% Some functions
@@ -185,7 +185,79 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
 
     return x, error, it
 
-    
+
+def df_to_data(df):
+    """Create namedtuple from DataFrame."""
+
+    c1c2 = np.c_[
+        df["c1_x"].to_numpy().reshape(-1, 1),
+        df["c1_y"].to_numpy().reshape(-1, 1),
+        df["c1_z"].to_numpy().reshape(-1, 1),
+        df["c2_x"].to_numpy().reshape(-1, 1),
+        df["c2_y"].to_numpy().reshape(-1, 1),
+        df["c2_z"].to_numpy().reshape(-1, 1),
+    ]
+    if "Bx" in df:
+        # we have MMR data
+        try:
+            data = np.c_[
+                df["Bx"].to_numpy().reshape(-1, 1),
+                df["By"].to_numpy().reshape(-1, 1),
+                df["Bz"].to_numpy().reshape(-1, 1),
+            ]
+            xo = np.c_[
+                df["obs_x"].to_numpy().reshape(-1, 1),
+                df["obs_y"].to_numpy().reshape(-1, 1),
+                df["obs_z"].to_numpy().reshape(-1, 1),
+            ]
+        except KeyError:
+            raise ValueError("Invalid MMR data file")
+        if "cs" in df:
+            cs = df["cs"].to_numpy()
+        else:
+            warnings.warn("Source current not defined, using 1 A", stacklevel=2)
+            cs = np.ones((data.shape[0],))
+        if "wt_x" in df:
+            wt = np.hstack(
+                (
+                    df["wt_x"].to_numpy(),
+                    df["wt_y"].to_numpy(),
+                    df["wt_z"].to_numpy(),
+                )
+            )
+        else:
+            warnings.warn("MMR measurement error not defined, using 1%", stacklevel=2)
+            wt = np.ones((3 * data.shape[0],))
+        return DataMMR(xs=c1c2, xo=xo, data=data, wt=wt, cs=cs)
+    elif "V" in df:
+        # we have ERT data
+        try:
+            data = df["V"].to_numpy()
+            p1p2 = np.c_[
+                df["p1_x"].to_numpy().reshape(-1, 1),
+                df["p1_y"].to_numpy().reshape(-1, 1),
+                df["p1_z"].to_numpy().reshape(-1, 1),
+                df["p2_x"].to_numpy().reshape(-1, 1),
+                df["p2_y"].to_numpy().reshape(-1, 1),
+                df["p2_z"].to_numpy().reshape(-1, 1),
+            ]
+        except KeyError:
+            raise ValueError("Invalid ERT data file")
+        if "cs" in df:
+            cs = df["cs"].to_numpy()
+        else:
+            warnings.warn("Source current not defined, using 1 A", stacklevel=2)
+            cs = np.ones((data.shape[0],))
+        if "wt" in df:
+            wt = df["wt"].to_numpy()
+        else:
+            warnings.warn("ERT measurement error not defined, using 1%", stacklevel=2)
+            wt = np.ones((data.shape[0],))
+        return DataERT(c1c2=c1c2, p1p2=p1p2, data=data, wt=wt, cs=cs)
+    else:
+        raise ValueError("Invalid DataFrame file")
+
+
 class Inversion:
     def __init__(self):
 
@@ -358,7 +430,7 @@ class Inversion:
                 m_weight = np.ones(m_ref.shape)
         if m_active is None:
             m_active = np.ones(m_ref.shape, dtype=bool)
-            # TODO: if m_active is not not, this should be transferred to g
+            # TODO: if m_active is not set, this should be transferred to g
 
         if m0 is None:
             m0 = m_ref.copy()
@@ -612,3 +684,4 @@ class Inversion:
 
         sigma[sigma > self.sigma_max] = self.sigma_max
         sigma[sigma < self.sigma_min] = self.sigma_min
+

@@ -81,6 +81,15 @@ class GridMMR(GridDC):
         self.units = units
 
     @property
+    def apply_bc(self):
+        return self.gdc.apply_bc
+
+    @apply_bc.setter
+    def apply_bc(self, val):
+        if "gdc" in self.__dict__:
+            self.gdc.apply_bc = val
+
+    @property
     def in_inv(self):
         return self.gdc.in_inv
 
