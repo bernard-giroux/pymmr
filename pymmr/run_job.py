@@ -68,12 +68,17 @@ g = None
 data_mmr = None
 data_ert = None
 model_file = None
-verbose = False
+verbose = True
 roi = None
 apply_bc = True
 calc_J = False
 calc_sens = False
 units = "mV"
+tol = 1.e-9
+solver_name = "mumps"
+max_it = 1000
+precon = False
+do_perm = False
 
 kw_pattern = re.compile("\s?(.+)\s?#\s?([\w\s]+),")
 
@@ -189,7 +194,14 @@ if "fwd" in job and "mmr" in job:
         print("Saving modelled data ... ", end="", flush=True)
     filename = basename + "_mmr.dat"
     header = "src_x src_y src_z rcv_x rcv_y rcv_z Bx By Bz"
-    np.savetxt(filename, np.c_[g.xs, g.xo, data], header=header)
+    if c1c2.shape[0] == meas.shape[0]:
+        xs = c1c2
+        xo = meas
+    else:
+        # fwd modelling was done using the following combinations
+        xs = np.kron(c1c2, np.ones((meas.shape[0], 1)))
+        xo = np.kron(np.ones((c1c2.shape[0], 1)), meas)
+    np.savetxt(filename, np.c_[xs, xo, data], header=header, fmt="%g")
     if verbose:
         print("done.")
 
@@ -221,7 +233,7 @@ elif "fwd" in job and ("dc" in job or "ert" in job):
     filename = basename + "_dc.dat"
     data = np.c_[c1c2, meas, data]
     header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z v"
-    np.savetxt(filename, data, header=header)
+    np.savetxt(filename, data, header=header, fmt="%g")
     
     if verbose:
         print("done.")
