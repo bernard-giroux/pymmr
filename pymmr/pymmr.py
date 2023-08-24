@@ -1,6 +1,48 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Main script to run forward modelling and inversion jobs.
+
+@author: giroux
+
+A parameter file must be provided to define input data, model, etc.
+
+Parameter file
+--------------
+
+This is a plain ascii file and each line has the following format:
+
+```
+value          # keyword,
+```
+
+The keywords are :
+
+- **job** : type of job, possible values are "fwd mmr", "fwd dc", "inv"
+- **basename** : each output file will start with this basename
+- **data mmr** : Input file holding MMR data (see format below)
+- **data dc** : Input file holding DC resistivity data (see format below)
+- **model** : Conductivity mode; in VTK format (RectilinearGrid)
+- **source file** : Coordinates in injection dipoles, for forward modelling
+- **measurement file** : Coordinates of measurement dipoles or B-field sensor, for forweard modelling
+- **source current** : Intensity of source current in A (file or scalar)
+- **beta** : Regularization factor for computing perturbation
+- **inv max_it** : Maximum number of inversion iterations
+- **solver name** : Choice of solver
+- **solver max_it** : Maximum number of iteration for iterative solvers
+- **solver tol** : Target tolerance for iterative solvers
+- **precon** : Apply preconditionning when using iterative solvers
+- **permut** : Apply inverse Cuthill-McKee permutation when using iterative solvers
+- **region of interest** : Extents of region of interest for inversion or sensitivity calculation
+- **verbose** : Display progress messages
+- **boundary correction** : Apply correction desccribed in Pidlisecky et al. 2007
+- **compute current** : Compute and save current density (forward modelling)
+- **compute sensitivity** : Compute and save sensitivity (forward modelling)
+- **units** : units of voltage for forward modelling, "mV" or "V"
+
+File formats
+------------
+
+
 """
 
 from mpi4py import MPI
