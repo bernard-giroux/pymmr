@@ -756,6 +756,7 @@ class GridDC(GridFV):
         self.u0 = None
 
     def _boundary_correction(self, ref_model):
+        """Apply correction described in Pidlisecky et al. 2007"""
 
         if self.keep_c1c2:
             c1c2 = self.c1c2_u.copy()
