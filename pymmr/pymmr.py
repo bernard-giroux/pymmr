@@ -63,7 +63,7 @@ from pymmr.inversion import Inversion, df_to_data
 comm = MPI.COMM_WORLD
 
 basename = "pymmr"
-job = "fwd_dc"
+job = None
 g = None
 data_mmr = None
 data_ert = None
@@ -101,7 +101,7 @@ with open(sys.argv[1], "r") as f:
                 basename = value
             elif "beta" in keyword.lower():
                 inv.beta = float(value)
-            elif "max" in keyword.lower() and "it" in keyword.lower():
+            elif "inv" in keyword.lower() and "max_it" in keyword.lower():
                 inv.max_it = int(value)
             elif "model" in keyword.lower():
                 model_file = value
@@ -113,7 +113,7 @@ with open(sys.argv[1], "r") as f:
                     solver_name = value.lower()
             elif 'solver' in keyword.lower() and 'max_it' in keyword.lower():
                 max_it = int(value)
-            elif 'solver' in keyword.lower() and 'tolerance' in keyword.lower():
+            elif 'solver' in keyword.lower() and 'tol' in keyword.lower():
                 tol = float(value)
             elif 'precon' in keyword.lower():
                 precon = int(value)
@@ -147,11 +147,14 @@ with open(sys.argv[1], "r") as f:
 
 # Done reading parameter file
 
-if data_mmr is None and data_ert is None and "inv" in job:
-    raise RuntimeError("No input data provided")
+if job is None:
+    raise RuntimeError("Type of job not specified")
 
 if model_file is None:
-    raise RuntimeError("Starting model not provided")
+    raise RuntimeError("Starting/input model not provided")
+
+if data_mmr is None and data_ert is None and "inv" in job:
+    raise RuntimeError("No input data provided")
 
 if data_mmr is not None or "mmr" in job:
     # we will have MMR data to invert of MMR data to model
@@ -236,3 +239,6 @@ elif "inv" in job:
         fields[name] = S_save[i]
 
     g2.toVTK(fields, basename + "inv")
+
+else:
+    raise ValueError("Job type not defined")
