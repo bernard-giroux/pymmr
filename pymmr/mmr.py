@@ -382,7 +382,7 @@ class GridMMR(GridDC):
         self.gdc.sort_electrodes = False
 
         if self.verbose:
-            print('  Computing interpolation matrices... ', end='', flush=True)
+            print('  Computing interpolation matrices ... ', end='', flush=True)
         Qx, Qy, Qz = self._build_Q(self.xo_all)
         if self.verbose:
             print('done.')
@@ -459,8 +459,9 @@ class GridMMR(GridDC):
             S = self.gdc.build_M(sigma*sigma)
             Dm = sp.diags(1.0/sigma)
 
+            Gf = self.gdc.build_G_faces()
             for ns in range(self.xs_u.shape[0]):
-                self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2)
+                self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2, Gf)
 
             if self.verbose:
                 print('done.')
@@ -582,14 +583,16 @@ class GridMMR(GridDC):
         Qz = sp.vstack(Qz)
         return Qx, Qy, Qz
 
-    def _fill_jacobian(self, n, J, u_dc, Dm, S, q, q2):
+    def _fill_jacobian(self, n, J, u_dc, Dm, S, q, q2, Gf):
         if n == 0:
             i0 = 0
         else:
             i0 = np.sum(self.nobs_xs[:n]*3)
         i1 = i0 + self.nobs_xs[n]*3
 
-        Gc = self.gdc.build_G(self.gdc.G @ u_dc[:, n])
+        v = sp.diags(self.gdc.G @ u_dc[:, n])
+        Gc = v @ Gf
+        # Gc = self.gdc.build_G(self.gdc.G @ u_dc[:, n])
         A = -Dm @ Gc.T @ S
         tmp = A @ q - A @ self.gdc.G @ q2
 
