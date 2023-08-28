@@ -370,6 +370,7 @@ class GridMMR(GridDC):
             self.check_acquisition()
 
         if self.in_inv and self.gdc.c1c2 is not None:
+            # joint inversion
             res_dc = self.gdc.fwd_mod(sigma, calc_sens=calc_sens)
 
         c1c2_u_save = copy.copy(self.gdc.c1c2_u)
@@ -411,10 +412,10 @@ class GridMMR(GridDC):
             q[(self.nfx+self.nfy-self.gdc.nfy):(self.nfx+self.nfy), i] = Jy[:, i]
             q[(self.nfx+self.nfy+self.nfz-self.gdc.nfz):, i] = Jz[:, i]
 
-        A = self._build_A()
-
         if self.solver_A is None or keep_solver is False:
-            self.solver_A = Solver(self.get_solver_params(), A, self.verbose)
+            self.solver_A = Solver(self.get_solver_params(), self._build_A(), self.verbose)
+        if self.solver_A.A is None:
+            self.solver_A.A = self._build_A()
         self.u = self.solver_A.solve(q)
 
         B = self.C_f @ self.u
