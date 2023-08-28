@@ -261,7 +261,7 @@ def df_to_data(df):
 class Inversion:
     def __init__(self):
 
-        self.methode = 'Gauss-Newton'
+        self.method = 'Gauss-Newton'
         """Algorithm: 'Gauss-Newton', 'Quasi-Newton'."""
 
         self.param_transf = 'log_conductivity'
@@ -407,7 +407,7 @@ class Inversion:
                 print('    Number of MMR data: {0:d}'.format(nobs_mmr))
             if data_ert is not None:
                 print('    Number of ERT data: {0:d}'.format(g.c1c2.shape[0]))
-            print('    Algorithm: '+self.methode)
+            print('    Algorithm: '+self.method)
             print('    Working variable: '+self.param_transf)
             if self.data_transf is not None:
                 print('    Function applied to data: '+self.data_transf)
@@ -470,7 +470,7 @@ class Inversion:
         beta = self.beta
 
         for i in range(self.max_it):
-            if i == 0 or self.methode == 'Gauss-Newton':
+            if i == 0 or self.method == 'Gauss-Newton':
                 if self.verbose:
                     print('  *** Iteration no {0:d} ***'.format(i + 1))
                     print('    Forward modelling & computation of jacobian ... ', end='', flush=True)
@@ -502,7 +502,7 @@ class Inversion:
             d_1 = d.copy()
             data_inv.append(d.flatten().copy())
 
-            if i > 0 and self.methode == 'Quasi-Newton':
+            if i > 0 and self.method == 'Quasi-Newton':
                 # Broyden update
                 p = s.T @ s
                 dJ = (d - d_1 - J @ s)/p
