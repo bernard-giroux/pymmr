@@ -368,8 +368,7 @@ class Inversion:
         nobs_mmr = 0
         if data_mmr is not None:
             try:
-                g.xs = data_mmr.xs
-                g.xo = data_mmr.xo
+                g.set_survey_mmr(data_mmr.xs, data_mmr.xo, data_mmr.cs)
                 g.check_acquisition()
                 dobs = g.data_to_obs(data_mmr.data)
                 wt = data_mmr.wt
@@ -379,8 +378,7 @@ class Inversion:
 
         if data_ert is not None:
             try:
-                g.c1c2 = data_ert.c1c2
-                g.p1p2 = data_ert.p1p2
+                g.set_survey_ert(data_ert.c1c2, data_ert.p1p2, data_ert.cs)
                 if dobs is None:
                     dobs = data_ert.data.reshape(-1, 1)
                 else:

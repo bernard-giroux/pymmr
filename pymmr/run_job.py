@@ -180,9 +180,7 @@ if roi is not None:
 g.apply_bc = apply_bc
 
 if "fwd" in job and "mmr" in job:
-    g.xs = c1c2
-    g.xo = meas
-    g.cs = cs
+    g.set_survey_mmr(c1c2, meas, cs)
     data = g.fwd_mod(sigma, calc_sens=calc_sens)
 
     if calc_sens:
@@ -196,22 +194,22 @@ if "fwd" in job and "mmr" in job:
     if verbose:
         print("Saving modelled data ... ", end="", flush=True)
     filename = basename + "_mmr.dat"
-    header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz"
+    header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz cs"
     if c1c2.shape[0] == meas.shape[0]:
         xs = c1c2
         xo = meas
+        cs = g.cs.reshape(-1, 1)
     else:
         # fwd modelling was done using the following combinations
         xs = np.kron(c1c2, np.ones((meas.shape[0], 1)))
         xo = np.kron(np.ones((c1c2.shape[0], 1)), meas)
-    np.savetxt(filename, np.c_[xs, xo, data], header=header, fmt="%g")
+        cs = np.kron(g.cs.reshape(-1, 1), np.ones((meas.shape[0], 1)))
+    np.savetxt(filename, np.c_[xs, xo, data, cs], header=header, fmt="%g")
     if verbose:
         print("done.")
 
 elif "fwd" in job and ("dc" in job or "ert" in job):
-    g.c1c2 = c1c2
-    g.p1p2 = meas
-    g.cs = cs
+    g.set_survey_ert(c1c2, meas, cs)
     g.units = units
     data = g.fwd_mod(sigma, calc_J=calc_J, calc_sens=calc_sens)
     
@@ -234,8 +232,8 @@ elif "fwd" in job and ("dc" in job or "ert" in job):
         print("Saving modelled voltages ... ", end="", flush=True)
     # save data
     filename = basename + "_dc.dat"
-    data = np.c_[c1c2, meas, data]
-    header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V"
+    data = np.c_[c1c2, meas, data, g.cs]
+    header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V cs"
     np.savetxt(filename, data, header=header, fmt="%g")
     
     if verbose:

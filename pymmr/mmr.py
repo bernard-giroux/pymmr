@@ -26,9 +26,6 @@ Référence principale:
 
 """
 import copy
-import importlib
-import re
-import sys
 
 import numpy as np
 import scipy.sparse as sp
@@ -72,6 +69,7 @@ class GridMMR(GridDC):
         self._xs = None
         self._xo = None
         self.xs_u = None
+        self.cs_u = None
         self.xo_all = None
         self.ind_back = None
         self.ind_s = None
@@ -182,11 +180,32 @@ class GridMMR(GridDC):
         self._units = val
         self._units_scaling = GridMMR.units_scaling_factors[val]
 
+    def set_survey_mmr(self, xs, xo, cs):
+        """Set survey variables.
+
+        Parameters
+        ----------
+        xs : array_like, optional
+            Coordinates of injection points (m).
+        xo : array_like, optional
+            Coordinates of measurement points (m).
+        cs : scalar or array_like
+            Intensity of current source
+        """
+        self.xs = xs
+        self.xo = xo
+        self.cs = cs
+        self._check_cs()
+
+    def set_survey_ert(self, c1c2, p1p2, cs):
+        self.gdc.set_survey_ert(c1c2, p1p2, cs)
+
     def check_acquisition(self):
         """Check consistency of `xs` and `xo`."""
         if self.xs.shape[0] == self.xo.shape[0]:
             # on a des paires dipoles injection - pts de mesure
-            self.xs_u = np.unique(self.xs, axis=0)
+            self.xs_u, ind = np.unique(self.xs, axis=0, return_index=True)
+            self.cs_u = self.cs[ind]
             self.xo_all = np.unique(self.xo, axis=0)
             # on crée l'ordre utilisé par la modélisation
             mod = np.c_[np.kron(self.xs_u, np.ones((self.xo_all.shape[0], 1))),
@@ -214,6 +233,7 @@ class GridMMR(GridDC):
         else:
             # on va calculer toutes les combinaisons
             self.xs_u = self.xs.copy()
+            self.cs_u = self.cs.copy()
             self.xo_all = self.xo.copy()
             self.ind_back = np.arange(self.xs.shape[0] * self.xo.shape[0])
             self.ind_s = np.arange(self.xs.shape[0] * self.xo.shape[0])
@@ -310,23 +330,17 @@ class GridMMR(GridDC):
             i1 += self.nobs_xs[i]
         return d
 
-    def fwd_mod(self, sigma, xs=None, xo=None, calc_sens=False, keep_solver=False, cs=1.0):
+    def fwd_mod(self, sigma, calc_sens=False, keep_solver=False):
         """Forward modelling.
 
         Parameters
         ----------
         sigma : array_like
             Conductivity model (S/m).
-        xs : array_like, optional
-            Coordinates of injection points (m).
-        xo : array_like, optional
-            Coordinates of measurement points (m).
         calc_sens : bool, optional
             Calculate sensitivity matrix.
         keep_solver : bool, optional
             Use solver instantiated in a previous `fwd_mod` run.
-        cs : scalar or array_like, optional
-            Current intensity at injection points, 1 A by default.
 
         Returns
         -------
@@ -350,14 +364,10 @@ class GridMMR(GridDC):
         if self.z.size == self.gdc.z.size:
             self._add_air()
 
-        if xs is not None:
-            self.xs = xs
-        elif self.xs is None:
+        if self.xs is None:
             raise ValueError('Source term undefined')
 
-        if xo is not None:
-            self.xo = xo
-        elif self.xo is None:
+        if self.xo is None:
             raise ValueError('Measurement points undefined')
 
         if self.verbose:
@@ -376,10 +386,7 @@ class GridMMR(GridDC):
         c1c2_u_save = copy.copy(self.gdc.c1c2_u)
         cs12_u_save = copy.copy(self.gdc.cs12_u)
         self.gdc.c1c2_u = self.xs_u
-        if np.isscalar(cs):
-            self.gdc.cs12_u = cs + np.zeros((self.xs_u.shape[0],))
-        else:
-            self.gdc.cs12_u = cs
+        self.gdc.cs12_u = self.cs_u
         self.gdc.sort_electrodes = False
 
         if self.verbose:
@@ -602,118 +609,16 @@ class GridMMR(GridDC):
         tmp = tmp[self.gdc.ind_roi, :]
         J[:, i0:i1] = self._units_scaling * tmp[:, mask_xs]
 
+    def _check_cs(self):
+        """Verify validity of current source intensity."""
+        if self._cs is None:
+            raise ValueError('Current source undefined')
+        if np.isscalar(self._cs):
+            self._cs = self._cs + np.zeros((self.xs.shape[0],))
+        elif isinstance(self._cs, np.ndarray):
+            if self._cs.ndim != 1:
+                self._cs = self._cs.flatten()
+            if self._cs.size != self.xs.shape[0]:
+                raise ValueError('Number of current source should match number of source terms')
 
-# %% main
 
-if __name__ == '__main__':
-
-    # %% read arguments
-    if len(sys.argv) > 1:
-
-        basename = 'pymmr'
-        g = None
-        sigma = None
-        xs = None
-        xo = None
-        solver_name = 'umfpack'
-        max_it = 500
-        tol = 1e-8
-        verbose = False
-        calc_sens = False
-        roi = None
-        cs = 1.0
-        precon = False
-        do_perm = False
-        units = 'pT'
-
-        kw_pattern = re.compile('\s?(.+)\s?#\s?([\w\s]+),')
-
-        # we should have a parameter file as input
-        with open(sys.argv[1], 'r') as f:
-            for line in f:
-                kw_match = kw_pattern.search(line)
-                if kw_match is not None:
-                    value = kw_match[1].rstrip()
-                    keyword = kw_match[2].rstrip()
-                    if 'model' in keyword:
-                        g = build_from_vtk(GridMMR, value)
-                        sigma = g.fromVTK('Conductivity', value)
-                    elif 'basename' in keyword:
-                        basename = value
-                    elif 'solver' in keyword and 'name' in keyword:
-                        if value in ('bicgstab', 'gmres'):
-                            mod = importlib.import_module('scipy.sparse.linalg')
-                            solver_name = getattr(mod, value)
-                        else:
-                            solver_name = value
-                    elif 'solver' in keyword and 'max_it' in keyword:
-                        max_it = int(value)
-                    elif 'solver' in keyword and 'tolerance' in keyword:
-                        tol = float(value)
-                    elif 'precon' in keyword:
-                        precon = int(value)
-                    elif 'permut' in keyword:
-                        do_perm = int(value)
-                    elif 'source' in keyword and 'file' in keyword:
-                        xs = np.atleast_2d(np.loadtxt(value))
-                    elif 'measurement' in keyword and 'file' in keyword:
-                        xo = np.atleast_2d(np.loadtxt(value))
-                    elif 'current' in keyword:
-                        cs = float(value)
-                    elif 'verbose' in keyword:
-                        verbose = int(value)
-                    elif 'compute' in keyword and 'sensitivity' in keyword:
-                        calc_sens = bool(value)
-                    elif 'region' in keyword and 'interest' in keyword:
-                        tmp = value.split()
-                        if len(tmp) != 6:
-                            raise ValueError('6 values needed to define ROI (xmin xmax ymin ymax zmin zmax')
-                        roi = [float(x) for x in tmp]
-                    elif 'units' in keyword:
-                        units = value
-
-        if g is None:
-            raise RuntimeError('Grid not defined, check input parameters')
-
-        if roi is not None:
-            g.set_roi(roi)
-        g.units = units
-        g.verbose = verbose
-        g.set_solver(solver_name, tol, max_it, precon, do_perm)
-
-        g.xs = xs
-        g.xo = xo
-
-        data = g.fwd_mod(sigma, calc_sens=calc_sens, cs=cs)
-
-        if calc_sens:
-            if verbose:
-                print('Saving sensitivity ... ', end='', flush=True)
-            data, sens = data
-
-            x, y, z = g.gdc.get_roi_nodes()
-            # grille temporaire pour sauvegarder sens
-            g2 = GridFV(x, y, z)
-            fields = ('Bx', 'By', 'Bz')
-            no = xo.shape[0]
-
-            # make 1 file for each injection dipole
-            for ns in range(xs.shape[0]):
-                sens_data = {}
-                for nc in range(3):
-                    for nr in range(no):
-                        name = '∂d/∂m - {0:s}: {1:4.1f} {2:4.1f} {3:4.1f}'.format(fields[nc], xo[nr, 0], xo[nr, 1], xo[nr, 2])
-                        sens_data[name] = sens[:, (ns * 3 + nc) * no + nr]
-
-                fname = basename+'_mmr_sens_dip'+str(ns+1)
-                g2.toVTK(sens_data, fname)
-            if verbose:
-                print('done.')
-
-        if verbose:
-            print('Saving modelled data ... ', end='', flush=True)
-        fname = basename+'_mmr.dat'
-        header = 'src_x src_y src_z rcv_x rcv_y rcv_z Bx By Bz'
-        np.savetxt(fname, np.c_[g.xs, g.xo, data], header=header)
-        if verbose:
-            print('done.')

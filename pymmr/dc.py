@@ -19,9 +19,6 @@ Main reference
 }
 
 """
-import importlib
-import re
-import sys
 import warnings
 
 # from multiprocessing import Pool
@@ -218,24 +215,31 @@ class GridDC(GridFV):
         self._units = val
         self._units_scaling = GridDC.units_scaling_factors[val]
 
-    def check_cs(self):
-        """Verify validity of current source intensity."""
-        if self._cs is None:
-            raise ValueError('Current source undefined')
-        if self.c1c2 is not None:
-            c1c2 = self.c1c2
-        else:
-            c1c2 = self.c1c2_u
-        if np.isscalar(self._cs):
-            self._cs = self._cs + np.zeros((c1c2.shape[0],))
-        elif isinstance(self._cs, np.ndarray):
-            if self._cs.ndim != 1:
-                self._cs = self._cs.flatten()
-            if self._cs.size != c1c2.shape[0]:
-                raise ValueError('Number of current source should match number of source terms')
+    def set_survey_ert(self, c1c2, p1p2, cs):
+        """Set survey variables.
+
+        Parameters
+        ----------
+        c1c2 : array_like, optional
+            Coordinates of injection points (m).
+        p1p2 : array_like, optional
+            Coordinates of measurement points (m).
+        cs : scalar or array_like
+            Intensity of current source
+
+        Notes
+        -----
+        - `c1c2` et `p1p2` must be of equal size, i.e. n_obs x 6.  The
+        6 columns correspond to coordinates x, y, & z of the dipoles, in
+        the order x1 y1 z1 x2 y2 z2
+        """
+        self.c1c2 = c1c2
+        self.p1p2 = p1p2
+        self.cs = cs
+        self._check_cs()
 
     def set_roi(self, roi):
-        """Define region of interest for computing sentivivity or for inversion.
+        """Define region of interest for computing sensitivity or for inversion.
 
         Parameters
         ----------
@@ -282,8 +286,7 @@ class GridDC(GridFV):
 
             return self.x[ind_x], self.y[ind_y], self.z[ind_z]
 
-    def fwd_mod(self, sigma=None, c1c2=None, p1p2=None, calc_J=False, calc_sens=False, q=None, cs=1.0,
-                keep_solver=True):
+    def fwd_mod(self, sigma=None, calc_J=False, calc_sens=False, q=None, keep_solver=True):
         """
         Forward modelling.
 
@@ -291,18 +294,12 @@ class GridDC(GridFV):
         ----------
         sigma : array_like
             Conductivity model (S/m).
-        c1c2 : array_like, optional
-            Coordinates of injection points.
-        p1p2 : array_like, optional
-            Coordinates of measurement dipoles.
         calc_J : bool, optional
             Compute current density.
         calc_sens : bool, optional
             Calculate sensitivity matrix.
         q : array_like
             Source term (used for MMR modelling).
-        cs : scalar or array_like
-            Current at injection points, 1 A by default.
         keep_solver : bool
             Keep solver if already instantiated
 
@@ -319,10 +316,6 @@ class GridDC(GridFV):
 
         Notes
         -----
-        - `c1c2` et `p1p2` must be of equal size, i.e. n_obs x 6.  The
-        6 columns correspond to coordinates x, y, & z of the dipoles, in 
-        the order x1 y1 z1 x2 y2 z2
-
         - It is possible do the computation for poles or dipoles at
         injection and/or measurement points.  In the case of a pole, one of
         the coordinate must be set to np.inf.
@@ -340,8 +333,8 @@ class GridDC(GridFV):
         if self.verbose:
             print('\nForward modelling - DC resistivity')
             self.print_info()
-            if c1c2 is not None:
-                print('    {0:d} combinations of dipoles'.format(c1c2.shape[0]))
+            if self.c1c2 is not None:
+                print('    {0:d} combinations of dipoles'.format(self.c1c2.shape[0]))
             if self.apply_bc:
                 print('    Correction at boundary: applied')
             else:
@@ -349,15 +342,11 @@ class GridDC(GridFV):
             if self.solver_A is not None:
                 self.solver_A.print_info()
 
-        self.cs = cs
-
-        if c1c2 is not None:
-            self.c1c2 = c1c2
-        elif self.c1c2 is None:
+        if self.c1c2 is None:
             if self.sort_electrodes is False and self.c1c2_u is None:
                 raise ValueError('Source term undefined')
 
-        self.check_cs()
+        self._check_cs()
 
         if calc_sens is True:
             if np.any(self.cs != self.cs[0]):
@@ -369,8 +358,6 @@ class GridDC(GridFV):
                 # over the grid (for MMR), which will be stored in self.u
                 pass
             # make sure we have measurement points if we don't compute current density
-            elif p1p2 is not None:
-                self.p1p2 = p1p2
             elif self.p1p2 is None:
                 raise ValueError('Measurement points undefined')
         else:
@@ -652,7 +639,7 @@ class GridDC(GridFV):
         basename : str
             basename for output files (1 per dipole).
         """
-        x, y, z = g.get_roi_nodes()
+        x, y, z = self.get_roi_nodes()
         # grille temporaire pour sauvegarder sens
         g2 = GridFV(x, y, z)
         # make 1 file for each injection dipole
@@ -689,11 +676,11 @@ class GridDC(GridFV):
             metadata = {"Source dipole": src}
             
             filename = basename+'_Jx_dc_dip'+str(n+1)
-            g.toVTK({'Jx': J[:self.nfx, n]}, filename, component='x', metadata=metadata)
+            self.toVTK({'Jx': J[:self.nfx, n]}, filename, component='x', metadata=metadata)
             filename = basename+'_Jy_dc_dip'+str(n+1)
-            g.toVTK({'Jy': J[self.nfx:(self.nfx+self.nfy), n]}, filename, component='y', metadata=metadata)
+            self.toVTK({'Jy': J[self.nfx:(self.nfx+self.nfy), n]}, filename, component='y', metadata=metadata)
             filename = basename+'_Jz_dc_dip'+str(n+1)
-            g.toVTK({'Jz': J[(self.nfx+self.nfy):, n]}, filename, component='z', metadata=metadata)
+            self.toVTK({'Jz': J[(self.nfx+self.nfy):, n]}, filename, component='z', metadata=metadata)
 
     def _build_A(self, sigma):
         # Build LHS matrix
@@ -1016,6 +1003,24 @@ class GridDC(GridFV):
         tmp = -self._units_scaling * A @ self.G @ u_r
         return tmp[self.ind_roi], n
 
+    def _check_cs(self):
+        """Verify validity of current source intensity."""
+        if self._cs is None and self.cs12_u is None:
+            raise ValueError('Current source undefined')
+        if self.c1c2 is not None:
+            c1c2 = self.c1c2
+        else:
+            c1c2 = self.c1c2_u
+        if self._cs is None:
+            self._cs = c1c2
+        elif np.isscalar(self._cs):
+            self._cs = self._cs + np.zeros((c1c2.shape[0],))
+        elif isinstance(self._cs, np.ndarray):
+            if self._cs.ndim != 1:
+                self._cs = self._cs.flatten()
+            if self._cs.size != c1c2.shape[0]:
+                raise ValueError('Number of current source should match number of source terms')
+
 
 # %% Solutions analytiques
 
@@ -1189,151 +1194,3 @@ class VerticalDyke():
                             k23 * np.sum(k_s / np.sqrt((two_nb + 2*x2 - x)**2 + r*r)) +
                             k21*k23 * np.sum(k_s / np.sqrt((two_nb - 2*x1 + 2*x2 + x)**2 + r*r)) -
                             k21 * np.sum(k_s / np.sqrt((two_nb - 2*x1 + x)**2 + r*r)))
-
-# %% main
-
-
-if __name__ == '__main__':
-
-    from mpi4py import MPI
-    comm = MPI.COMM_WORLD
-
-    # %% read arguments
-    if len(sys.argv) > 1:
-
-        basename = 'pymmr'
-        g = None
-        sigma = None
-        c1c2 = None
-        xo = None
-        solver_name = 'umfpack'
-        max_it = 1000
-        tol = 1e-9
-        verbose = True
-        calc_J = False
-        calc_sens = False
-        roi = None
-        include_c1c2p1p2 = False
-        apply_bc = True
-        precon = False
-        do_perm = False
-        cs = 1.0
-        units = 'mV'
-
-        kw_pattern = re.compile('\s?(.+)\s?#\s?([\w\s]+),')
-
-        # we should have a parameter file as input
-        with open(sys.argv[1], 'r') as f:
-            for line in f:
-                kw_match = kw_pattern.search(line)
-                if kw_match is not None:
-                    value = kw_match[1].rstrip()
-                    keyword = kw_match[2].rstrip()
-                    if 'model' in keyword:
-                        g = build_from_vtk(GridDC, value, comm=comm)
-                        sigma = g.fromVTK('Conductivity', value)
-                    elif 'basename' in keyword:
-                        basename = value
-                    elif 'solver' in keyword and 'name' in keyword:
-                        if value in ('bicgstab', 'gmres'):
-                            mod = importlib.import_module('scipy.sparse.linalg')
-                            solver_name = getattr(mod, value)
-                        else:
-                            solver_name = value
-                    elif 'solver' in keyword and 'max_it' in keyword:
-                        max_it = int(value)
-                    elif 'solver' in keyword and 'tolerance' in keyword:
-                        tol = float(value)
-                    elif 'precon' in keyword:
-                        precon = int(value)
-                    elif 'permut' in keyword:
-                        do_perm = int(value)
-                    elif 'source' in keyword and 'file' in keyword:
-                        c1c2 = np.atleast_2d(np.loadtxt(value))
-                    elif 'measurement' in keyword and 'file' in keyword:
-                        p1p2 = np.atleast_2d(np.loadtxt(value))
-                    elif 'source' in keyword and 'current' in keyword:
-                        cs = float(value)
-                    elif 'verbose' in keyword:
-                        verbose = int(value)
-                    elif 'compute' in keyword and 'current' in keyword:
-                        calc_J = int(value)
-                    elif 'compute' in keyword and 'sensitivity' in keyword:
-                        calc_sens = int(value)
-                    elif 'region' in keyword and 'interest' in keyword:
-                        tmp = value.split()
-                        if len(tmp) != 6:
-                            raise ValueError('6 values needed to define ROI (xmin xmax ymin ymax zmin zmax')
-                        roi = [float(x) for x in tmp]
-                    elif 'boundary' in keyword and 'correction' in keyword:
-                        apply_bc = int(value)
-                    elif 'units' in keyword:
-                        units = value
-
-        if g is None:
-            raise RuntimeError('Grid not defined, check input parameters')
-
-        g.units = units
-        g.verbose = verbose
-        g.set_solver(solver_name, tol, max_it, precon, do_perm)
-        g.apply_bc = apply_bc
-
-        if roi is not None:
-            g.set_roi(roi)
-
-        out = g.fwd_mod(sigma, c1c2, p1p2, calc_J=calc_J, calc_sens=calc_sens, cs=cs)
-
-        if calc_sens:
-            if verbose:
-                print('Saving sensitivity ... ', end='', flush=True)
-            data, sens = out
-
-            x, y, z = g.get_roi_nodes()
-            # grille temporaire pour sauvegarder sens
-            g2 = GridFV(x, y, z)
-            # make 1 file for each injection dipole
-            for n in range(g.n_c1c2_u):
-                ind, = np.where(n == g.ind_c1c2)
-                fields = {}
-                for i in ind:
-                    name = '∂d/∂m - P1: ' + str(p1p2[i, 0]) + ' ' + str(p1p2[i, 1]) + ' ' + str(p1p2[i, 2]) + ', '
-                    name += 'P2: ' + str(p1p2[i, 3]) + ' ' + str(p1p2[i, 4]) + ' ' + str(p1p2[i, 5])
-
-                    fields[name] = sens[:, i]
-
-                fname = basename+'_dc_sens_dip'+str(n+1)
-                g2.toVTK(fields, fname)
-            if verbose:
-                print('done.')
-        elif calc_J:
-            if verbose:
-                print('Saving current density ... ', end='', flush=True)
-            data, J = out
-
-            # make 1 file for each injection dipole
-            for n in range(g.n_c1c2_u):
-                fname = basename+'_Jx_dc_dip'+str(n+1)
-                g.toVTK({'Jx': J[:g.nfx, n]}, fname, component='x')
-                fname = basename+'_Jy_dc_dip'+str(n+1)
-                g.toVTK({'Jy': J[g.nfx:(g.nfx+g.nfy), n]}, fname, component='y')
-                fname = basename+'_Jz_dc_dip'+str(n+1)
-                g.toVTK({'Jz': J[(g.nfx+g.nfy):, n]}, fname, component='z')
-
-            if verbose:
-                print('done.')
-        else:
-            data = out
-
-        if verbose:
-            print('Saving modelled voltages ... ', end='', flush=True)
-        # save data
-        fname = basename+'_dc.dat'
-        if include_c1c2p1p2:
-            data = np.c_[c1c2, p1p2, data]
-            header = 'c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z v'
-        else:
-            header = 'v'
-        np.savetxt(fname, data, header=header)
-
-        if verbose:
-            print('done.')
