@@ -34,6 +34,7 @@ The keywords are :
 - **permut** : Apply inverse Cuthill-McKee permutation when using iterative solvers
 - **region of interest** : Extents of region of interest for inversion or sensitivity calculation
 - **verbose** : Display progress messages
+- **show plots** : Show plots during inversion
 - **boundary correction** : Apply correction described in Pidlisecky et al. 2007
 - **compute current** : Compute and save current density (forward modelling)
 - **compute sensitivity** : Compute and save sensitivity (forward modelling)
@@ -95,11 +96,11 @@ with open(sys.argv[1], "r") as f:
             if "job" in keyword.lower():
                 job = value.lower()
             elif "data" in keyword.lower() and "mmr" in keyword.lower():
-                df_mmr = pd.read_table(value, sep="\s+", escapechar="%")
+                df_mmr = pd.read_table(value, sep="\s+", escapechar="#")
                 df_mmr.columns = df_mmr.columns.str.replace(" ", "")  # remove spaces in keys
                 data_mmr = df_to_data(df_mmr)
             elif "data" in keyword.lower() and ("ert" in keyword.lower() or "dc" in keyword.lower()):
-                df_ert = pd.read_table(value, sep="\s+", escapechar="%")
+                df_ert = pd.read_table(value, sep="\s+", escapechar="#")
                 df_ert.columns = df_ert.columns.str.replace(" ", "")
                 data_ert = df_to_data(df_ert)
             elif "basename" in keyword.lower():
@@ -124,30 +125,32 @@ with open(sys.argv[1], "r") as f:
                 precon = int(value)
             elif 'permut' in keyword.lower():
                 do_perm = int(value)
-            elif 'verbose' in keyword:
+            elif 'verbose' in keyword.lower():
                 verbose = int(value)
-            elif 'region' in keyword and 'interest' in keyword:
+            elif 'region' in keyword.lower() and 'interest' in keyword.lower():
                 tmp = value.split()
                 if len(tmp) != 6:
                     raise ValueError('6 values needed to define ROI (xmin xmax ymin ymax zmin zmax')
                 roi = [float(x) for x in tmp]
-            elif 'boundary' in keyword and 'correction' in keyword:
+            elif 'boundary' in keyword.lower() and 'correction' in keyword.lower():
                 apply_bc = int(value)
-            elif 'compute' in keyword and 'current' in keyword:
+            elif 'compute' in keyword.lower() and 'current' in keyword.lower():
                 calc_J = int(value)
-            elif 'compute' in keyword and 'sensitivity' in keyword:
+            elif 'compute' in keyword.lower() and 'sensitivity' in keyword.lower():
                 calc_sens = int(value)
-            elif 'source' in keyword and 'file' in keyword:
+            elif 'source' in keyword.lower() and 'file' in keyword.lower():
                 c1c2 = np.atleast_2d(np.loadtxt(value))
-            elif 'measurement' in keyword and 'file' in keyword:
+            elif 'measurement' in keyword.lower() and 'file' in keyword.lower():
                 meas = np.atleast_2d(np.loadtxt(value))
-            elif 'source' in keyword and 'current' in keyword:
+            elif 'source' in keyword.lower() and 'current' in keyword.lower():
                 try:
                     cs = np.loadtxt(value)
                 except FileNotFoundError:
                     cs = float(value)
-            elif 'units' in keyword:
+            elif 'units' in keyword.lower():
                 units = value
+            elif 'show' in keyword.lower() and 'plots' in keyword.lower():
+                inv.show_plots = int(value)
 
 
 # Done reading parameter file
@@ -193,7 +196,7 @@ if "fwd" in job and "mmr" in job:
     if verbose:
         print("Saving modelled data ... ", end="", flush=True)
     filename = basename + "_mmr.dat"
-    header = "src_x src_y src_z rcv_x rcv_y rcv_z Bx By Bz"
+    header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz"
     if c1c2.shape[0] == meas.shape[0]:
         xs = c1c2
         xo = meas
@@ -232,7 +235,7 @@ elif "fwd" in job and ("dc" in job or "ert" in job):
     # save data
     filename = basename + "_dc.dat"
     data = np.c_[c1c2, meas, data]
-    header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z v"
+    header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V"
     np.savetxt(filename, data, header=header, fmt="%g")
     
     if verbose:
