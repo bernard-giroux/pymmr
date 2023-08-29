@@ -241,7 +241,11 @@ elif "fwd" in job and ("dc" in job or "ert" in job):
 
 elif "inv" in job:
 
-    S_save, data_inv, rms = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert)
+    m_active = None
+    if roi is not None:
+        m_active = g.ind_roi
+
+    S_save, data_inv, rms = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert, m_active=m_active)
 
     x, y, z = g.get_roi_nodes()
     g2 = GridFV(x, y, z)
