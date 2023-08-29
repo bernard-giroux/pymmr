@@ -346,7 +346,7 @@ class GridDC(GridFV):
             if self.sort_electrodes is False and self.c1c2_u is None:
                 raise ValueError('Source term undefined')
 
-        if q is not None:
+        if q is None:
             self._check_cs()
 
         if calc_sens is True:
@@ -1013,7 +1013,7 @@ class GridDC(GridFV):
         else:
             c1c2 = self.c1c2_u
         if self._cs is None:
-            self._cs = c1c2
+            self._cs = self.cs12_u
         elif np.isscalar(self._cs):
             self._cs = self._cs + np.zeros((c1c2.shape[0],))
         elif isinstance(self._cs, np.ndarray):
