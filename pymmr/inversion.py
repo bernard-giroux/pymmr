@@ -335,6 +335,10 @@ class Inversion:
 
         self.show_plots = False
 
+        self.save_plots = False
+
+        self.basename = 'inv'
+
     def run(self, g, m_ref, data_mmr=None, data_ert=None, m0=None, m_weight=None, m_active=None):
         """Run inversion.
 
@@ -523,7 +527,7 @@ class Inversion:
             s, err, iter1 = cglscd(J, np.zeros(xt.shape), dobs-d, beta, WTW,
                                    xt-m_ref[m_active], D, P=None, max_it=self.max_it_cglscd,
                                    tol=self.tol_cglscd, reg_var=self.reg_var)
-            if self.show_plots:
+            if self.show_plots or self.save_plots:
                 fig, ax = plt.subplots(3, 3, figsize=(9, 9))
                 ax = ax.flatten()
                 ax[0].plot(s), ax[0].set_title('s')
@@ -544,8 +548,12 @@ class Inversion:
 
                 fig.suptitle(f'Iteration {i+1}')
                 fig.tight_layout()
-                plt.show(block=False)
-                plt.pause(0.1)
+                if self.save_plots:
+                    filename = self.basename+'_it{0:02d}'.format(i+1)+'.pdf'
+                    fig.savefig(filename)
+                if self.show_plots:
+                    plt.show(block=False)
+                    plt.draw()
             if self.verbose:
                 print('done.\n      err = {0:e}, iter = {1:d}'.format(err, iter1))
 

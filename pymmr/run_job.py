@@ -51,9 +51,9 @@ from mpi4py import MPI
 import importlib
 import re
 import sys
-import warnings
 
 import numpy as np
+import matplotlib.pyplot as plt
 import pandas as pd
 
 from pymmr.finite_volume import GridFV, build_from_vtk
@@ -151,6 +151,8 @@ with open(sys.argv[1], "r") as f:
                 units = value
             elif 'show' in keyword.lower() and 'plots' in keyword.lower():
                 inv.show_plots = int(value)
+            elif 'save' in keyword.lower() and 'plots' in keyword.lower():
+                inv.save_plots = int(value)
 
 
 # Done reading parameter file
@@ -241,10 +243,13 @@ elif "fwd" in job and ("dc" in job or "ert" in job):
 
 elif "inv" in job:
 
+    inv.basename = basename + "_inv"
     m_active = None
     if roi is not None:
         m_active = g.ind_roi
 
+    g.verbose = False
+    g.solver_A.verbose = False
     S_save, data_inv, rms = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert, m_active=m_active)
 
     x, y, z = g.get_roi_nodes()
@@ -255,7 +260,19 @@ elif "inv" in job:
         name = "iteration {0:d}".format(i + 1)
         fields[name] = S_save[i]
 
-    g2.toVTK(fields, basename + "inv")
+    g2.toVTK(fields, basename + "_inv")
+
+    if inv.show_plots or inv.save_plots:
+        fig = plt.figure()
+        plt.plot(1+np.arange(len(rms)), rms)
+        plt.xlabel('Iteration')
+        plt.ylabel('Misfit')
+        plt.tight_layout()
+        if inv.save_plots:
+            filename = inv.basename + "_inv_rms.pdf"
+            fig.savefig(filename)
+        if inv.show_plots:
+            plt.show()
 
 else:
     raise ValueError("Job type not defined")
