@@ -267,10 +267,10 @@ class Inversion:
         self.param_transf = 'log_conductivity'
         """working variable: 'conductivity', 'log_conductivity', 'resistivity', 'log_resistivity'."""
 
-        self.beta = 5.0
+        self.beta = 2500.0
         """Regularization parameter."""
         
-        self.beta_min = 0.1
+        self.beta_min = 100.0
         """Minimum value of beta."""
 
         self.beta_cooling = 2
@@ -411,6 +411,9 @@ class Inversion:
                 print('    Function applied to data: '+self.data_transf)
             print('    Type of smoothing: '+self.smooth_type)
             print('    Regularization variable: '+self.reg_var)
+            print('    Parameter beta: {0:g}'.format(self.beta))
+            print('      Cooling factor: {0:g}'.format(self.beta_cooling))
+            print('      Min value: {0:g}'.format(self.beta_min))
             g.solver_A.print_info()
 
         if m_weight is None:
