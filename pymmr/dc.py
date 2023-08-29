@@ -346,7 +346,8 @@ class GridDC(GridFV):
             if self.sort_electrodes is False and self.c1c2_u is None:
                 raise ValueError('Source term undefined')
 
-        self._check_cs()
+        if q is not None:
+            self._check_cs()
 
         if calc_sens is True:
             if np.any(self.cs != self.cs[0]):
@@ -1019,7 +1020,7 @@ class GridDC(GridFV):
             if self._cs.ndim != 1:
                 self._cs = self._cs.flatten()
             if self._cs.size != c1c2.shape[0]:
-                raise ValueError('Number of current source should match number of source terms')
+                raise ValueError(f'Number of current source ({self._cs.size}) should match number of source terms ({c1c2.shape[0]})')
 
 
 # %% Solutions analytiques
