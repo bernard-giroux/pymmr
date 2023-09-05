@@ -5,6 +5,37 @@ Module for inverting ERT & MMR data.
 
 @author: giroux
 
+Important references
+--------------------
+
+For data weighting using the Jacobian
+
+@article{abubakar2009inversion,
+  title={Inversion algorithms for large-scale geophysical electromagnetic measurements},
+  author={Abubakar, A and Habashy, TM and Li, M and Liu, J},
+  journal={Inverse Problems},
+  volume={25},
+  number={12},
+  pages={123012},
+  year={2009},
+  publisher={IOP Publishing}
+}
+
+@article{hu2009joint,
+  title={Joint electromagnetic and seismic inversion using structural constraints},
+  author={Hu, Wenyi and Abubakar, Aria and Habashy, Tarek M},
+  journal={Geophysics},
+  volume={74},
+  number={6},
+  pages={R99--R109},
+  year={2009},
+  publisher={Society of Exploration Geophysicists}
+}
+
+
+
+
+
 """
 from collections import namedtuple
 import warnings
@@ -37,7 +68,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
     beta : float
         Regularization factor.
     CTC : sparse matrix
-        Regularization matrix ( CTC = C.T @ C).
+        Regularization matrix (CTC = C.T @ C).
     dxc : array_like
         m - m_ref.
     D : sparse matrix
@@ -140,7 +171,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
             alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
             x += alpha_k * p    # calcul de la descente
             zz -= alpha_k * q 
-            r = P * (((zz.T @ D) @ J).T - beta * CTC @ x) # gradient
+            r = P * (((zz.T @ D) @ J).T - beta * CTC @ x)  # gradient
             error = np.linalg.norm(r) / bnrm2
             if error <= tol:
                 break
@@ -308,6 +339,9 @@ class Inversion:
         self.reg_var = 'model'
         """Regularization variable: 'model', 'model perturbation', 'time-lapse'."""
 
+        self.data_weighting = 'variance'
+        """Data weighting method: 'variance', 'jacobian', 'variance+jacobian'."""
+
         self.model_weighting = 'distance'
         """Pondération du lissage spatial: 'distance', 'jacobian'."""
 
@@ -463,7 +497,10 @@ class Inversion:
         sigma = m0.copy()
 
         WTW = g.calc_WtW(m_weight, self, m_active)
-        D = g.calc_WdW(wt, dobs, self)
+        if 'variance' in self.data_weighting:
+            D = g.calc_WdW(wt, dobs, self)
+        else:
+            D = sp.eye(dobs.size)
 
         data_inv = []
         rms = []
@@ -499,11 +536,6 @@ class Inversion:
                     print('done.')
 
             d = d.reshape(-1, 1)
-
-            rms.append(np.sqrt(((d-dobs).T @ D @ (d-dobs))/dobs.size).item())
-            if self.verbose:
-                print('    RMS: {0:g}'.format(rms[-1]))
-
             d_1 = d.copy()
             data_inv.append(d.flatten().copy())
 
@@ -514,12 +546,23 @@ class Inversion:
                 J += dJ @ s.T
 
             if i == 0:
-                # D = 1 / np.sqrt(np.sum(J*J, axis=1))
-                # D = sp.diags(D, 0)
+                if 'jacobian' in self.data_weighting:
+                    D2 = 1 / np.sqrt(np.sum(J*J, axis=1))
+                    if data_ert is not None and data_mmr is not None:
+                        # scaling MMR & ERT parts in joint inversion
+                        # TODO compare this with Athanasiou et al. 2007
+                        tmp1 = np.median(D2[:nobs_mmr])
+                        tmp2 = np.median(D2[nobs_mmr:])
+                        D2[nobs_mmr:] *= tmp1/tmp2
+                    D = D @ sp.diags(D2, 0)
 
                 if self.model_weighting == 'jacobian':
                     m_weight = 1 / np.sqrt(np.sum(J*J, axis=0))
                     WTW = g.calc_WtW(m_weight, self, m_active)
+
+            rms.append(np.sqrt(((d-dobs).T @ D @ (d-dobs))/dobs.size).item())
+            if self.verbose:
+                print('    RMS: {0:g}'.format(rms[-1]))
 
             if self.verbose:
                 print('    Computing perturbation with cglscd ... ', end='', flush=True)
