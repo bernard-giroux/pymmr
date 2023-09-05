@@ -212,9 +212,9 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
             rho_1 = rho
 
     if error > tol:
-        warnings.warn('cglscd: convergence not achieved after {0:d} it (tol = {1:3.2e}, error = {2:5.4e}).'.format(max_it, tol, error), RuntimeWarning, stacklevel=2)
+        warnings.warn('cglscd: convergence not achieved after {0:d} it (tol = {1:3.2e}, error = {2:5.4e}).'.format(max_it, tol, error))
 
-    return x, error, it
+    return x, error, it+1
 
 
 def df_to_data(df):
@@ -343,7 +343,7 @@ class Inversion:
         """Data weighting method: 'variance', 'jacobian', 'variance+jacobian'."""
 
         self.model_weighting = 'distance'
-        """Pondération du lissage spatial: 'distance', 'jacobian'."""
+        """Model weighting method: 'distance', 'jacobian'."""
 
         self.max_it_cglscd = 1000
         """Maximum number of iterations in cglscd."""
@@ -444,14 +444,23 @@ class Inversion:
             if data_ert is not None:
                 print('    Number of ERT data: {0:d}'.format(g.c1c2.shape[0]))
             print('    Algorithm: '+self.method)
+            print('    Maximum number of iterations: {0:d}'.format(self.max_it))
             print('    Working variable: '+self.param_transf)
             if self.data_transf is not None:
                 print('    Function applied to data: '+self.data_transf)
             print('    Type of smoothing: '+self.smooth_type)
+            print('      Smoothing factor along x: {0:g}'.format(self.alx))
+            print('      Smoothing factor along y: {0:g}'.format(self.aly))
+            print('      Smoothing factor along z: {0:g}'.format(self.alz))
+            print('      Smallness factor: {0:g}'.format(self.als))
             print('    Regularization variable: '+self.reg_var)
-            print('    Parameter beta: {0:g}'.format(self.beta))
+            print('    Regularization β: {0:g}'.format(self.beta))
             print('      Cooling factor: {0:g}'.format(self.beta_cooling))
             print('      Min value: {0:g}'.format(self.beta_min))
+            print('    Data weighting: '+self.data_weighting)
+            print('    Model weighting: '+self.model_weighting)
+            if self.model_weighting == 'distance':
+                print('      Distance weighting β: {0:g}'.format(self.beta_dw))
             g.solver_A.print_info()
 
         if m_weight is None:
@@ -469,7 +478,7 @@ class Inversion:
                 m_weight = np.ones(m_ref.shape)
         if m_active is None:
             m_active = np.ones(m_ref.shape, dtype=bool)
-            # TODO: if m_active is not set, this should be transferred to g
+            # TODO: if m_active is not set, this should be transferred to g to use ROI
 
         if m0 is None:
             m0 = m_ref.copy()
@@ -597,6 +606,7 @@ class Inversion:
                 if self.show_plots:
                     plt.show(block=False)
                     plt.draw()
+                    plt.pause(0.1)
             if self.verbose:
                 print('done.\n      err = {0:e}, iter = {1:d}'.format(err, iter1))
 

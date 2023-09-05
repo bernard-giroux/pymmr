@@ -25,7 +25,7 @@ The keywords are :
 - **source file** : Coordinates in injection dipoles, for forward modelling
 - **measurement file** : Coordinates of measurement dipoles or B-field sensor, for forward modelling
 - **source current** : Intensity of source current in A (file or scalar)
-- **beta** : Regularization factor for computing perturbation
+- **beta** : Regularization factor
 - **inv max_it** : Maximum number of inversion iterations
 - **solver name** : Choice of solver
 - **solver max_it** : Maximum number of iteration for iterative solvers
@@ -264,12 +264,12 @@ elif "inv" in job:
 
     if inv.show_plots or inv.save_plots:
         fig = plt.figure()
-        plt.plot(1+np.arange(len(rms)), rms)
+        plt.bar(np.arange(1, 1+len(rms)), rms)
         plt.xlabel('Iteration')
         plt.ylabel('Misfit')
         plt.tight_layout()
         if inv.save_plots:
-            filename = inv.basename + "_inv_rms.pdf"
+            filename = inv.basename + "_rms.pdf"
             fig.savefig(filename)
         if inv.show_plots:
             plt.show()

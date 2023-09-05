@@ -36,19 +36,19 @@ from vtk.util.numpy_support import vtk_to_numpy
 try:
     import pypardiso
     has_pardiso = True
-except:
+except ImportError:
     has_pardiso = False
     
 try:
     import scikits.umfpack as um
     has_umfpack = True
-except:
+except ImportError:
     has_umfpack = False
 
 try:
     import mumps
     has_mumps = True
-except:
+except ImportError:
 # except ImportError as err:
 #     print(err)
     has_mumps = False
@@ -56,7 +56,7 @@ except:
 try:
     import pypastix
     has_pastix = True
-except:
+except ImportError:
     has_pastix = False
 
 
@@ -483,9 +483,9 @@ class GridFV:
         R0 = 0.5 * dV.min()**0.33333333333333
         Q = np.zeros((self.nc,))
         for i in np.arange(xo.shape[0]):
-            R = np.sqrt((xyzc[:,0]-xo[i, 0])*(xyzc[:,0]-xo[i, 0]) +
-                        (xyzc[:,1]-xo[i, 1])*(xyzc[:,1]-xo[i, 1]) +
-                        (xyzc[:,2]-xo[i, 2])*(xyzc[:,2]-xo[i, 2]))
+            R = np.sqrt((xyzc[:, 0]-xo[i, 0])*(xyzc[:, 0]-xo[i, 0]) +
+                        (xyzc[:, 1]-xo[i, 1])*(xyzc[:, 1]-xo[i, 1]) +
+                        (xyzc[:, 2]-xo[i, 2])*(xyzc[:, 2]-xo[i, 2]))
             R = (R+R0)**3
             R = (dV/R)**2
             Q += R
@@ -1181,7 +1181,7 @@ class GridFV:
             x = self.x
             y = self.y
             z = self.z
-        elif component =='x':
+        elif component == 'x':
             if on_face:
                 x = self.x[1:-1]
                 y = self.yc
@@ -1284,7 +1284,7 @@ class GridFV:
         ----------
         name : `string` or `callable`
             If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
-            If `callable`: (iterative solver from scipy.sparse.linalg, eg bicgstab)
+            If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
         tol : float, optional
             Tolerance for the iterative solver
         max_it : int, optional
@@ -1369,7 +1369,7 @@ class GridFV:
 
     @want_pardiso.setter
     def want_pardiso(self, val):
-        if val == True and has_pardiso == False:
+        if val is True and has_pardiso is False:
             warnings.warn('Pardiso not available, default solver used.', RuntimeWarning, stacklevel=2)
             self._want_pardiso = False
         else:
@@ -1382,7 +1382,7 @@ class GridFV:
 
     @want_pastix.setter
     def want_pastix(self, val):
-        if val == True and has_pastix == False:
+        if val is True and has_pastix is False:
             warnings.warn('Pastix not available, default solver used.', RuntimeWarning, stacklevel=2)
             self._want_pastix = False
         else:
@@ -1395,7 +1395,7 @@ class GridFV:
 
     @want_umfpack.setter
     def want_umfpack(self, val):
-        if val == True and has_umfpack == False:
+        if val is True and has_umfpack is False:
             warnings.warn('UMFPACK not available, default solver used.', RuntimeWarning, stacklevel=2)
             self._want_umfpack = False
         else:
@@ -1408,7 +1408,7 @@ class GridFV:
 
     @want_mumps.setter
     def want_mumps(self, val):
-        if val == True and has_mumps == False:
+        if val is True and has_mumps is False:
             warnings.warn('MUMPS not available, default solver used.', RuntimeWarning, stacklevel=2)
             self._want_mumps = False
         else:
@@ -1457,7 +1457,7 @@ class Solver:
 
             slv = solver_par[0]
             self.tol = solver_par[1]
-            max_it = solver_par[2]
+            self.max_it = solver_par[2]
             self.precon = solver_par[3]
             self.do_perm = solver_par[4]
 
@@ -1470,9 +1470,9 @@ class Solver:
                 self.perm = reverse_cuthill_mckee(A)
                 self.inv_perm = np.argsort(self.perm)
 
-                I = sp.csr_matrix((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
-                A = A @ I
-                self._A = (A.T @ I).T
+                permut = sp.csr_matrix((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
+                A = A @ permut
+                self._A = (A.T @ permut).T
                 if self.verbose:
                     print('done.')
 
@@ -1491,7 +1491,7 @@ class Solver:
                 if self.verbose:
                     print('done.')
 
-            self.solver = lambda A, b : slv(A, b, x0=self.x0, tol=self.tol, max_iter=max_it, M=self.Mpre)
+            self.solver = lambda A, b: slv(A, b, x0=self.x0, tol=self.tol, max_iter=self.max_it, M=self.Mpre)
         elif solver_par[0] == 'mumps':
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages
@@ -1514,7 +1514,7 @@ class Solver:
             if A is None:
                 return
             self.pastix_solver = pypastix.solver(A)
-            self.solver = lambda A, b : self.pastix_solver.solve(b.flatten(), refine=False)
+            self.solver = lambda A, b: self.pastix_solver.solve(b.flatten(), refine=False)
         elif solver_par[0] == 'umfpack':
             self.want_umfpack = True
             if A is None:
@@ -1525,12 +1525,13 @@ class Solver:
             # use_solver(useUmfpack=True, assumeSortedIndices=True)
             if verbose:
                 print('    Factorizing matrix A ... ', end='', flush=True)
-            self.umfpack.numeric( A )
+            self.umfpack.numeric(A)
             # solve = factorized(A.tocsc().sorted_indices())
             if verbose:
                 print('done.')
             # self.solver = lambda A, b : solve(np.array(b).flatten())
             umf = self.umfpack
+
             def slv(AA, b):
                 with np.errstate(divide="ignore", invalid="ignore"):
                     # Ignoring warnings with numpy >= 1.23.0, see gh-16523
@@ -1546,7 +1547,7 @@ class Solver:
             solve = factorized(A.tocsc())
             if verbose:
                 print('done.')
-            self.solver = lambda A, b : solve(b.flatten())
+            self.solver = lambda A, b: solve(b.flatten())
         else:
             raise RuntimeError('Solver not implemented')
 
@@ -1556,7 +1557,7 @@ class Solver:
             self.pastix_solver.finalize()
         elif self.umfpack is not None:
             try:
-                del(self.umfpack)
+                del self.umfpack
             except AttributeError as e:
                 print(e)
         elif self.ctx is not None:
@@ -1677,7 +1678,7 @@ class Solver:
             
         if verbose > 1:
             print('        norm of residuals =', end='')
-            [ print('   {:3.2e}'.format(x), end='') for x in res ]
+            [print('   {:3.2e}'.format(x), end='') for x in res]
             print('')
 
         return v
@@ -1700,7 +1701,7 @@ class Solver:
             umf_family, A = _get_umf_family(val.tocsc().sorted_indices())
             self.umfpack = um.UmfpackContext(umf_family)
             self.umfpack.control[um.UMFPACK_PRL] 
-            self.umfpack.numeric( A )
+            self.umfpack.numeric(A)
             umf = self.umfpack
             def slv(AA, b):
                 with np.errstate(divide="ignore", invalid="ignore"):
@@ -1711,7 +1712,7 @@ class Solver:
             self.solver = slv
         elif self.want_superlu:
             solve = factorized(val.tocsc())
-            self.solver = lambda A, b : solve(b.flatten())
+            self.solver = lambda A, b: solve(b.flatten())
         elif self.ctx is not None:
             # we are using MUMPS
             if val.shape[0] != val.shape[1]:
@@ -1785,34 +1786,3 @@ class Solver:
             else:
                 print('    Preconditionning: not used')
 
-
-# %% main
-if __name__ == '__main__':
-
-    mkFig = False
-    test_solver = False
-
-    x = [1, 2, 3, 3.5]
-    y = [1, 2.5, 3, 4, 5.5]
-    z = np.arange(6)
-    gvf = GridFV(x, y, z)
-
-    print(gvf.nc, gvf.dx)
-
-    ind = gvf.ind([1, 2], 2, [3, 0])
-    print(ind)
-
-    B0 = np.array([1., 2., 3.])
-    chi = np.zeros((gvf.nc,))
-    chi[gvf.ind(2, 2, 3)] = 1.0
-    mu0 = 4 * np.pi * 1.e-7
-    mu = mu0 * (1.+chi)
-    D = gvf.build_D()
-    M = gvf.build_M(mu)
-    G = gvf.build_G()
-
-    gvf.toVTK({'chi': chi}, 'chi')
-    C1 = gvf._curl_edges()
-    C2 = gvf._curl_faces()
-    
-    xyzc = gvf.centre_voxels()
