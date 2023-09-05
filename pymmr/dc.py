@@ -46,7 +46,6 @@ except ImportError:
 from pymmr.finite_volume import GridFV, Solver, build_from_vtk
 
 # TODO: généraliser ROI pour voxels arbitraires
-# TODO: ajouter le courant à c1c2 plutôt qu'entrer à part
 
 
 # %% Some functions
@@ -1078,9 +1077,9 @@ class VerticalDyke():
 
         Parameters
         ----------
-        c1c2 : array of float
+        c1c2 : array_like of float
             x,y,z coordinates of injection electrodes (poles or dipoles)
-        p1p2 : array of float
+        p1p2 : array_like of float
             x,y,z coordinates of potential electrodes (poles or dipoles)
         I : float
             Current intensity
@@ -1104,7 +1103,6 @@ class VerticalDyke():
 
         """
 
-        data = np.empty((c1c2.shape[0],))
         c1p1 = np.empty((c1c2.shape[0],))
         c1p2 = np.empty((c1c2.shape[0],))
         c2p1 = np.empty((c1c2.shape[0],))
