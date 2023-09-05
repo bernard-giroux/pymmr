@@ -35,6 +35,7 @@ The keywords are :
 - **region of interest** : Extents of region of interest for inversion or sensitivity calculation
 - **verbose** : Display progress messages
 - **show plots** : Show plots during inversion
+- **save plots** : Save plots produced during inversion
 - **boundary correction** : Apply correction described in Pidlisecky et al. 2007
 - **compute current** : Compute and save current density (forward modelling)
 - **compute sensitivity** : Compute and save sensitivity (forward modelling)
@@ -50,7 +51,9 @@ from mpi4py import MPI
 
 import importlib
 import re
+import socket
 import sys
+from datetime import datetime
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -105,10 +108,6 @@ with open(sys.argv[1], "r") as f:
                 data_ert = df_to_data(df_ert)
             elif "basename" in keyword.lower():
                 basename = value
-            elif "beta" in keyword.lower():
-                inv.beta = float(value)
-            elif "inv" in keyword.lower() and "max_it" in keyword.lower():
-                inv.max_it = int(value)
             elif "model" in keyword.lower():
                 model_file = value
             elif 'solver' in keyword.lower() and 'name' in keyword.lower():
@@ -153,6 +152,12 @@ with open(sys.argv[1], "r") as f:
                 inv.show_plots = int(value)
             elif 'save' in keyword.lower() and 'plots' in keyword.lower():
                 inv.save_plots = int(value)
+            elif "beta" in keyword.lower():
+                inv.beta = float(value)
+            elif "inv" in keyword.lower() and "max_it" in keyword.lower():
+                inv.max_it = int(value)
+            elif "data" in keyword.lower() and "weight" in keyword.lower():
+                inv.data_weighting = value
 
 
 # Done reading parameter file
@@ -165,6 +170,12 @@ if model_file is None:
 
 if data_mmr is None and data_ert is None and "inv" in job:
     raise RuntimeError("No input data provided")
+
+if verbose:
+    starttime = datetime.now()
+    hostname = socket.gethostname()
+    print(f'\nJob running on {hostname}\nStarted {starttime}')
+    print(f"Parameter file: {sys.argv[1]}")
 
 if data_mmr is not None or "mmr" in job:
     # we will have MMR data to invert of MMR data to model
@@ -184,6 +195,11 @@ g.apply_bc = apply_bc
 if "fwd" in job and "mmr" in job:
     g.set_survey_mmr(c1c2, meas, cs)
     data = g.fwd_mod(sigma, calc_sens=calc_sens)
+
+    if verbose:
+        endtime = datetime.now()
+        diff = endtime - starttime
+        print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
     if calc_sens:
         if verbose:
@@ -214,7 +230,12 @@ elif "fwd" in job and ("dc" in job or "ert" in job):
     g.set_survey_ert(c1c2, meas, cs)
     g.units = units
     data = g.fwd_mod(sigma, calc_J=calc_J, calc_sens=calc_sens)
-    
+
+    if verbose:
+        endtime = datetime.now()
+        diff = endtime - starttime
+        print(f"\nCalculations ended {endtime} ({diff} elapsed)")
+
     if calc_sens:
         if verbose:
             print("Saving sensitivity ... ", end="", flush=True)
@@ -251,6 +272,11 @@ elif "inv" in job:
     g.verbose = False
     g.solver_A.verbose = False
     S_save, data_inv, rms = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert, m_active=m_active)
+
+    if verbose:
+        endtime = datetime.now()
+        diff = endtime - starttime
+        print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
     x, y, z = g.get_roi_nodes()
     g2 = GridFV(x, y, z)
