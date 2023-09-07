@@ -55,7 +55,7 @@ DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt cs")
 
 def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
            alpha=0, WTWt=0):
-    """Compute perturbation.
+    """Compute perturbation with a conjugate-gradient least-squares algorithm.
 
     Parameters
     ----------
@@ -88,13 +88,29 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
 
     Returns
     -------
-    tuple x, error, it
+    tuple: x, error, it
         x : ndarray
             Solution
         error : float
             Norm of error
         it : int
             number of iterations performed
+
+    Notes
+    -----
+
+    This algorithm is described in
+
+    @article{article,
+    author = {Günther, Thomas and Rücker, Carsten and Spitzer, Klaus},
+    year = {2006},
+    month = {08},
+    pages = {506 - 517},
+    title = {Three-dimensional modelling and inversion of DC resistivity data incorporating topography – II. Inversion},
+    volume = {166},
+    journal = {Geophysical Journal International},
+    doi = {10.1111/j.1365-246X.2006.03011.x}
+    }
     """
     it = 0
 
