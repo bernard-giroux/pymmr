@@ -356,7 +356,7 @@ class Inversion:
         """Regularization variable: 'model', 'model perturbation', 'time-lapse'."""
 
         self.data_weighting = 'variance'
-        """Data weighting method: 'variance', 'jacobian', 'variance+jacobian'."""
+        """Data weighting method: 'variance', 'jacobian', 'variance*jacobian', 'variance+jacobian'."""
 
         self.model_weighting = 'distance'
         """Model weighting method: 'distance', 'jacobian'."""
@@ -399,9 +399,9 @@ class Inversion:
         m_ref : array_like
             Reference model (S/m).
         data_mmr : DataMMR, optional
-            MMR data.  B-field units are pT.
+            MMR data.  B-field units are pT. Data weight (std dev) in %.
         data_ert : DataERT, optional
-            DC resistivity data.  Voltage should be in mV.
+            DC resistivity data.  Voltage should be in mV. Data weight (std dev) in %.
         m0 : array_like, optional
             Initial model (equal to m_ref if None).
         m_weight : array_like, optional
@@ -411,7 +411,21 @@ class Inversion:
 
         Returns
         -------
-        
+        sigma_inv : list of ndarray
+            Conductivity model at each iteration
+        data_inv : list of ndarray
+            Computed data at each iteration
+        rms : list of float
+            Misfit at each iteration
+
+        Notes
+        -----
+        The diagonal elements of the weighting matrix built from data weights are
+
+        1 / (0.01 * `wt` * abs(data) + 𝜖)
+
+        where `wt` is the weight in %, data is the B-field or the voltage, and 𝜖 is attribute `e` of the class.
+
         """
 
         if data_mmr is None and data_ert is None:
@@ -524,13 +538,15 @@ class Inversion:
         WTW = g.calc_WtW(m_weight, self, m_active)
         if 'variance' in self.data_weighting:
             D = g.calc_WdW(wt, dobs, self)
-        else:
+        elif '*' in self.data_weighting:
             D = sp.eye(dobs.size)
+        else:
+            D = 0.0
 
         data_inv = []
         rms = []
         s = np.array([1.])
-        S_save = []
+        sigma_inv = []
 
         WGx = WGy = WGz = None
 
@@ -579,7 +595,10 @@ class Inversion:
                         tmp1 = np.median(D2[:nobs_mmr])
                         tmp2 = np.median(D2[nobs_mmr:])
                         D2[nobs_mmr:] *= tmp1/tmp2
-                    D = D @ sp.diags(D2, 0)
+                    if '*' in self.data_weighting:
+                        D = D @ sp.diags(D2, 0)
+                    else:
+                        D = D + sp.diags(D2, 0)
 
                 if self.model_weighting == 'jacobian':
                     m_weight = 1 / np.sqrt(np.sum(J*J, axis=0))
@@ -643,7 +662,7 @@ class Inversion:
             elif self.param_transf == 'resistivity':
                 xt = 1/sigma[m_active]
 
-            S_save.append(sigma[m_active].copy())
+            sigma_inv.append(sigma[m_active].copy())
             xc = xt.copy()
 
             beta /= self.beta_cooling
@@ -668,7 +687,7 @@ class Inversion:
 
         if self.verbose:
             print('End of inversion.')
-        return S_save, data_inv, rms
+        return sigma_inv, data_inv, rms
 
     def _line_search(self, s, d, dobs, g, D, xc, sigma, m_active):
         if self.verbose:
