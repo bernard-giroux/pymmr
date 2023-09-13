@@ -416,7 +416,11 @@ class Inversion:
         data_inv : list of ndarray
             Computed data at each iteration
         rms : list of float
+            Weighted RMS error at each iteration
+        misfit : list of float
             Misfit at each iteration
+        smy : list of float
+            Parameter variation function at each iteration
 
         Notes
         -----
@@ -488,9 +492,11 @@ class Inversion:
             print('      Cooling factor: {0:g}'.format(self.beta_cooling))
             print('      Min value: {0:g}'.format(self.beta_min))
             print('    Data weighting: '+self.data_weighting)
+            print('      𝜖: {0:g}'.format(self.e))
             print('    Model weighting: '+self.model_weighting)
             if self.model_weighting == 'distance':
                 print('      Distance weighting β: {0:g}'.format(self.beta_dw))
+            print('    Conductivity bounds: {0:g} < 𝜎 < {1:g}'.format(self.sigma_min, self.sigma_max))
             g.solver_A.print_info()
 
         if m_weight is None:
@@ -532,6 +538,7 @@ class Inversion:
             m_ref = 1 / m_ref
 
         g.in_inv = True
+        xc0 = xt.copy()
         xc = xt.copy()
         sigma = m0.copy()
 
@@ -545,6 +552,8 @@ class Inversion:
 
         data_inv = []
         rms = []
+        misfit = []
+        smy = []
         s = np.array([1.])
         sigma_inv = []
 
@@ -555,6 +564,7 @@ class Inversion:
         for i in range(self.max_it):
             if i == 0 or self.method == 'Gauss-Newton':
                 if self.verbose:
+                    print('  ------------------------------------------------------------')
                     print('  *** Iteration no {0:d} ***'.format(i + 1))
                     print('    Forward modelling & computation of jacobian ... ', end='', flush=True)
                 d, J = g.fwd_mod(sigma, calc_sens=True, keep_solver=True)
@@ -605,8 +615,11 @@ class Inversion:
                     WTW = g.calc_WtW(m_weight, self, m_active)
 
             rms.append(np.sqrt(((d-dobs).T @ D @ (d-dobs))/dobs.size).item())
+            misfit.append(np.sqrt(np.sum((d-dobs)**2) / np.sum(dobs*dobs)))
+            smy.append(np.sum((xc-xc0)**2))
+            xc0 = xc.copy()
             if self.verbose:
-                print('    RMS: {0:g}'.format(rms[-1]))
+                print('    Weighted RMS: {0:g}, misfit: {1:g}, smy: {2:g}'.format(rms[-1], misfit[-1], smy[-1]))
 
             if self.verbose:
                 print('    Computing perturbation with cglscd ... ', end='', flush=True)
@@ -686,12 +699,13 @@ class Inversion:
                 WTW, WGx, WGy, WGz = g.calc_reg(m_weight, self, tmp, xref, WGx, WGy, WGz, m_active)
 
         if self.verbose:
+            print('  ------------------------------------------------------------')
             print('End of inversion.')
-        return sigma_inv, data_inv, rms
+        return sigma_inv, data_inv, rms, misfit, smy
 
     def _line_search(self, s, d, dobs, g, D, xc, sigma, m_active):
         if self.verbose:
-            print('    Updating perturbation - parabolic line search')
+            print('    Computing step length (parabolic line search)')
         fd0 = (0.5 * (d-dobs).T @ (D*D) @ (d-dobs)).item()
         mu1 = 1
         ils = 1

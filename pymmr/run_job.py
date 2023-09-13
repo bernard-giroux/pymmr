@@ -21,7 +21,7 @@ The keywords are :
 - **basename** : each output file will start with this basename
 - **data mmr** : Input file holding MMR data (see format below)
 - **data dc** : Input file holding DC resistivity data (see format below)
-- **model** : Conductivity mode; in VTK format (RectilinearGrid)
+- **model** : Conductivity model in VTK format (RectilinearGrid).  Conductivity should be in S/m
 - **source file** : Coordinates in injection dipoles, for forward modelling
 - **measurement file** : Coordinates of measurement dipoles or B-field sensor, for forward modelling
 - **source current** : Intensity of source current in A (file or scalar)
@@ -271,7 +271,7 @@ elif "inv" in job:
 
     g.verbose = False
     g.solver_A.verbose = False
-    S_save, data_inv, rms = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert, m_active=m_active)
+    S_save, data_inv, rms, misfit, smy = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert, m_active=m_active)
 
     if verbose:
         endtime = datetime.now()
@@ -292,10 +292,32 @@ elif "inv" in job:
         fig = plt.figure()
         plt.bar(np.arange(1, 1+len(rms)), rms)
         plt.xlabel('Iteration')
-        plt.ylabel('Misfit')
+        plt.ylabel('Weighted RMSE')
         plt.tight_layout()
         if inv.save_plots:
             filename = inv.basename + "_rms.pdf"
+            fig.savefig(filename)
+        if inv.show_plots:
+            plt.show()
+
+        fig = plt.figure()
+        plt.bar(np.arange(1, 1+len(misfit)), misfit)
+        plt.xlabel('Iteration')
+        plt.ylabel('Misfit')
+        plt.tight_layout()
+        if inv.save_plots:
+            filename = inv.basename + "_misfit.pdf"
+            fig.savefig(filename)
+        if inv.show_plots:
+            plt.show()
+
+        fig = plt.figure()
+        plt.bar(np.arange(1, 1+len(smy)), smy)
+        plt.xlabel('Iteration')
+        plt.ylabel('Parameter variation function')
+        plt.tight_layout()
+        if inv.save_plots:
+            filename = inv.basename + "_smy.pdf"
             fig.savefig(filename)
         if inv.show_plots:
             plt.show()
