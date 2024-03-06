@@ -21,11 +21,11 @@ The keywords are :
 - **basename** : each output file will start with this basename
 - **data mmr** : Input file holding MMR data (see format below)
 - **data dc** : Input file holding DC resistivity data (see format below)
-- **model** : Conductivity mode; in VTK format (RectilinearGrid)
+- **model** : Conductivity model in VTK format (RectilinearGrid).  Conductivity should be in S/m
 - **source file** : Coordinates in injection dipoles, for forward modelling
 - **measurement file** : Coordinates of measurement dipoles or B-field sensor, for forward modelling
 - **source current** : Intensity of source current in A (file or scalar)
-- **beta** : Regularization factor for computing perturbation
+- **beta** : Regularization factor
 - **inv max_it** : Maximum number of inversion iterations
 - **solver name** : Choice of solver
 - **solver max_it** : Maximum number of iteration for iterative solvers
@@ -35,6 +35,7 @@ The keywords are :
 - **region of interest** : Extents of region of interest for inversion or sensitivity calculation
 - **verbose** : Display progress messages
 - **show plots** : Show plots during inversion
+- **save plots** : Save plots produced during inversion
 - **boundary correction** : Apply correction described in Pidlisecky et al. 2007
 - **compute current** : Compute and save current density (forward modelling)
 - **compute sensitivity** : Compute and save sensitivity (forward modelling)
@@ -43,6 +44,38 @@ The keywords are :
 File formats
 ------------
 
+Data files are plain text files with with a header line specific to the type of data.  The header line starts with #
+and contains keywords for the different variables.  Keywords can be in arbitrary order.
+For MMR, the full header is
+
+```
+# c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz wt_x wt_y wt_z cs date
+```
+
+with:
+
+- `c1_x` `c1_y` `c1_z` : the coordinates of the first injection electrode (in m)
+- `c2_x` `c2_y` `c2_z` : the coordinates of the second injection electrode (in m)
+- `obs_x` `obs_y` `obs_z` : the coordinates of the observation point (in m)
+- `Bx` `By` `Bz` : the measured components of the field (in pT)
+- `wt_x` `wt_y` `wt_z` : the measurement error (in %)
+- `cs` : the current source (in A)
+- `date` : the date of the survey (in yyyymmdd)
+
+Mandatory variables are `c1_x` `c1_y` `c1_z` `c2_x` `c2_y` `c2_z` `obs_x` `obs_y` `obs_z` `Bx` `By` `Bz`.
+If not provided, the measurement errors are set to 1 %, the current to 1 A, and the date of the survey is set to None.
+
+For ERT, the full header is
+
+```
+# c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V cs wt date
+```
+
+with the same meaning for `c?_?`, `cs`, `wt`, and `date` fields, and:
+
+- `p1_x` `p1_y` `p1_z` : the coordinates of the first potential electrode (in m)
+- `p2_x` `p2_y` `p2_z` : the coordinates of the second potential electrode (in m)
+- `V` : the measured voltage (in mV)
 
 """
 
@@ -50,16 +83,52 @@ from mpi4py import MPI
 
 import importlib
 import re
+import socket
 import sys
-import warnings
+from datetime import datetime
 
 import numpy as np
+import matplotlib.pyplot as plt
 import pandas as pd
 
-from pymmr.finite_volume import GridFV, build_from_vtk
+import vtk
+from vtk.util.numpy_support import vtk_to_numpy
+
+from pymmr.finite_volume import GridFV
 from pymmr.dc import GridDC
 from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, df_to_data
+
+
+def build_from_vtk(grid_class, filename, comm=None):
+    """Create grid from VTK file.
+
+    The file must contain a rectilinear grid
+
+    Parameters
+    ----------
+    grid_class : class
+        Class for building grid (must be derived from GridFV)
+    filename : string
+        Name of VTK file
+    comm : MPI Communicator, optional
+        If None,  MPI_COMM_WORLD will be used
+
+    Returns
+    -------
+    instance of the grid
+    """
+    if grid_class in (GridMMR, GridDC):
+        reader = vtk.vtkXMLRectilinearGridReader()
+        reader.SetFileName(filename)
+        reader.Update()
+        x = vtk_to_numpy(reader.GetOutput().GetXCoordinates())
+        y = vtk_to_numpy(reader.GetOutput().GetYCoordinates())
+        z = vtk_to_numpy(reader.GetOutput().GetZCoordinates())
+        return grid_class(x, y, z, comm=comm)
+    else:
+        raise ValueError("Grid class '{}' not valid".format(grid_class))
+
 
 comm = MPI.COMM_WORLD
 
@@ -105,10 +174,6 @@ with open(sys.argv[1], "r") as f:
                 data_ert = df_to_data(df_ert)
             elif "basename" in keyword.lower():
                 basename = value
-            elif "beta" in keyword.lower():
-                inv.beta = float(value)
-            elif "inv" in keyword.lower() and "max_it" in keyword.lower():
-                inv.max_it = int(value)
             elif "model" in keyword.lower():
                 model_file = value
             elif 'solver' in keyword.lower() and 'name' in keyword.lower():
@@ -151,7 +216,18 @@ with open(sys.argv[1], "r") as f:
                 units = value
             elif 'show' in keyword.lower() and 'plots' in keyword.lower():
                 inv.show_plots = int(value)
-
+            elif 'save' in keyword.lower() and 'plots' in keyword.lower():
+                inv.save_plots = int(value)
+            elif "beta" in keyword.lower():
+                inv.beta = float(value)
+            elif "inv" in keyword.lower() and "max_it" in keyword.lower():
+                inv.max_it = int(value)
+            elif "data" in keyword.lower() and "weight" in keyword.lower():
+                inv.data_weighting = value
+            elif "checkpointing" in keyword.lower():
+                inv.checkpointing = int(value)
+            elif "start" in keyword.lower() and "checkpoint" in keyword.lower():
+                inv.start_from_chkpt = int(value)
 
 # Done reading parameter file
 
@@ -164,14 +240,20 @@ if model_file is None:
 if data_mmr is None and data_ert is None and "inv" in job:
     raise RuntimeError("No input data provided")
 
+if verbose:
+    starttime = datetime.now()
+    hostname = socket.gethostname()
+    print(f'\nJob running on {hostname}\nStarted {starttime}')
+    print(f"Parameter file: {sys.argv[1]}")
+
 if data_mmr is not None or "mmr" in job:
-    # we will have MMR data to invert of MMR data to model
+    # we will have MMR data to invert or MMR data to model
     g = build_from_vtk(GridMMR, model_file, comm=comm)
-    m_ref = sigma = g.fromVTK("Conductivity", model_file)
 else:
     # we have ERT data only
     g = build_from_vtk(GridDC, model_file, comm=comm)
-    m_ref = sigma = g.fromVTK("Conductivity", model_file)
+
+m_ref = sigma = g.fromVTK("Conductivity", model_file)
 
 g.verbose = verbose
 g.set_solver(solver_name, tol, max_it, precon, do_perm)
@@ -180,10 +262,13 @@ if roi is not None:
 g.apply_bc = apply_bc
 
 if "fwd" in job and "mmr" in job:
-    g.xs = c1c2
-    g.xo = meas
-    g.cs = cs
+    g.set_survey_mmr(c1c2, meas, cs)
     data = g.fwd_mod(sigma, calc_sens=calc_sens)
+
+    if verbose:
+        endtime = datetime.now()
+        diff = endtime - starttime
+        print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
     if calc_sens:
         if verbose:
@@ -196,25 +281,30 @@ if "fwd" in job and "mmr" in job:
     if verbose:
         print("Saving modelled data ... ", end="", flush=True)
     filename = basename + "_mmr.dat"
-    header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz"
+    header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz cs"
     if c1c2.shape[0] == meas.shape[0]:
         xs = c1c2
         xo = meas
+        cs = g.cs.reshape(-1, 1)
     else:
         # fwd modelling was done using the following combinations
         xs = np.kron(c1c2, np.ones((meas.shape[0], 1)))
         xo = np.kron(np.ones((c1c2.shape[0], 1)), meas)
-    np.savetxt(filename, np.c_[xs, xo, data], header=header, fmt="%g")
+        cs = np.kron(g.cs.reshape(-1, 1), np.ones((meas.shape[0], 1)))
+    np.savetxt(filename, np.c_[xs, xo, data, cs], header=header, fmt="%g")
     if verbose:
         print("done.")
 
 elif "fwd" in job and ("dc" in job or "ert" in job):
-    g.c1c2 = c1c2
-    g.p1p2 = meas
-    g.cs = cs
+    g.set_survey_ert(c1c2, meas, cs)
     g.units = units
     data = g.fwd_mod(sigma, calc_J=calc_J, calc_sens=calc_sens)
-    
+
+    if verbose:
+        endtime = datetime.now()
+        diff = endtime - starttime
+        print(f"\nCalculations ended {endtime} ({diff} elapsed)")
+
     if calc_sens:
         if verbose:
             print("Saving sensitivity ... ", end="", flush=True)
@@ -234,8 +324,8 @@ elif "fwd" in job and ("dc" in job or "ert" in job):
         print("Saving modelled voltages ... ", end="", flush=True)
     # save data
     filename = basename + "_dc.dat"
-    data = np.c_[c1c2, meas, data]
-    header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V"
+    data = np.c_[c1c2, meas, data, g.cs]
+    header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V cs"
     np.savetxt(filename, data, header=header, fmt="%g")
     
     if verbose:
@@ -243,7 +333,19 @@ elif "fwd" in job and ("dc" in job or "ert" in job):
 
 elif "inv" in job:
 
-    S_save, data_inv, rms = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert)
+    inv.basename = basename + "_inv"
+    m_active = None
+    if roi is not None:
+        m_active = g.ind_roi
+
+    g.verbose = False
+    g.solver_A.verbose = False
+    S_save, data_inv, rms, misfit, smy = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert, m_active=m_active)
+
+    if verbose:
+        endtime = datetime.now()
+        diff = endtime - starttime
+        print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
     x, y, z = g.get_roi_nodes()
     g2 = GridFV(x, y, z)
@@ -253,7 +355,41 @@ elif "inv" in job:
         name = "iteration {0:d}".format(i + 1)
         fields[name] = S_save[i]
 
-    g2.toVTK(fields, basename + "inv")
+    g2.toVTK(fields, basename + "_inv")
+
+    if inv.show_plots or inv.save_plots:
+        fig = plt.figure()
+        plt.bar(np.arange(1, 1+len(rms)), rms)
+        plt.xlabel('Iteration')
+        plt.ylabel('Weighted RMSE')
+        plt.tight_layout()
+        if inv.save_plots:
+            filename = inv.basename + "_rms.pdf"
+            fig.savefig(filename)
+        if inv.show_plots:
+            plt.show()
+
+        fig = plt.figure()
+        plt.bar(np.arange(1, 1+len(misfit)), misfit)
+        plt.xlabel('Iteration')
+        plt.ylabel('Misfit')
+        plt.tight_layout()
+        if inv.save_plots:
+            filename = inv.basename + "_misfit.pdf"
+            fig.savefig(filename)
+        if inv.show_plots:
+            plt.show()
+
+        fig = plt.figure()
+        plt.bar(np.arange(1, 1+len(smy)), smy)
+        plt.xlabel('Iteration')
+        plt.ylabel('Parameter variation function')
+        plt.tight_layout()
+        if inv.save_plots:
+            filename = inv.basename + "_smy.pdf"
+            fig.savefig(filename)
+        if inv.show_plots:
+            plt.show()
 
 else:
     raise ValueError("Job type not defined")
