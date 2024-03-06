@@ -95,18 +95,18 @@ def calc_padding(dx, n_cells=15, factor=1.3):
     where n represent n^th cell.
 
     """
-    return dx * factor**np.arange(1, n_cells+1)
+    return dx * factor ** np.arange(1, n_cells + 1)
 
 
 def _get_umf_family(A):
     """Get umfpack family string given the sparse matrix dtype.
-    
+
     This function was taken in scipy.sparse.linalg file _dsolve/linsolve.py"""
     _families = {
-        (np.float64, np.int32): 'di',
-        (np.complex128, np.int32): 'zi',
-        (np.float64, np.int64): 'dl',
-        (np.complex128, np.int64): 'zl'
+        (np.float64, np.int32): "di",
+        (np.complex128, np.int32): "zi",
+        (np.float64, np.int64): "dl",
+        (np.complex128, np.int64): "zl",
     }
 
     f_type = np.sctypeDict[A.dtype.name]
@@ -116,9 +116,10 @@ def _get_umf_family(A):
         family = _families[(f_type, i_type)]
 
     except KeyError as e:
-        msg = 'only float64 or complex128 matrices with int32 or int64' \
-            ' indices are supported! (got: matrix: %s, indices: %s)' \
-            % (f_type, i_type)
+        msg = (
+            "only float64 or complex128 matrices with int32 or int64"
+            " indices are supported! (got: matrix: %s, indices: %s)" % (f_type, i_type)
+        )
         raise ValueError(msg) from e
 
     # See gh-8278. Considered converting only if
@@ -134,9 +135,10 @@ def _get_umf_family(A):
 
 # %% GridFV
 
+
 class GridFV:
     """Class to manage rectilinear grids for finite volume modelling.
-    
+
     Parameters
     ----------
     x : array_like
@@ -152,13 +154,13 @@ class GridFV:
     -----
     Voxels are sorted column major, i.e. x is the fast axis
     (choice dictated by convention used by VTK).
-    
+
     """
 
     def __init__(self, x, y, z, comm=None):
         if comm is None:
             from mpi4py import MPI
-        
+
             comm = MPI.COMM_WORLD
         self.comm = comm
         self.myid = comm.rank
@@ -213,32 +215,32 @@ class GridFV:
             nx = self.nx
             ny = self.ny
             nz = self.nz
-        elif component == 'ex':
+        elif component == "ex":
             nx = self.nx
             ny = self.ny - 1
             nz = self.nz - 1
-        elif component == 'ey':
+        elif component == "ey":
             nx = self.nx - 1
             ny = self.ny
             nz = self.nz - 1
-        elif component == 'ez':
+        elif component == "ez":
             nx = self.nx - 1
             ny = self.ny - 1
             nz = self.nz
-        elif component == 'fx':
+        elif component == "fx":
             nx = self.nx - 1
             ny = self.ny
             nz = self.nz
-        elif component == 'fy':
+        elif component == "fy":
             nx = self.nx
             ny = self.ny - 1
             nz = self.nz
-        elif component == 'fz':
+        elif component == "fz":
             nx = self.nx
             ny = self.ny
             nz = self.nz - 1
         else:
-            raise ValueError('unknown component')
+            raise ValueError("unknown component")
 
         if np.size(i) > 1:
             i = np.array(i)
@@ -249,14 +251,12 @@ class GridFV:
         if np.size(k) > 1:
             k = np.array(k)
             k = k.flatten()
-        if np.any(i < 0) or np.any(i >= nx) or np.any(j < 0) or \
-           np.any(j >= ny) or np.any(k < 0) or np.any(k >= nz):
-            raise IndexError('Index outside grid')
+        if np.any(i < 0) or np.any(i >= nx) or np.any(j < 0) or np.any(j >= ny) or np.any(k < 0) or np.any(k >= nz):
+            raise IndexError("Index outside grid")
         if np.size(i) > 1 or np.size(j) > 1 or np.size(k) > 1:
-            ii = np.kron(np.ones((np.size(j)*np.size(k),), dtype=np.int64), i)
-            jj = np.kron(np.kron(np.ones((np.size(k),), dtype=np.int64), j),
-                         np.ones((np.size(i),), dtype=np.int64))
-            kk = np.kron(k, np.ones((np.size(i)*np.size(j),), dtype=np.int64))
+            ii = np.kron(np.ones((np.size(j) * np.size(k),), dtype=np.int64), i)
+            jj = np.kron(np.kron(np.ones((np.size(k),), dtype=np.int64), j), np.ones((np.size(i),), dtype=np.int64))
+            kk = np.kron(k, np.ones((np.size(i) * np.size(j),), dtype=np.int64))
             return np.sort((kk * ny + jj) * nx + ii)
         else:
             return (k * ny + j) * nx + i
@@ -288,47 +288,46 @@ class GridFV:
         if component is None:
             nx = self.nx
             ny = self.ny
-        elif component == 'ex':
+        elif component == "ex":
             nx = self.nx
             ny = self.ny - 1
-        elif component == 'ey':
+        elif component == "ey":
             nx = self.nx - 1
             ny = self.ny
-        elif component == 'ez':
+        elif component == "ez":
             nx = self.nx - 1
             ny = self.ny - 1
-        elif component == 'fx':
+        elif component == "fx":
             nx = self.nx - 1
             ny = self.ny
-        elif component == 'fy':
+        elif component == "fy":
             nx = self.nx
             ny = self.ny - 1
-        elif component == 'fz':
+        elif component == "fz":
             nx = self.nx
             ny = self.ny
         else:
-            raise ValueError('unknown component')
+            raise ValueError("unknown component")
 
         k = int(ind / (nx * ny))
-        j = int((ind - k*nx*ny)/nx)
+        j = int((ind - k * nx * ny) / nx)
         i = ind - (k * ny + j) * nx
         return i, j, k
 
     def __update_n(self):
-        if '_x' in self.__dict__ and '_y' in self.__dict__ and \
-           '_z' in self.__dict__:
-            self.nx = len(self._x)-1                # number of voxels along x
-            self.ny = len(self._y)-1                # number of voxels along y
-            self.nz = len(self._z)-1                # number of voxels along z
-            self.nc = self.nx * self.ny * self.nz   # number of voxels
-            self.nfx = (self.nx-1)*self.ny*self.nz  # number of faces with normal vector along x
-            self.nfy = self.nx*(self.ny-1)*self.nz  # number of faces with normal vector along y
-            self.nfz = self.nx*self.ny*(self.nz-1)  # number of faces with normal vector along z
-            self.nf = self.nfx + self.nfy + self.nfz    # total number of faces
-            self.nex = self.nx*(self.ny-1)*(self.nz-1)  # number of edges with vector along x
-            self.ney = (self.nx-1)*self.ny*(self.nz-1)  # number of edges with vector along y
-            self.nez = (self.nx-1)*(self.ny-1)*self.nz  # number of edges with vector along z
-            self.ne = self.nex + self.ney + self.nez    # total number of edges
+        if "_x" in self.__dict__ and "_y" in self.__dict__ and "_z" in self.__dict__:
+            self.nx = len(self._x) - 1  # number of voxels along x
+            self.ny = len(self._y) - 1  # number of voxels along y
+            self.nz = len(self._z) - 1  # number of voxels along z
+            self.nc = self.nx * self.ny * self.nz  # number of voxels
+            self.nfx = (self.nx - 1) * self.ny * self.nz  # number of faces with normal vector along x
+            self.nfy = self.nx * (self.ny - 1) * self.nz  # number of faces with normal vector along y
+            self.nfz = self.nx * self.ny * (self.nz - 1)  # number of faces with normal vector along z
+            self.nf = self.nfx + self.nfy + self.nfz  # total number of faces
+            self.nex = self.nx * (self.ny - 1) * (self.nz - 1)  # number of edges with vector along x
+            self.ney = (self.nx - 1) * self.ny * (self.nz - 1)  # number of edges with vector along y
+            self.nez = (self.nx - 1) * (self.ny - 1) * self.nz  # number of edges with vector along z
+            self.ne = self.nex + self.ney + self.nez  # total number of edges
 
             # Divergence & gradient matrices are precomputed because essentially always used
             self.D = self.build_D()
@@ -343,13 +342,13 @@ class GridFV:
     def x(self, val):
         tmp = np.array(val, dtype=np.float64)
         if tmp.ndim != 1:
-            raise ValueError('1D array needed')
+            raise ValueError("1D array needed")
         if len(tmp) < 2:
-            raise ValueError('2 nodes or more needed')
+            raise ValueError("2 nodes or more needed")
 
         self._x = tmp
         self.hx = np.diff(tmp)
-        self.xc = (tmp[1:]+tmp[:-1])/2
+        self.xc = (tmp[1:] + tmp[:-1]) / 2
         self.dx = np.diff(self.xc)
         self.__update_n()
 
@@ -362,13 +361,13 @@ class GridFV:
     def y(self, val):
         tmp = np.array(val, dtype=np.float64)
         if tmp.ndim != 1:
-            raise ValueError('1D array needed')
+            raise ValueError("1D array needed")
         if len(tmp) < 2:
-            raise ValueError('2 nodes or more needed')
+            raise ValueError("2 nodes or more needed")
 
         self._y = tmp
         self.hy = np.diff(tmp)
-        self.yc = (tmp[1:]+tmp[:-1])/2
+        self.yc = (tmp[1:] + tmp[:-1]) / 2
         self.dy = np.diff(self.yc)
         self.__update_n()
 
@@ -381,13 +380,13 @@ class GridFV:
     def z(self, val):
         tmp = np.array(val, dtype=np.float64)
         if tmp.ndim != 1:
-            raise ValueError('1D array needed')
+            raise ValueError("1D array needed")
         if len(tmp) < 2:
-            raise ValueError('2 nodes or more needed')
+            raise ValueError("2 nodes or more needed")
 
         self._z = tmp
         self.hz = np.diff(tmp)
-        self.zc = (tmp[1:]+tmp[:-1])/2
+        self.zc = (tmp[1:] + tmp[:-1]) / 2
         self.dz = np.diff(self.zc)
         self.__update_n()
 
@@ -408,8 +407,7 @@ class GridFV:
         True if point is inside grid
 
         """
-        return self.x[0] <= x <= self.x[-1] and self.y[0] <= y <= self.y[-1] and \
-            self.z[0] <= z <= self.z[-1]
+        return self.x[0] <= x <= self.x[-1] and self.y[0] <= y <= self.y[-1] and self.z[0] <= z <= self.z[-1]
 
     def volume_voxels(self):
         """Returns the volume of the voxels of the grid.
@@ -421,7 +419,7 @@ class GridFV:
 
         """
         return np.kron(self.hz, np.kron(self.hy, self.hx))
-    
+
     def centre_voxels(self):
         """Returns coordinates at the centres of voxels.
 
@@ -432,11 +430,10 @@ class GridFV:
 
         """
         x = np.kron(np.ones((self.ny * self.nz,)), self.xc)
-        y = np.kron(np.kron(np.ones((self.nz,)), self.yc),
-                     np.ones((self.nx,)))
+        y = np.kron(np.kron(np.ones((self.nz,)), self.yc), np.ones((self.nx,)))
         z = np.kron(self.zc, np.ones((self.nx * self.ny,)))
         return np.c_[x, y, z]
-    
+
     def distance_weighting(self, xo, beta):
         """Calculate distance weighting matrix.
 
@@ -451,7 +448,7 @@ class GridFV:
         -------
         ndarray (nc,)
             Weights.
-            
+
         Notes
         -----
         Eq 19 of Li & Oldenburg 2000 Geophysics, vol 65, no 2, pp. 540-552
@@ -459,16 +456,18 @@ class GridFV:
         """
         dV = self.volume_voxels()
         xyzc = self.centre_voxels()
-        R0 = 0.5 * dV.min()**0.33333333333333
+        R0 = 0.5 * dV.min() ** 0.33333333333333
         Q = np.zeros((self.nc,))
         for i in np.arange(xo.shape[0]):
-            R = np.sqrt((xyzc[:, 0]-xo[i, 0])*(xyzc[:, 0]-xo[i, 0]) +
-                        (xyzc[:, 1]-xo[i, 1])*(xyzc[:, 1]-xo[i, 1]) +
-                        (xyzc[:, 2]-xo[i, 2])*(xyzc[:, 2]-xo[i, 2]))
-            R = (R+R0)**3
-            R = (dV/R)**2
+            R = np.sqrt(
+                (xyzc[:, 0] - xo[i, 0]) * (xyzc[:, 0] - xo[i, 0])
+                + (xyzc[:, 1] - xo[i, 1]) * (xyzc[:, 1] - xo[i, 1])
+                + (xyzc[:, 2] - xo[i, 2]) * (xyzc[:, 2] - xo[i, 2])
+            )
+            R = (R + R0) ** 3
+            R = (dV / R) ** 2
             Q += R
-        return Q**(0.25*beta)
+        return Q ** (0.25 * beta)
 
     def linear_interp(self, x, y, z, component=None):
         """Calculate interpolation matrix.
@@ -510,42 +509,42 @@ class GridFV:
             xc = self.xc
             yc = self.yc
             zc = self.zc
-        elif component == 'ex':
+        elif component == "ex":
             nx = self.nx
             ny = self.ny - 1
             nz = self.nz - 1
             xc = self.xc
             yc = self.y[1:-1]
             zc = self.z[1:-1]
-        elif component == 'ey':
+        elif component == "ey":
             nx = self.nx - 1
             ny = self.ny
             nz = self.nz - 1
             xc = self.x[1:-1]
             yc = self.yc
             zc = self.z[1:-1]
-        elif component == 'ez':
+        elif component == "ez":
             nx = self.nx - 1
             ny = self.ny - 1
             nz = self.nz
             xc = self.x[1:-1]
             yc = self.y[1:-1]
             zc = self.zc
-        elif component == 'fx':
+        elif component == "fx":
             nx = self.nx - 1
             ny = self.ny
             nz = self.nz
             xc = self.x[1:-1]
             yc = self.yc
             zc = self.zc
-        elif component == 'fy':
+        elif component == "fy":
             nx = self.nx
             ny = self.ny - 1
             nz = self.nz
             xc = self.xc
             yc = self.y[1:-1]
             zc = self.zc
-        elif component == 'fz':
+        elif component == "fz":
             nx = self.nx
             ny = self.ny
             nz = self.nz - 1
@@ -553,7 +552,7 @@ class GridFV:
             yc = self.yc
             zc = self.z[1:-1]
         else:
-            raise ValueError('unknown component')
+            raise ValueError("unknown component")
 
         nc = nx * ny * nz
 
@@ -571,7 +570,7 @@ class GridFV:
 
         Q = sp.lil_matrix((len(x), nc))
         for i in range(len(x)):
-            
+
             if np.any(np.array([x[i], y[i], z[i]]) == np.inf):
                 # check if point at np.inf -> set Q to 0
                 Q[i, 0] = 0.0
@@ -579,31 +578,31 @@ class GridFV:
 
             im = np.argmin(np.abs(x[i] - xc))
             if x[i] < xc[im]:
-                ix[0] = im-1
+                ix[0] = im - 1
                 ix[1] = im
             else:
                 ix[0] = im
-                ix[1] = im+1
+                ix[1] = im + 1
             dx[0] = x[i] - xc[ix[0]]
             dx[1] = xc[ix[1]] - x[i]
 
             im = np.argmin(np.abs(y[i] - yc))
             if y[i] < yc[im]:
-                iy[0] = im-1
+                iy[0] = im - 1
                 iy[1] = im
             else:
                 iy[0] = im
-                iy[1] = im+1
+                iy[1] = im + 1
             dy[0] = y[i] - yc[iy[0]]
             dy[1] = yc[iy[1]] - y[i]
 
             im = np.argmin(np.abs(z[i] - zc))
             if z[i] < zc[im]:
-                iz[0] = im-1
+                iz[0] = im - 1
                 iz[1] = im
             else:
                 iz[0] = im
-                iz[1] = im+1
+                iz[1] = im + 1
             dz[0] = z[i] - zc[iz[0]]
             dz[1] = zc[iz[1]] - z[i]
 
@@ -611,14 +610,14 @@ class GridFV:
             Dy = yc[iy[1]] - yc[iy[0]]
             Dz = zc[iz[1]] - zc[iz[0]]
 
-            Q[i, self.ind(ix[0], iy[0], iz[0], component)] = (1-dx[0]/Dx)*(1-dy[0]/Dy)*(1-dz[0]/Dz)
-            Q[i, self.ind(ix[1], iy[0], iz[0], component)] = (1-dx[1]/Dx)*(1-dy[0]/Dy)*(1-dz[0]/Dz)
-            Q[i, self.ind(ix[0], iy[1], iz[0], component)] = (1-dx[0]/Dx)*(1-dy[1]/Dy)*(1-dz[0]/Dz)
-            Q[i, self.ind(ix[1], iy[1], iz[0], component)] = (1-dx[1]/Dx)*(1-dy[1]/Dy)*(1-dz[0]/Dz)
-            Q[i, self.ind(ix[0], iy[0], iz[1], component)] = (1-dx[0]/Dx)*(1-dy[0]/Dy)*(1-dz[1]/Dz)
-            Q[i, self.ind(ix[1], iy[0], iz[1], component)] = (1-dx[1]/Dx)*(1-dy[0]/Dy)*(1-dz[1]/Dz)
-            Q[i, self.ind(ix[0], iy[1], iz[1], component)] = (1-dx[0]/Dx)*(1-dy[1]/Dy)*(1-dz[1]/Dz)
-            Q[i, self.ind(ix[1], iy[1], iz[1], component)] = (1-dx[1]/Dx)*(1-dy[1]/Dy)*(1-dz[1]/Dz)
+            Q[i, self.ind(ix[0], iy[0], iz[0], component)] = (1 - dx[0] / Dx) * (1 - dy[0] / Dy) * (1 - dz[0] / Dz)
+            Q[i, self.ind(ix[1], iy[0], iz[0], component)] = (1 - dx[1] / Dx) * (1 - dy[0] / Dy) * (1 - dz[0] / Dz)
+            Q[i, self.ind(ix[0], iy[1], iz[0], component)] = (1 - dx[0] / Dx) * (1 - dy[1] / Dy) * (1 - dz[0] / Dz)
+            Q[i, self.ind(ix[1], iy[1], iz[0], component)] = (1 - dx[1] / Dx) * (1 - dy[1] / Dy) * (1 - dz[0] / Dz)
+            Q[i, self.ind(ix[0], iy[0], iz[1], component)] = (1 - dx[0] / Dx) * (1 - dy[0] / Dy) * (1 - dz[1] / Dz)
+            Q[i, self.ind(ix[1], iy[0], iz[1], component)] = (1 - dx[1] / Dx) * (1 - dy[0] / Dy) * (1 - dz[1] / Dz)
+            Q[i, self.ind(ix[0], iy[1], iz[1], component)] = (1 - dx[0] / Dx) * (1 - dy[1] / Dy) * (1 - dz[1] / Dz)
+            Q[i, self.ind(ix[1], iy[1], iz[1], component)] = (1 - dx[1] / Dx) * (1 - dy[1] / Dy) * (1 - dz[1] / Dz)
 
         return Q.tocsr()
 
@@ -635,43 +634,47 @@ class GridFV:
         # Dx
 
         M = self.nx
-        N = self.nx-1
-        i = np.hstack((np.arange(N), 1+np.arange(N)))
+        N = self.nx - 1
+        i = np.hstack((np.arange(N), 1 + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
         nval = i.size
-        ii = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
-        for n in np.arange(self.ny*self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.tile(np.hstack((1.0/self.hx[:-1], -1.0/self.hx[1:])),
-                    (self.ny*self.nz,))
+        ii = np.zeros((self.ny * self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.ny * self.nz * nval,), dtype=np.int64)
+        for n in np.arange(self.ny * self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.ny * self.nz,))
         Dx = sp.coo_matrix((s, (ii, jj)))
 
         # Dy
 
-        M = self.nx*self.ny
-        N = self.nx*(self.ny-1)
-        i = np.hstack((np.arange(N), self.nx+np.arange(N)))
+        M = self.nx * self.ny
+        N = self.nx * (self.ny - 1)
+        i = np.hstack((np.arange(N), self.nx + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
         nval = i.size
-        ii = np.zeros((self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.nz*nval,), dtype=np.int64)
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
         for n in np.arange(self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.hstack((np.kron(1.0/self.hy[:-1], np.ones((self.nx,))),
-                       np.kron(-1.0/self.hy[1:], np.ones((self.nx,)))))
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.hstack(
+            (np.kron(1.0 / self.hy[:-1], np.ones((self.nx,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx,))))
+        )
         s = np.tile(s, (self.nz,))
         Dy = sp.coo_matrix((s, (ii, jj)))
 
         # Dz
 
-        N = (self.nx*self.ny*(self.nz-1))
-        i = np.hstack((np.arange(N), self.nx*self.ny+np.arange(N)))
+        N = self.nx * self.ny * (self.nz - 1)
+        i = np.hstack((np.arange(N), self.nx * self.ny + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
-        s = np.hstack((np.kron(1./self.hz[:-1], np.ones((self.nx*self.ny,))),
-                       np.kron(-1./self.hz[1:], np.ones((self.nx*self.ny,)))))
+        s = np.hstack(
+            (
+                np.kron(1.0 / self.hz[:-1], np.ones((self.nx * self.ny,))),
+                np.kron(-1.0 / self.hz[1:], np.ones((self.nx * self.ny,))),
+            )
+        )
         Dz = sp.coo_matrix((s, (i, j)))
 
         # assemblage
@@ -691,7 +694,7 @@ class GridFV:
                 |v_xx    0    0|
             v = |   0 v_yy    0|
                 |   0    0 v_zz|
-            
+
         harmon : bool, optional
             if True, harmonic average is computed, otherwise the
             arithmetic mean is computed.
@@ -711,60 +714,56 @@ class GridFV:
 
         # Mx
 
-        d = np.kron(np.ones((self.ny*self.nz,)), 2*self.dx)
-        hi = np.kron(np.ones((self.ny*self.nz,)), self.hx[1:])
-        him1 = np.kron(np.ones((self.ny*self.nz,)), self.hx[:-1])
+        d = np.kron(np.ones((self.ny * self.nz,)), 2 * self.dx)
+        hi = np.kron(np.ones((self.ny * self.nz,)), self.hx[1:])
+        him1 = np.kron(np.ones((self.ny * self.nz,)), self.hx[:-1])
         tmp = np.ones((self.nx,), dtype=bool)
         tmp[0] = 0
-        ind1 = np.kron(np.ones((self.ny*self.nz,), dtype=bool), tmp)
+        ind1 = np.kron(np.ones((self.ny * self.nz,), dtype=bool), tmp)
         tmp[0] = 1
         tmp[-1] = 0
-        ind2 = np.kron(np.ones((self.ny*self.nz,), dtype=bool), tmp)
+        ind2 = np.kron(np.ones((self.ny * self.nz,), dtype=bool), tmp)
         if harmon:
-            Mx = d / (hi/vx[ind1] + him1/vx[ind2])
+            Mx = d / (hi / vx[ind1] + him1 / vx[ind2])
         else:
-            Mx = (hi*vx[ind1] + him1*vx[ind2]) / d
+            Mx = (hi * vx[ind1] + him1 * vx[ind2]) / d
 
         # My
 
-        d = np.kron(np.ones((self.nz,)), np.kron(2*self.dy,
-                                                 np.ones((self.nx,))))
-        hi = np.kron(np.ones((self.nz,)), np.kron(self.hy[1:],
-                                                  np.ones((self.nx,))))
-        him1 = np.kron(np.ones((self.nz,)), np.kron(self.hy[:-1],
-                                                    np.ones((self.nx,))))
+        d = np.kron(np.ones((self.nz,)), np.kron(2 * self.dy, np.ones((self.nx,))))
+        hi = np.kron(np.ones((self.nz,)), np.kron(self.hy[1:], np.ones((self.nx,))))
+        him1 = np.kron(np.ones((self.nz,)), np.kron(self.hy[:-1], np.ones((self.nx,))))
 
         tmp = np.ones((self.ny,), dtype=bool)
         tmp[0] = 0
-        ind1 = np.kron(np.ones((self.nz,), dtype=bool),
-                       np.kron(tmp, np.ones((self.nx,), dtype=bool)))
+        ind1 = np.kron(np.ones((self.nz,), dtype=bool), np.kron(tmp, np.ones((self.nx,), dtype=bool)))
         tmp[0] = 1
         tmp[-1] = 0
-        ind2 = np.kron(np.ones((self.nz,), dtype=bool),
-                       np.kron(tmp, np.ones((self.nx,), dtype=bool)))
+        ind2 = np.kron(np.ones((self.nz,), dtype=bool), np.kron(tmp, np.ones((self.nx,), dtype=bool)))
         if harmon:
-            My = d / (hi/vy[ind1] + him1/vy[ind2])
+            My = d / (hi / vy[ind1] + him1 / vy[ind2])
         else:
-            My = (hi*vy[ind1] + him1*vy[ind2]) / d
+            My = (hi * vy[ind1] + him1 * vy[ind2]) / d
 
         # Mz
 
-        d = np.kron(2*self.dz, np.ones((self.nx*self.ny,)))
-        hi = np.kron(self.hz[1:], np.ones((self.nx*self.ny,)))
-        him1 = np.kron(self.hz[:-1], np.ones((self.nx*self.ny,)))
-        ind1 = np.hstack((np.zeros((self.nx*self.ny,), dtype=bool),
-                          np.ones((self.nx*self.ny*(self.nz-1),), dtype=bool)))
-        ind2 = np.hstack((np.ones((self.nx*self.ny*(self.nz-1),), dtype=bool),
-                          np.zeros((self.nx*self.ny,), dtype=bool)))
+        d = np.kron(2 * self.dz, np.ones((self.nx * self.ny,)))
+        hi = np.kron(self.hz[1:], np.ones((self.nx * self.ny,)))
+        him1 = np.kron(self.hz[:-1], np.ones((self.nx * self.ny,)))
+        ind1 = np.hstack(
+            (np.zeros((self.nx * self.ny,), dtype=bool), np.ones((self.nx * self.ny * (self.nz - 1),), dtype=bool))
+        )
+        ind2 = np.hstack(
+            (np.ones((self.nx * self.ny * (self.nz - 1),), dtype=bool), np.zeros((self.nx * self.ny,), dtype=bool))
+        )
         if harmon:
-            Mz = d / (hi/vz[ind1] + him1/vz[ind2])
+            Mz = d / (hi / vz[ind1] + him1 / vz[ind2])
         else:
-            Mz = (hi*vz[ind1] + him1*vz[ind2]) / d
+            Mz = (hi * vz[ind1] + him1 * vz[ind2]) / d
 
         # assemblage
 
-        return sp.coo_matrix((np.hstack((Mx, My, Mz)),
-                             (np.arange(self.nf), np.arange(self.nf)))).tocsr()
+        return sp.coo_matrix((np.hstack((Mx, My, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
 
     def build_G(self, v=None):
         """Construction of gradient matrix.
@@ -795,48 +794,50 @@ class GridFV:
         i = np.hstack((np.arange(M), np.arange(M)))
         j = np.hstack((np.arange(M), np.arange(1, N)))
         nval = i.size
-        ii = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
-        for n in np.arange(self.ny*self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.tile(np.hstack((-1.0/self.dx, 1.0/self.dx)), (self.ny*self.nz,))
+        ii = np.zeros((self.ny * self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.ny * self.nz * nval,), dtype=np.int64)
+        for n in np.arange(self.ny * self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.ny * self.nz,))
         Gx = sp.coo_matrix((s, (ii, jj)))
 
         # Gy
 
-        M = self.nx*(self.ny-1)
-        N = self.nx*self.ny
+        M = self.nx * (self.ny - 1)
+        N = self.nx * self.ny
         i = np.hstack((np.arange(M), np.arange(M)))
-        j = np.hstack((np.arange(M), self.nx+np.arange(M)))
+        j = np.hstack((np.arange(M), self.nx + np.arange(M)))
         nval = i.size
-        ii = np.zeros((self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.nz*nval,), dtype=np.int64)
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
         for n in np.arange(self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.hstack((np.kron(-1.0/self.dy, np.ones((self.nx,))),
-                       np.kron(1.0/self.dy, np.ones((self.nx,)))))
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.hstack((np.kron(-1.0 / self.dy, np.ones((self.nx,))), np.kron(1.0 / self.dy, np.ones((self.nx,)))))
         s = np.tile(s, (self.nz,))
         Gy = sp.coo_matrix((s, (ii, jj)))
 
         # Gz
 
         i = np.hstack((np.arange(self.nfz), np.arange(self.nfz)))
-        j = np.hstack((np.arange(self.nfz),
-                       self.nx*self.ny+np.arange(self.nfz)))
-        s = np.hstack((np.kron(-1.0/self.dz, np.ones((self.nx*self.ny,))),
-                       np.kron(1.0/self.dz, np.ones((self.nx*self.ny,)))))
+        j = np.hstack((np.arange(self.nfz), self.nx * self.ny + np.arange(self.nfz)))
+        s = np.hstack(
+            (
+                np.kron(-1.0 / self.dz, np.ones((self.nx * self.ny,))),
+                np.kron(1.0 / self.dz, np.ones((self.nx * self.ny,))),
+            )
+        )
         Gz = sp.coo_matrix((s, (i, j)))
 
         # assemblage
-        return sp.vstack((Gx, Gy, Gz), format='csr')
+        return sp.vstack((Gx, Gy, Gz), format="csr")
 
     def _gradient_faces(self, v):
 
-        v_x = sp.diags(v[:self.nfx])
-        v_y = sp.diags(v[self.nfx:(self.nfx+self.nfy)])
-        v_z = sp.diags(v[(self.nfx+self.nfy):])
+        v_x = sp.diags(v[: self.nfx])
+        v_y = sp.diags(v[self.nfx : (self.nfx + self.nfy)])
+        v_z = sp.diags(v[(self.nfx + self.nfy) :])
 
         # Gx
 
@@ -847,30 +848,34 @@ class GridFV:
         i = np.hstack((np.arange(M), np.arange(M)))
         j = np.hstack((np.arange(M), np.arange(1, N)))
         nval = i.size
-        ii = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
-        for n in np.arange(self.ny*self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.tile(np.hstack((0.5*self.hx[:-1]/dVf, 0.5*self.hx[1:]/dVf)), (self.ny*self.nz,))
+        ii = np.zeros((self.ny * self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.ny * self.nz * nval,), dtype=np.int64)
+        for n in np.arange(self.ny * self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.ny * self.nz,))
         Gx = v_x @ sp.coo_matrix((s, (ii, jj)))
 
         # Gy
 
         dVf = 0.5 * (self.hy[1:] + self.hy[:-1])
 
-        M = self.nx*(self.ny-1)
-        N = self.nx*self.ny
+        M = self.nx * (self.ny - 1)
+        N = self.nx * self.ny
         i = np.hstack((np.arange(M), np.arange(M)))
-        j = np.hstack((np.arange(M), self.nx+np.arange(M)))
+        j = np.hstack((np.arange(M), self.nx + np.arange(M)))
         nval = i.size
-        ii = np.zeros((self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.nz*nval,), dtype=np.int64)
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
         for n in np.arange(self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.hstack((np.kron(0.5*self.hy[:-1]/dVf, np.ones((self.nx,))),
-                       np.kron(0.5*self.hy[1:]/dVf, np.ones((self.nx,)))))
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.hstack(
+            (
+                np.kron(0.5 * self.hy[:-1] / dVf, np.ones((self.nx,))),
+                np.kron(0.5 * self.hy[1:] / dVf, np.ones((self.nx,))),
+            )
+        )
         s = np.tile(s, (self.nz,))
         Gy = v_y @ sp.coo_matrix((s, (ii, jj)))
 
@@ -879,14 +884,17 @@ class GridFV:
         dVf = 0.5 * (self.hz[1:] + self.hz[:-1])
 
         i = np.hstack((np.arange(self.nfz), np.arange(self.nfz)))
-        j = np.hstack((np.arange(self.nfz),
-                       self.nx*self.ny+np.arange(self.nfz)))
-        s = np.hstack((np.kron(0.5*self.hz[:-1]/dVf, np.ones((self.nx*self.ny,))),
-                       np.kron(0.5*self.hz[1:]/dVf, np.ones((self.nx*self.ny,)))))
+        j = np.hstack((np.arange(self.nfz), self.nx * self.ny + np.arange(self.nfz)))
+        s = np.hstack(
+            (
+                np.kron(0.5 * self.hz[:-1] / dVf, np.ones((self.nx * self.ny,))),
+                np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx * self.ny,))),
+            )
+        )
         Gz = v_z @ sp.coo_matrix((s, (i, j)))
 
         # assemblage
-        return sp.vstack((Gx, Gy, Gz), format='csr')
+        return sp.vstack((Gx, Gy, Gz), format="csr")
 
     def build_G_faces(self):
         """Construction of gradient matrix to use with vector defined on edges.
@@ -905,30 +913,34 @@ class GridFV:
         i = np.hstack((np.arange(M), np.arange(M)))
         j = np.hstack((np.arange(M), np.arange(1, N)))
         nval = i.size
-        ii = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.ny*self.nz*nval,), dtype=np.int64)
-        for n in np.arange(self.ny*self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.tile(np.hstack((0.5*self.hx[:-1]/dVf, 0.5*self.hx[1:]/dVf)), (self.ny*self.nz,))
+        ii = np.zeros((self.ny * self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.ny * self.nz * nval,), dtype=np.int64)
+        for n in np.arange(self.ny * self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.ny * self.nz,))
         Gx = sp.coo_matrix((s, (ii, jj)))
 
         # Gy
 
         dVf = 0.5 * (self.hy[1:] + self.hy[:-1])
 
-        M = self.nx*(self.ny-1)
-        N = self.nx*self.ny
+        M = self.nx * (self.ny - 1)
+        N = self.nx * self.ny
         i = np.hstack((np.arange(M), np.arange(M)))
-        j = np.hstack((np.arange(M), self.nx+np.arange(M)))
+        j = np.hstack((np.arange(M), self.nx + np.arange(M)))
         nval = i.size
-        ii = np.zeros((self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.nz*nval,), dtype=np.int64)
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
         for n in np.arange(self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.hstack((np.kron(0.5*self.hy[:-1]/dVf, np.ones((self.nx,))),
-                       np.kron(0.5*self.hy[1:]/dVf, np.ones((self.nx,)))))
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.hstack(
+            (
+                np.kron(0.5 * self.hy[:-1] / dVf, np.ones((self.nx,))),
+                np.kron(0.5 * self.hy[1:] / dVf, np.ones((self.nx,))),
+            )
+        )
         s = np.tile(s, (self.nz,))
         Gy = sp.coo_matrix((s, (ii, jj)))
 
@@ -937,13 +949,16 @@ class GridFV:
         dVf = 0.5 * (self.hz[1:] + self.hz[:-1])
 
         i = np.hstack((np.arange(self.nfz), np.arange(self.nfz)))
-        j = np.hstack((np.arange(self.nfz),
-                       self.nx*self.ny+np.arange(self.nfz)))
-        s = np.hstack((np.kron(0.5*self.hz[:-1]/dVf, np.ones((self.nx*self.ny,))),
-                       np.kron(0.5*self.hz[1:]/dVf, np.ones((self.nx*self.ny,)))))
+        j = np.hstack((np.arange(self.nfz), self.nx * self.ny + np.arange(self.nfz)))
+        s = np.hstack(
+            (
+                np.kron(0.5 * self.hz[:-1] / dVf, np.ones((self.nx * self.ny,))),
+                np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx * self.ny,))),
+            )
+        )
         Gz = sp.coo_matrix((s, (i, j)))
 
-        return sp.vstack((Gx, Gy, Gz), format='csr')
+        return sp.vstack((Gx, Gy, Gz), format="csr")
 
     def build_C(self, to_faces=True):
         """Construction of curl matrix.
@@ -968,119 +983,138 @@ class GridFV:
     def _curl_faces(self):
 
         # dHz / dy
-        M = (self.nx-1)*self.ny
-        N = (self.nx-1)*(self.ny-1)
-        i = np.hstack((np.arange(N), (self.nx-1)+np.arange(N)))
+        M = (self.nx - 1) * self.ny
+        N = (self.nx - 1) * (self.ny - 1)
+        i = np.hstack((np.arange(N), (self.nx - 1) + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
         nval = i.size
-        ii = np.zeros((self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.nz*nval,), dtype=np.int64)
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
         for n in np.arange(self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.hstack((np.kron(1.0/self.hy[:-1], np.ones((self.nx-1,))),
-                       np.kron(-1.0/self.hy[1:], np.ones((self.nx-1,)))))
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.hstack(
+            (np.kron(1.0 / self.hy[:-1], np.ones((self.nx - 1,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx - 1,))))
+        )
         s = np.tile(s, (self.nz,))
         Dzy = sp.coo_matrix((s, (ii, jj)))
 
         # dHy / dz
-        N = ((self.nx-1)*self.ny*(self.nz-1))
-        i = np.hstack((np.arange(N), (self.nx-1)*self.ny+np.arange(N)))
+        N = (self.nx - 1) * self.ny * (self.nz - 1)
+        i = np.hstack((np.arange(N), (self.nx - 1) * self.ny + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
-        s = np.hstack((np.kron(1./self.hz[:-1], np.ones(((self.nx-1)*self.ny,))),
-                       np.kron(-1./self.hz[1:], np.ones(((self.nx-1)*self.ny,)))))
+        s = np.hstack(
+            (
+                np.kron(1.0 / self.hz[:-1], np.ones(((self.nx - 1) * self.ny,))),
+                np.kron(-1.0 / self.hz[1:], np.ones(((self.nx - 1) * self.ny,))),
+            )
+        )
         Dyz = sp.coo_matrix((s, (i, j)))
 
         # dHx / dz
-        N = (self.nx*(self.ny-1)*(self.nz-1))
-        i = np.hstack((np.arange(N), self.nx*(self.ny-1)+np.arange(N)))
+        N = self.nx * (self.ny - 1) * (self.nz - 1)
+        i = np.hstack((np.arange(N), self.nx * (self.ny - 1) + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
-        s = np.hstack((np.kron(1./self.hz[:-1], np.ones((self.nx*(self.ny-1),))),
-                       np.kron(-1./self.hz[1:], np.ones((self.nx*(self.ny-1),)))))
+        s = np.hstack(
+            (
+                np.kron(1.0 / self.hz[:-1], np.ones((self.nx * (self.ny - 1),))),
+                np.kron(-1.0 / self.hz[1:], np.ones((self.nx * (self.ny - 1),))),
+            )
+        )
         Dxz = sp.coo_matrix((s, (i, j)))
 
         # dHz / dx
         M = self.nx
-        N = self.nx-1
-        i = np.hstack((np.arange(N), 1+np.arange(N)))
+        N = self.nx - 1
+        i = np.hstack((np.arange(N), 1 + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
         nval = i.size
-        ii = np.zeros(((self.ny-1)*self.nz*nval,), dtype=np.int64)
-        jj = np.zeros(((self.ny-1)*self.nz*nval,), dtype=np.int64)
-        for n in np.arange((self.ny-1)*self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.tile(np.hstack((1.0/self.hx[:-1], -1.0/self.hx[1:])),
-                    ((self.ny-1)*self.nz,))
+        ii = np.zeros(((self.ny - 1) * self.nz * nval,), dtype=np.int64)
+        jj = np.zeros(((self.ny - 1) * self.nz * nval,), dtype=np.int64)
+        for n in np.arange((self.ny - 1) * self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), ((self.ny - 1) * self.nz,))
         Dzx = sp.coo_matrix((s, (ii, jj)))
 
         # dHy / dx
         M = self.nx
-        N = self.nx-1
-        i = np.hstack((np.arange(N), 1+np.arange(N)))
+        N = self.nx - 1
+        i = np.hstack((np.arange(N), 1 + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
         nval = i.size
-        ii = np.zeros((self.ny*(self.nz-1)*nval,), dtype=np.int64)
-        jj = np.zeros((self.ny*(self.nz-1)*nval,), dtype=np.int64)
-        for n in np.arange(self.ny*(self.nz-1)):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.tile(np.hstack((1.0/self.hx[:-1], -1.0/self.hx[1:])),
-                    (self.ny*(self.nz-1),))
+        ii = np.zeros((self.ny * (self.nz - 1) * nval,), dtype=np.int64)
+        jj = np.zeros((self.ny * (self.nz - 1) * nval,), dtype=np.int64)
+        for n in np.arange(self.ny * (self.nz - 1)):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.ny * (self.nz - 1),))
         Dyx = sp.coo_matrix((s, (ii, jj)))
 
         # dHx / dy
-        M = self.nx*self.ny
-        N = self.nx*(self.ny-1)
-        i = np.hstack((np.arange(N), self.nx+np.arange(N)))
+        M = self.nx * self.ny
+        N = self.nx * (self.ny - 1)
+        i = np.hstack((np.arange(N), self.nx + np.arange(N)))
         j = np.hstack((np.arange(N), np.arange(N)))
         nval = i.size
-        ii = np.zeros(((self.nz-1)*nval,), dtype=np.int64)
-        jj = np.zeros(((self.nz-1)*nval,), dtype=np.int64)
-        for n in np.arange(self.nz-1):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.hstack((np.kron(1.0/self.hy[:-1], np.ones((self.nx,))),
-                       np.kron(-1.0/self.hy[1:], np.ones((self.nx,)))))
-        s = np.tile(s, (self.nz-1,))
+        ii = np.zeros(((self.nz - 1) * nval,), dtype=np.int64)
+        jj = np.zeros(((self.nz - 1) * nval,), dtype=np.int64)
+        for n in np.arange(self.nz - 1):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.hstack(
+            (np.kron(1.0 / self.hy[:-1], np.ones((self.nx,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx,))))
+        )
+        s = np.tile(s, (self.nz - 1,))
         Dxy = sp.coo_matrix((s, (ii, jj)))
 
-        return sp.vstack((sp.hstack((sp.csr_matrix((self.nfx, self.nex)), -Dyz, Dzy), format='csr'),
-                          sp.hstack((Dxz, sp.csr_matrix((self.nfy, self.ney)), -Dzx), format='csr'),
-                          sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nfz, self.nez))), format='csr')))
+        return sp.vstack(
+            (
+                sp.hstack((sp.csr_matrix((self.nfx, self.nex)), -Dyz, Dzy), format="csr"),
+                sp.hstack((Dxz, sp.csr_matrix((self.nfy, self.ney)), -Dzx), format="csr"),
+                sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nfz, self.nez))), format="csr"),
+            )
+        )
 
     def _curl_edges(self):
 
         # dAz / dy
-        M = self.nx*(self.ny-1)
-        N = self.nx*self.ny
+        M = self.nx * (self.ny - 1)
+        N = self.nx * self.ny
         i = np.hstack((np.arange(M), np.arange(M)))
-        j = np.hstack((np.arange(M), self.nx+np.arange(M)))
+        j = np.hstack((np.arange(M), self.nx + np.arange(M)))
         nval = i.size
-        ii = np.zeros(((self.nz-1)*nval,), dtype=np.int64)
-        jj = np.zeros(((self.nz-1)*nval,), dtype=np.int64)
-        for n in np.arange(self.nz-1):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.hstack((np.kron(-1.0/self.dy, np.ones((self.nx,))),
-                       np.kron(1.0/self.dy, np.ones((self.nx,)))))
-        s = np.tile(s, (self.nz-1,))
+        ii = np.zeros(((self.nz - 1) * nval,), dtype=np.int64)
+        jj = np.zeros(((self.nz - 1) * nval,), dtype=np.int64)
+        for n in np.arange(self.nz - 1):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.hstack((np.kron(-1.0 / self.dy, np.ones((self.nx,))), np.kron(1.0 / self.dy, np.ones((self.nx,)))))
+        s = np.tile(s, (self.nz - 1,))
         Dzy = sp.coo_matrix((s, (ii, jj)))
 
         # dAy / dz
-        N = self.nx*(self.ny-1)*(self.nz-1)
+        N = self.nx * (self.ny - 1) * (self.nz - 1)
         i = np.hstack((np.arange(N), np.arange(N)))
-        j = np.hstack((np.arange(N), self.nx*(self.ny-1)+np.arange(N)))
-        s = np.hstack((np.kron(-1.0/self.dz, np.ones((self.nx*(self.ny-1),))),
-                       np.kron(1.0/self.dz, np.ones((self.nx*(self.ny-1),)))))
+        j = np.hstack((np.arange(N), self.nx * (self.ny - 1) + np.arange(N)))
+        s = np.hstack(
+            (
+                np.kron(-1.0 / self.dz, np.ones((self.nx * (self.ny - 1),))),
+                np.kron(1.0 / self.dz, np.ones((self.nx * (self.ny - 1),))),
+            )
+        )
         Dyz = sp.coo_matrix((s, (i, j)))
 
         # dAx / dz
-        N = (self.nx-1)*self.ny*(self.nz-1)
+        N = (self.nx - 1) * self.ny * (self.nz - 1)
         i = np.hstack((np.arange(N), np.arange(N)))
-        j = np.hstack((np.arange(N), (self.nx-1)*self.ny+np.arange(N)))
-        s = np.hstack((np.kron(-1.0/self.dz, np.ones(((self.nx-1)*self.ny,))),
-                       np.kron(1.0/self.dz, np.ones(((self.nx-1)*self.ny,)))))
+        j = np.hstack((np.arange(N), (self.nx - 1) * self.ny + np.arange(N)))
+        s = np.hstack(
+            (
+                np.kron(-1.0 / self.dz, np.ones(((self.nx - 1) * self.ny,))),
+                np.kron(1.0 / self.dz, np.ones(((self.nx - 1) * self.ny,))),
+            )
+        )
         Dxz = sp.coo_matrix((s, (i, j)))
 
         # dAz / dx
@@ -1089,12 +1123,12 @@ class GridFV:
         i = np.hstack((np.arange(M), np.arange(M)))
         j = np.hstack((np.arange(M), np.arange(1, N)))
         nval = i.size
-        ii = np.zeros((self.ny*(self.nz-1)*nval,), dtype=np.int64)
-        jj = np.zeros((self.ny*(self.nz-1)*nval,), dtype=np.int64)
-        for n in np.arange(self.ny*(self.nz-1)):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.tile(np.hstack((-1.0/self.dx, 1.0/self.dx)), (self.ny*(self.nz-1),))
+        ii = np.zeros((self.ny * (self.nz - 1) * nval,), dtype=np.int64)
+        jj = np.zeros((self.ny * (self.nz - 1) * nval,), dtype=np.int64)
+        for n in np.arange(self.ny * (self.nz - 1)):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.ny * (self.nz - 1),))
         Dzx = sp.coo_matrix((s, (ii, jj)))
 
         # dAy / dx
@@ -1103,35 +1137,40 @@ class GridFV:
         i = np.hstack((np.arange(M), np.arange(M)))
         j = np.hstack((np.arange(M), np.arange(1, N)))
         nval = i.size
-        ii = np.zeros(((self.ny-1)*self.nz*nval,), dtype=np.int64)
-        jj = np.zeros(((self.ny-1)*self.nz*nval,), dtype=np.int64)
-        for n in np.arange((self.ny-1)*self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.tile(np.hstack((-1.0/self.dx, 1.0/self.dx)), ((self.ny-1)*self.nz,))
+        ii = np.zeros(((self.ny - 1) * self.nz * nval,), dtype=np.int64)
+        jj = np.zeros(((self.ny - 1) * self.nz * nval,), dtype=np.int64)
+        for n in np.arange((self.ny - 1) * self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), ((self.ny - 1) * self.nz,))
         Dyx = sp.coo_matrix((s, (ii, jj)))
 
         # dAx / dy
-        M = (self.nx-1)*(self.ny-1)
-        N = (self.nx-1)*self.ny
+        M = (self.nx - 1) * (self.ny - 1)
+        N = (self.nx - 1) * self.ny
         i = np.hstack((np.arange(M), np.arange(M)))
-        j = np.hstack((np.arange(M), (self.nx-1)+np.arange(M)))
+        j = np.hstack((np.arange(M), (self.nx - 1) + np.arange(M)))
         nval = i.size
-        ii = np.zeros((self.nz*nval,), dtype=np.int64)
-        jj = np.zeros((self.nz*nval,), dtype=np.int64)
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
         for n in np.arange(self.nz):
-            ii[(n*nval):((n+1)*nval)] = i + n*M
-            jj[(n*nval):((n+1)*nval)] = j + n*N
-        s = np.hstack((np.kron(-1.0/self.dy, np.ones((self.nx-1,))),
-                       np.kron(1.0/self.dy, np.ones((self.nx-1,)))))
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.hstack(
+            (np.kron(-1.0 / self.dy, np.ones((self.nx - 1,))), np.kron(1.0 / self.dy, np.ones((self.nx - 1,))))
+        )
         s = np.tile(s, (self.nz,))
         Dxy = sp.coo_matrix((s, (ii, jj)))
 
-        return sp.vstack((sp.hstack((sp.csr_matrix((self.nex, self.nfx)), -Dyz, Dzy), format='csr'),
-                          sp.hstack((Dxz, sp.csr_matrix((self.ney, self.nfy)), -Dzx), format='csr'),
-                          sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nez, self.nfz))), format='csr')))
+        return sp.vstack(
+            (
+                sp.hstack((sp.csr_matrix((self.nex, self.nfx)), -Dyz, Dzy), format="csr"),
+                sp.hstack((Dxz, sp.csr_matrix((self.ney, self.nfy)), -Dzx), format="csr"),
+                sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nez, self.nfz))), format="csr"),
+            )
+        )
 
-    def toVTK(self, fields, filename, component='s', on_face=True, metadata=None):
+    def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
         """
         Save a field in a vtk file.
 
@@ -1154,17 +1193,17 @@ class GridFV:
         """
 
         if not isinstance(fields, dict):
-            raise ValueError('\'fields\' must be a dict[str, ndarray]')
+            raise ValueError("'fields' must be a dict[str, ndarray]")
 
         xCoords = vtk.vtkFloatArray()
         yCoords = vtk.vtkFloatArray()
         zCoords = vtk.vtkFloatArray()
 
-        if component == 's':
+        if component == "s":
             x = self.x
             y = self.y
             z = self.z
-        elif component == 'x':
+        elif component == "x":
             if on_face:
                 x = self.x[1:-1]
                 y = self.yc
@@ -1173,7 +1212,7 @@ class GridFV:
                 x = self.xc
                 y = self.y[1:-1]
                 z = self.z[1:-1]
-        elif component == 'y':
+        elif component == "y":
             if on_face:
                 x = self.xc
                 y = self.y[1:-1]
@@ -1182,7 +1221,7 @@ class GridFV:
                 x = self.x[1:-1]
                 y = self.yc
                 z = self.z[1:-1]
-        elif component == 'z':
+        elif component == "z":
             if on_face:
                 x = self.xc
                 y = self.yc
@@ -1192,7 +1231,7 @@ class GridFV:
                 y = self.y[1:-1]
                 z = self.zc
         else:
-            raise ValueError('unknown component')
+            raise ValueError("unknown component")
 
         for i in x:
             xCoords.InsertNextValue(i)
@@ -1215,7 +1254,7 @@ class GridFV:
             for i in field:
                 data.InsertNextValue(i)
             data.SetName(fn)
-            if component == 's':
+            if component == "s":
                 rgrid.GetCellData().AddArray(data)
             else:
                 rgrid.GetPointData().AddArray(data)
@@ -1230,7 +1269,7 @@ class GridFV:
 
         writer = vtk.vtkXMLRectilinearGridWriter()
         writer.SetInputData(rgrid)
-        writer.SetFileName(filename+'.vtr')
+        writer.SetFileName(filename + ".vtr")
         writer.Write()
 
     def fromVTK(self, fieldname, filename):
@@ -1252,8 +1291,8 @@ class GridFV:
         reader.SetFileName(filename)
         reader.Update()
         dims = reader.GetOutput().GetDimensions()
-        if dims[0] != self.nx+1 or dims[1] != self.ny+1 or dims[2] != self.nz+1:
-            raise ValueError('Grid size incompatible')
+        if dims[0] != self.nx + 1 or dims[1] != self.ny + 1 or dims[2] != self.nz + 1:
+            raise ValueError("Grid size incompatible")
         data = reader.GetOutput().GetCellData().GetArray(fieldname)
         if data is None:
             return data
@@ -1292,59 +1331,59 @@ class GridFV:
             self.want_superlu = False
             self.want_umfpack = False
             self.want_mumps = False
-        elif 'superlu' in name:
+        elif "superlu" in name:
             self.want_pardiso = False
             self.want_pastix = False
             self.want_superlu = True
             self.want_umfpack = False
             self.want_mumps = False
-        elif 'pardiso' in name:
+        elif "pardiso" in name:
             self.want_pardiso = True
             self.want_pastix = False
             self.want_superlu = False
             self.want_umfpack = False
             self.want_mumps = False
-        elif 'pastix' in name:
+        elif "pastix" in name:
             self.want_pastix = True
             self.want_pardiso = False
             self.want_superlu = False
             self.want_umfpack = False
             self.want_mumps = False
-        elif 'umfpack' in name:
+        elif "umfpack" in name:
             self.want_umfpack = True
             self.want_superlu = False
             self.want_pardiso = False
             self.want_pastix = False
             self.want_mumps = False
-        elif 'mumps' in name:
+        elif "mumps" in name:
             self.want_pardiso = False
             self.want_pastix = False
             self.want_superlu = False
             self.want_umfpack = False
             self.want_mumps = True
         else:
-            raise RuntimeError('Solver '+name+' not implemented')
+            raise RuntimeError("Solver " + name + " not implemented")
 
         self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
         self.precon = precon
         self.do_perm = do_perm
         self.comm = comm
-            
+
     def get_solver_params(self):
         """Return parameters needed to instantiate Solver."""
         if self.want_mumps:
-            return ('mumps',)
+            return ("mumps",)
         elif self.want_pardiso:
-            return ('pardiso',)
+            return ("pardiso",)
         elif self.want_pastix:
-            return ('pastix',)
+            return ("pastix",)
         elif self.want_superlu:
-            return ('superlu',)
+            return ("superlu",)
         elif self.want_umfpack:
-            return ('umfpack',)
+            return ("umfpack",)
         else:
             return self.solver, self.tol, self.max_it, self.precon, self.do_perm
-            
+
     @property
     def want_pardiso(self):
         """Using solver pardiso (if available)."""
@@ -1353,7 +1392,7 @@ class GridFV:
     @want_pardiso.setter
     def want_pardiso(self, val):
         if val is True and has_pardiso is False:
-            warnings.warn('Pardiso not available, default solver used.', RuntimeWarning, stacklevel=2)
+            warnings.warn("Pardiso not available, default solver used.", RuntimeWarning, stacklevel=2)
             self._want_pardiso = False
         else:
             self._want_pardiso = val
@@ -1366,7 +1405,7 @@ class GridFV:
     @want_pastix.setter
     def want_pastix(self, val):
         if val is True and has_pastix is False:
-            warnings.warn('Pastix not available, default solver used.', RuntimeWarning, stacklevel=2)
+            warnings.warn("Pastix not available, default solver used.", RuntimeWarning, stacklevel=2)
             self._want_pastix = False
         else:
             self._want_pastix = val
@@ -1379,7 +1418,7 @@ class GridFV:
     @want_umfpack.setter
     def want_umfpack(self, val):
         if val is True and has_umfpack is False:
-            warnings.warn('UMFPACK not available, default solver used.', RuntimeWarning, stacklevel=2)
+            warnings.warn("UMFPACK not available, default solver used.", RuntimeWarning, stacklevel=2)
             self._want_umfpack = False
         else:
             self._want_umfpack = val
@@ -1525,6 +1564,7 @@ class Solver:
         comm : MPI Communicator or None
             for mumps solver
     """
+
     def __init__(self, solver_par, A=None, verbose=False, comm=None):
         self._A = A
         self.precon = False
@@ -1553,10 +1593,10 @@ class Solver:
 
             if A is None:
                 return
-            
+
             if self.do_perm:
                 if self.verbose:
-                    print('  Applying Inverse Cuthill-McKee Permutation ... ', end='', flush=True)
+                    print("  Applying Inverse Cuthill-McKee Permutation ... ", end="", flush=True)
                 self.perm = reverse_cuthill_mckee(A)
                 self.inv_perm = np.argsort(self.perm)
 
@@ -1564,25 +1604,25 @@ class Solver:
                 A = A @ permut
                 self._A = (A.T @ permut).T
                 if self.verbose:
-                    print('done.')
+                    print("done.")
 
             if self.precon:
                 if self.verbose:
-                    print('  Computing preconditionning matrix ... ', end='', flush=True)
+                    print("  Computing preconditionning matrix ... ", end="", flush=True)
                 try:
                     self.Mpre = sp.linalg.spilu(self.A.tocsc())
                     self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
                 except RuntimeError as err:
                     if self.verbose:
                         print(err)
-                        print('Switching to using diagonal of A')
-                    Ainv = sp.spdiags(1./self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                        print("Switching to using diagonal of A")
+                    Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
                     self.Mpre = sp.linalg.aslinearoperator(Ainv)
                 if self.verbose:
-                    print('done.')
+                    print("done.")
 
             self.solver = lambda A, b: slv(A, b, x0=self.x0, tol=self.tol, max_iter=self.max_it, M=self.Mpre)
-        elif solver_par[0] == 'mumps':
+        elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages
             if A is None:
@@ -1590,22 +1630,22 @@ class Solver:
             if self.ctx.myid == 0:
                 self.ctx.set_centralized_sparse(A)
             if verbose:
-                print('    Factorizing matrix A ... ', end='', flush=True)
+                print("    Factorizing matrix A ... ", end="", flush=True)
             self.ctx.run(job=4)  # Analysis & Factorization
             if verbose:
-                print('done.')
+                print("done.")
             self.solver = self._solve_mumps
-        elif solver_par[0] == 'pardiso':
+        elif solver_par[0] == "pardiso":
             self.want_pardiso = True
             self.solver = pypardiso.spsolve
             self.pardiso = True
-        elif solver_par[0] == 'pastix':
+        elif solver_par[0] == "pastix":
             self.want_pastix = True
             if A is None:
                 return
             self.pastix_solver = pypastix.solver(A)
             self.solver = lambda A, b: self.pastix_solver.solve(b.flatten(), refine=False)
-        elif solver_par[0] == 'umfpack':
+        elif solver_par[0] == "umfpack":
             self.want_umfpack = True
             if A is None:
                 return
@@ -1614,11 +1654,11 @@ class Solver:
             self.umfpack.control[um.UMFPACK_PRL]
             # use_solver(useUmfpack=True, assumeSortedIndices=True)
             if verbose:
-                print('    Factorizing matrix A ... ', end='', flush=True)
+                print("    Factorizing matrix A ... ", end="", flush=True)
             self.umfpack.numeric(A)
             # solve = factorized(A.tocsc().sorted_indices())
             if verbose:
-                print('done.')
+                print("done.")
             # self.solver = lambda A, b : solve(np.array(b).flatten())
             umf = self.umfpack
 
@@ -1628,18 +1668,19 @@ class Solver:
                     result = umf.solve(um.UMFPACK_A, A, b.flatten(), autoTranspose=True)
                     # umf.report_info()
                 return result
+
             self.solver = slv
-        elif solver_par[0] == 'superlu':
+        elif solver_par[0] == "superlu":
             self.want_superlu = True
             use_solver(useUmfpack=False)
             if verbose:
-                print('    Factorizing matrix A ... ', end='', flush=True)
+                print("    Factorizing matrix A ... ", end="", flush=True)
             solve = factorized(A.tocsc())
             if verbose:
-                print('done.')
+                print("done.")
             self.solver = lambda A, b: solve(b.flatten())
         else:
-            raise RuntimeError('Solver not implemented')
+            raise RuntimeError("Solver not implemented")
 
     def __del__(self):
 
@@ -1677,42 +1718,42 @@ class Solver:
             verbose = self.verbose
 
         if verbose:
-            print('      Solving system ...', end='', flush=True)
-            
+            print("      Solving system ...", end="", flush=True)
+
         # direct solvers mumps & pardiso can take matrices as rhs
 
         if self.ctx is not None and rhs.ndim == 2:
             assert self.do_perm is False
             if self.ctx.myid == 0:
                 if sp.isspmatrix(rhs):
-                    x = rhs.toarray(order='F')
+                    x = rhs.toarray(order="F")
                 else:
                     # we must have a numpy array
-                    x = rhs.copy(order='F')
+                    x = rhs.copy(order="F")
                 self.ctx.set_rhs(x)
             self.ctx.run(job=3)  # Solve
             if self.ctx.myid == 0:
                 if verbose:
-                    print(' done.')
+                    print(" done.")
                 return x
         elif self.pardiso is True and rhs.ndim == 2:
             assert self.do_perm is False
             if sp.isspmatrix(rhs):
-                x = rhs.toarray(order='F')
+                x = rhs.toarray(order="F")
             else:
                 # we must have a numpy array
-                x = rhs.copy(order='F')
+                x = rhs.copy(order="F")
             x = self.solver(self._A, x)
             if verbose:
-                print(' done.')
+                print(" done.")
             return x
-            
+
         if verbose > 1:
             res = []
-            
+
         if rhs.ndim == 1:
             rhs = np.atleast_2d(rhs).T
-            
+
         if sp.isspmatrix(rhs):
             rhs = rhs.toarray()
 
@@ -1720,14 +1761,14 @@ class Solver:
         for ns in range(rhs.shape[1]):
             if verbose:
                 if ns == 0:
-                    msg = ''
-                    pre_msg = ''
+                    msg = ""
+                    pre_msg = ""
                 nback = len(msg) - len(pre_msg)
-                pre_msg = ''
+                pre_msg = ""
                 for _ in range(nback):
-                    pre_msg += '\b'
-                msg = pre_msg+'  iteration '+str(ns+1)+'/'+str(rhs.shape[1])+' '
-                print(msg, end='', flush=True)
+                    pre_msg += "\b"
+                msg = pre_msg + "  iteration " + str(ns + 1) + "/" + str(rhs.shape[1]) + " "
+                print(msg, end="", flush=True)
 
             if x0 is not None:
                 if self.do_perm:
@@ -1749,12 +1790,16 @@ class Solver:
                 info = 0
 
             if info > 0:
-                print('{0:}: convergence not achieved, stopped after {1:d} \
-    iterations for tol = {2:g}'.format(self.solver.__name__, info, self.tol))
+                print(
+                    "{0:}: convergence not achieved, stopped after {1:d} \
+    iterations for tol = {2:g}".format(
+                        self.solver.__name__, info, self.tol
+                    )
+                )
             elif info < 0:
-                print('{0:s}: illegal input or breakdown, switching to spsolve'.format(self.solver.__name__))
+                print("{0:s}: illegal input or breakdown, switching to spsolve".format(self.solver.__name__))
                 u = spsolve(self._A, qi)
-                
+
             if verbose > 1:
                 res.append(np.linalg.norm(self._A @ u - np.array(qi).flatten()))
 
@@ -1764,20 +1809,20 @@ class Solver:
                 v[:, ns] = u
 
         if verbose:
-            print('done.')
-            
+            print("done.")
+
         if verbose > 1:
-            print('        norm of residuals =', end='')
-            [print('   {:3.2e}'.format(x), end='') for x in res]
-            print('')
+            print("        norm of residuals =", end="")
+            [print("   {:3.2e}".format(x), end="") for x in res]
+            print("")
 
         return v
-    
+
     @property
     def A(self):
         """Matrix to invert."""
         return self._A
-    
+
     @A.setter
     def A(self, val):
         self._A = val
@@ -1790,15 +1835,17 @@ class Solver:
         elif self.want_umfpack:
             umf_family, A = _get_umf_family(val.tocsc().sorted_indices())
             self.umfpack = um.UmfpackContext(umf_family)
-            self.umfpack.control[um.UMFPACK_PRL] 
+            self.umfpack.control[um.UMFPACK_PRL]
             self.umfpack.numeric(A)
             umf = self.umfpack
+
             def slv(AA, b):
                 with np.errstate(divide="ignore", invalid="ignore"):
                     # Ignoring warnings with numpy >= 1.23.0, see gh-16523
                     result = umf.solve(um.UMFPACK_A, A, b.flatten(), autoTranspose=True)
                     # umf.report_info()
                 return result
+
             self.solver = slv
         elif self.want_superlu:
             solve = factorized(val.tocsc())
@@ -1806,20 +1853,20 @@ class Solver:
         elif self.ctx is not None:
             # we are using MUMPS
             if val.shape[0] != val.shape[1]:
-                raise RuntimeError('MUMPS: matrix must be square')
+                raise RuntimeError("MUMPS: matrix must be square")
             if self.ctx.myid == 0:
                 self.ctx.set_shape(val.shape[0])
                 self.ctx.set_centralized_sparse(val)
             if self.verbose:
-                print('    Factorizing matrix A ... ', end='', flush=True)
+                print("    Factorizing matrix A ... ", end="", flush=True)
             self.ctx.run(job=4)  # Analysis & Factorization
             if self.verbose:
-                print('done.')
+                print("done.")
 
         # solveur itératif
         if self.do_perm:
             if self.verbose:
-                print('  Applying Inverse Cuthill-McKee Permutation ... ', end='', flush=True)
+                print("  Applying Inverse Cuthill-McKee Permutation ... ", end="", flush=True)
             self.perm = reverse_cuthill_mckee(val)
             self.inv_perm = np.argsort(self.perm)
 
@@ -1827,23 +1874,23 @@ class Solver:
             val = val @ I
             self._A = (val.T @ I).T
             if self.verbose:
-                print('done.')
+                print("done.")
 
         if self.precon:
             if self.verbose:
-                print('  Computing preconditionning matrix ... ', end='', flush=True)
+                print("  Computing preconditionning matrix ... ", end="", flush=True)
             try:
                 self.Mpre = sp.linalg.spilu(self.A.tocsc())
                 self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
             except RuntimeError as err:
                 if self.verbose:
                     print(err)
-                    print('Switching to using diagonal of A')
-                Ainv = sp.spdiags(1./self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                    print("Switching to using diagonal of A")
+                Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
                 self.Mpre = sp.linalg.aslinearoperator(Ainv)
             if self.verbose:
-                print('done.')
-            
+                print("done.")
+
     def _solve_mumps(self, A, b):
         if self.ctx.myid == 0:
             x = b.flatten().copy()
