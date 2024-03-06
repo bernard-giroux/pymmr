@@ -92,33 +92,6 @@ def calc_padding(dx, n_cells=15, factor=1.3):
     return dx * factor**np.arange(1, n_cells+1)
 
 
-def build_from_vtk(grid_class, filename, comm=None):
-    """Create grid from VTK file.
-
-    The file must contain a rectilinear grid
-
-    Parameters
-    ----------
-    grid_class : class
-        Class for building grid (must be derived from GridFV)
-    filename : string
-        Name of VTK file
-    comm : MPI Communicator, optional
-        If None,  MPI_COMM_WORLD will be used
-
-    Returns
-    -------
-    instance of the grid
-    """
-    reader = vtk.vtkXMLRectilinearGridReader()
-    reader.SetFileName(filename)
-    reader.Update()
-    x = vtk_to_numpy(reader.GetOutput().GetXCoordinates())
-    y = vtk_to_numpy(reader.GetOutput().GetYCoordinates())
-    z = vtk_to_numpy(reader.GetOutput().GetZCoordinates())
-    return grid_class(x, y, z, comm=comm)
-
-
 def _get_umf_family(A):
     """Get umfpack family string given the sparse matrix dtype.
     

@@ -59,10 +59,44 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from pymmr.finite_volume import GridFV, build_from_vtk
+import vtk
+from vtk.util.numpy_support import vtk_to_numpy
+
+from pymmr.finite_volume import GridFV
 from pymmr.dc import GridDC
 from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, df_to_data
+
+
+def build_from_vtk(grid_class, filename, comm=None):
+    """Create grid from VTK file.
+
+    The file must contain a rectilinear grid
+
+    Parameters
+    ----------
+    grid_class : class
+        Class for building grid (must be derived from GridFV)
+    filename : string
+        Name of VTK file
+    comm : MPI Communicator, optional
+        If None,  MPI_COMM_WORLD will be used
+
+    Returns
+    -------
+    instance of the grid
+    """
+    if grid_class in (GridMMR, GridDC):
+        reader = vtk.vtkXMLRectilinearGridReader()
+        reader.SetFileName(filename)
+        reader.Update()
+        x = vtk_to_numpy(reader.GetOutput().GetXCoordinates())
+        y = vtk_to_numpy(reader.GetOutput().GetYCoordinates())
+        z = vtk_to_numpy(reader.GetOutput().GetZCoordinates())
+        return grid_class(x, y, z, comm=comm)
+    else:
+        raise ValueError("Grid class '{}' not valid".format(grid_class))
+
 
 comm = MPI.COMM_WORLD
 
