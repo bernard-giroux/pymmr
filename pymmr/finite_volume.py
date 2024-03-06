@@ -33,28 +33,34 @@ from scipy.sparse.csgraph import reverse_cuthill_mckee
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 
+from discretize import SimplexMesh
+
 try:
     import pypardiso
+
     has_pardiso = True
 except ImportError:
     has_pardiso = False
-    
+
 try:
     import scikits.umfpack as um
+
     has_umfpack = True
 except ImportError:
     has_umfpack = False
 
 try:
     import mumps
+
     has_mumps = True
 except ImportError:
-# except ImportError as err:
-#     print(err)
+    # except ImportError as err:
+    #     print(err)
     has_mumps = False
-    
+
 try:
     import pypastix
+
     has_pastix = True
 except ImportError:
     has_pastix = False
@@ -1386,18 +1392,125 @@ class GridFV:
     @want_mumps.setter
     def want_mumps(self, val):
         if val is True and has_mumps is False:
-            warnings.warn('MUMPS not available, default solver used.', RuntimeWarning, stacklevel=2)
+            warnings.warn("MUMPS not available, default solver used.", RuntimeWarning, stacklevel=2)
             self._want_mumps = False
         else:
             self._want_mumps = val
 
 
+# %% MeshFV
+
+
+class MeshFV(SimplexMesh):
+    """Class to manage tetrahedral meshes for finite volume modelling.
+
+    Parameters
+    ----------
+    pts : array_like
+        Coordinates of the nodes making the mesh
+    tet : array_like on int
+        Indices of the nodes forming the tetrahedra
+    """
+
+    def __init__(self, pts, tet):
+        SimplexMesh.__init__(self, pts, tet)
+
+    def build_C(self, to_faces=True):
+        if to_faces:
+            return self._face_curl()
+        else:
+            return self.edge_curl
+
+    def _face_curl(self):
+        """edge to face"""
+
+        # Calculation of curl, from face to edges
+
+        # Vector defined on faces is J
+
+        # For each edge, we have to
+        # - collect tetrahedra that contains the considered edge and identify the triangles holding the edge
+        # - get barycenter of each triangle
+        # - compute the normal to the triangle at each barycenter, noted nt, which gives direction of J
+        # - compute the segments connecting the centroids, noted r.  Centroids should be ordered properly, and the order will
+        #   determine the direction of the "normal" on which the curl is projected
+        # - compute the dot product between J and r and sum over segments
+        # - compute midpoint of the considered segment
+        # - compute area of the triangles formed by the midpoint and each segment, and sum over all
+        raise NotImplementedError()
+
+    def build_D(self):
+        return self.face_divergence
+
+    def build_G(self, to_faces=False):
+        if to_faces:
+            return self._face_gradient()
+        else:
+            return self.stencil_cell_gradient
+
+    def _face_gradient(self):
+        """edge to face"""
+        raise NotImplementedError()
+
+    def build_M(self, v, harmon=True):
+        M = self.average_cell_to_face
+        if harmon:
+            tmp = M @ (1.0 / v)
+            tmp.data = 1.0 / tmp.data
+            return tmp
+        else:
+            return M @ v
+
+    def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
+
+        if not isinstance(fields, dict):
+            raise ValueError("'fields' must be a dict[str, ndarray]")
+
+        mesh = vtk.vtkUnstructuredGrid()
+        pts_vtk = vtk.vtkPoints()
+        for n in range(self.nodes.shape[0]):
+            pts_vtk.InsertNextPoint(self.nodes[n, :])
+        mesh.SetPoints(pts_vtk)
+
+        vtk_tet = vtk.vtkCellArray()
+        for n in range(self.simplices.shape[0]):
+            vtk_tet.InsertNextCell(4, self.simplices[n, :])
+
+        mesh.SetCells(vtk.VTK_TETRA, vtk_tet)
+
+        for fn in fields:
+            # TODO: make this work for vectors
+            field = fields[fn]
+            data = vtk.vtkDoubleArray()
+            for i in field:
+                data.InsertNextValue(i)
+            data.SetName(fn)
+            if component == "s":
+                mesh.GetCellData().AddArray(data)
+            else:
+                mesh.GetPointData().AddArray(data)
+
+        if metadata is not None:
+            string_array = vtk.vtkStringArray()
+            string_array.SetNumberOfTuples(len(metadata))
+            for nm, key in enumerate(metadata):
+                string_array.SetValue(nm, metadata[key])
+                string_array.SetName(key)
+            mesh.GetFieldData().AddArray(string_array)
+
+        writer = vtk.vtkXMLUnstructuredGridWriter()
+        writer.SetFileName(filename + ".vtu")
+        writer.SetInputData(mesh)
+        writer.Write()
+
+
 # %% Solveur
+
 
 class Solver:
     """
     Class to solver a system Ax = b with a choice of solvers
-    
+
     Parameters
     ----------
     solver_par : tuple
@@ -1738,28 +1851,50 @@ class Solver:
         self.ctx.run(job=3)  # Solve
         if self.ctx.myid == 0:
             return x
-    
+
     def print_info(self, file=None):
         if self.want_pardiso:
-            print('    Solver: pardiso')
+            print("    Solver: pardiso")
         elif self.want_pastix:
-            print('    Solver: PaStiX')
+            print("    Solver: PaStiX")
         elif self.want_umfpack:
-            print('    Solver: UMFPACK')
+            print("    Solver: UMFPACK")
         elif self.want_superlu:
-            print('    Solver: SuperLU')
+            print("    Solver: SuperLU")
         elif self.ctx is not None:
-            print('    Solver: MUMPS')
+            print("    Solver: MUMPS")
         else:
-            print('    Solver: '+self.solver.__name__)
-            print('      max_it: '+str(self.max_it))
-            print('      tolerance: '+str(self.tol))
+            print("    Solver: " + self.solver.__name__)
+            print("      max_it: " + str(self.max_it))
+            print("      tolerance: " + str(self.tol))
             if self.do_perm:
-                print('    Inverse Cuthill-McKee Permutation: used')
+                print("    Inverse Cuthill-McKee Permutation: used")
             else:
-                print('    Inverse Cuthill-McKee Permutation: not used')
+                print("    Inverse Cuthill-McKee Permutation: not used")
             if self.precon:
-                print('    Preconditionning: used')
+                print("    Preconditionning: used")
             else:
-                print('    Preconditionning: not used')
+                print("    Preconditionning: not used")
 
+
+if __name__ == "__main__":
+
+    pts = np.array(
+        [
+            [0.05, 0.0, -1.0],
+            [0.0, 0.05, 1.0],
+            [-0.5, 0.0, 0.1],
+            [0.0, 0.9, 0.05],
+            [0.5, 0.5, -0.2],
+            [0.45, -0.65, 0.0],
+            [-0.35, -0.55, 0.03],
+        ]
+    )
+
+    tet = np.array([[0, 1, 2, 3], [0, 1, 3, 4], [0, 1, 4, 5], [0, 1, 5, 6], [0, 1, 6, 2]], dtype=np.int64)
+
+    mesh = MeshFV(pts, tet)
+
+    G = mesh.build_G()
+
+    mesh.toVTK(dict(), "/tmp/test_mesh")
