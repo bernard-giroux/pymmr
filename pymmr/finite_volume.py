@@ -399,7 +399,7 @@ class GridFV:
 
         Returns
         -------
-        True if point si inside grid
+        True if point is inside grid
 
         """
         return self.x[0] <= x <= self.x[-1] and self.y[0] <= y <= self.y[-1] and \
@@ -467,7 +467,7 @@ class GridFV:
     def linear_interp(self, x, y, z, component=None):
         """Calculate interpolation matrix.
 
-        Matrice that allows interpolating a variable defined at the voxel
+        Matrix that allows interpolating a variable defined at the voxel
         centre, on a face, or on an edge, at arbitrary coordinates.
 
         Parameters
@@ -492,6 +492,10 @@ class GridFV:
         -------
         csr_matrix, npts x nc
 
+        Notes
+        -----
+        - If any coordinate is at infinity, the corresponding matrix element
+        is set to zero.
         """
         if component is None:
             nx = self.nx
@@ -1143,7 +1147,7 @@ class GridFV:
             metadata to store in field data
         """
 
-        if type(fields) != dict:
+        if not isinstance(fields, dict):
             raise ValueError('\'fields\' must be a dict[str, ndarray]')
 
         xCoords = vtk.vtkFloatArray()
