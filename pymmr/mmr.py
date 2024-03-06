@@ -31,7 +31,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from pymmr.dc import GridDC
-from pymmr.finite_volume import calc_padding, build_from_vtk, GridFV, Solver
+from pymmr.finite_volume import calc_padding, GridFV, Solver
 
 
 # %% class GridMMR
@@ -191,6 +191,14 @@ class GridMMR(GridDC):
             Coordinates of measurement points (m).
         cs : scalar or array_like
             Intensity of current source
+
+        Notes
+        -----
+        - In the current implementation, current intensity values
+        must be equal for each injection dipole, i.e. for xs and
+        xo combinations involving a common set of xs values.  In
+        other words, current values cannot differ for a given injection
+        dipole, but can differ for different injection dipoles.
         """
         self.xs = xs
         self.xo = xo
@@ -352,7 +360,7 @@ class GridMMR(GridDC):
         Notes
         -----
         - If `xs` and `xo` have a different number of rows, the response is
-        computed for akk possible combinations.  If the number of rows are
+        computed for all possible combinations.  If the number of rows are
         equal, the response is computed for the pairs of `xs` and `xo` rows.
 
         - Matrix A of the MMR system depends only on grid geometry, and it is

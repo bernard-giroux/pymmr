@@ -44,6 +44,38 @@ The keywords are :
 File formats
 ------------
 
+Data files are plain text files with with a header line specific to the type of data.  The header line starts with #
+and contains keywords for the different variables.  Keywords can be in arbitrary order.
+For MMR, the full header is
+
+```
+# c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz wt_x wt_y wt_z cs date
+```
+
+with:
+
+- `c1_x` `c1_y` `c1_z` : the coordinates of the first injection electrode (in m)
+- `c2_x` `c2_y` `c2_z` : the coordinates of the second injection electrode (in m)
+- `obs_x` `obs_y` `obs_z` : the coordinates of the observation point (in m)
+- `Bx` `By` `Bz` : the measured components of the field (in pT)
+- `wt_x` `wt_y` `wt_z` : the measurement error (in %)
+- `cs` : the current source (in A)
+- `date` : the date of the survey (in yyyymmdd)
+
+Mandatory variables are `c1_x` `c1_y` `c1_z` `c2_x` `c2_y` `c2_z` `obs_x` `obs_y` `obs_z` `Bx` `By` `Bz`.
+If not provided, the measurement errors are set to 1 %, the current to 1 A, and the date of the survey is set to None.
+
+For ERT, the full header is
+
+```
+# c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V cs wt date
+```
+
+with the same meaning for `c?_?`, `cs`, `wt`, and `date` fields, and:
+
+- `p1_x` `p1_y` `p1_z` : the coordinates of the first potential electrode (in m)
+- `p2_x` `p2_y` `p2_z` : the coordinates of the second potential electrode (in m)
+- `V` : the measured voltage (in mV)
 
 """
 

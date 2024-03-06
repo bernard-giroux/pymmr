@@ -43,7 +43,7 @@ except ImportError:
             return wrapper_jit
         return decorator_jit
 
-from pymmr.finite_volume import GridFV, Solver, build_from_vtk
+from pymmr.finite_volume import GridFV, Solver
 
 # TODO: généraliser ROI pour voxels arbitraires
 
@@ -219,9 +219,9 @@ class GridDC(GridFV):
 
         Parameters
         ----------
-        c1c2 : array_like, optional
+        c1c2 : array_like
             Coordinates of injection points (m).
-        p1p2 : array_like, optional
+        p1p2 : array_like
             Coordinates of measurement points (m).
         cs : scalar or array_like
             Intensity of current source
@@ -231,6 +231,11 @@ class GridDC(GridFV):
         - `c1c2` et `p1p2` must be of equal size, i.e. n_obs x 6.  The
         6 columns correspond to coordinates x, y, & z of the dipoles, in
         the order x1 y1 z1 x2 y2 z2
+        - In the current implementation, current intensity values must be
+        equal for each injection dipole, i.e. for c1c2 and p1p2 combinations
+        involving a common set of c1c2 values.  In other words, current
+        values cannot differ for a given injection dipole, but can differ
+        for different injection dipoles.
         """
         self.c1c2 = c1c2
         self.p1p2 = p1p2
@@ -790,6 +795,7 @@ class GridDC(GridFV):
                     nveimag1 = np.inf
                     gf = 2.0
                 self.u0[:, i] = cs[i]/(avg_cond*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
+                # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
         else:
             # we have just one current electrode
             for i in range(c1c2.shape[0]):
