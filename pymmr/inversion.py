@@ -47,14 +47,14 @@ import matplotlib.pyplot as plt
 
 # %%  Define namedtuple for input data
 
-DataMMR = namedtuple("DataMMR", "xs xo data wt cs")
-DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt cs")
+DataMMR = namedtuple("DataMMR", "xs xo data wt cs date")
+DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt cs date")
 
 
 # %% Some functions
 
-def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None,
-           alpha=0, WTWt=0):
+
+def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WTWt=0):
     """Compute perturbation with a conjugate-gradient least-squares algorithm.
 
     Parameters
@@ -300,23 +300,32 @@ def df_to_data(df):
         else:
             warnings.warn("ERT measurement error not defined, using 1%", stacklevel=2)
             wt = np.ones((data.shape[0],))
-        return DataERT(c1c2=c1c2, p1p2=p1p2, data=data, wt=wt, cs=cs)
+
+        if vintage is None:
+            return DataERT(c1c2=c1c2, p1p2=p1p2, data=data, wt=wt, cs=cs, date=None)
+        else:
+            data = []
+            for vin in np.unique(vintage):
+                ind = vintage == vin
+                data.append(
+                    DataERT(c1c2=c1c2[ind, :], p1p2=p1p2[ind, :], data=data[ind], wt=wt[ind], cs=cs[ind], date=vin)
+                )
+            return data
     else:
         raise ValueError("Invalid DataFrame file")
 
 
 class Inversion:
     def __init__(self):
-
-        self.method = 'Gauss-Newton'
+        self.method = "Gauss-Newton"
         """Algorithm: 'Gauss-Newton', 'Quasi-Newton'."""
 
-        self.param_transf = 'log_conductivity'
+        self.param_transf = "log_conductivity"
         """working variable: 'conductivity', 'log_conductivity', 'resistivity', 'log_resistivity'."""
 
         self.beta = 2500.0
         """Regularization parameter."""
-        
+
         self.beta_min = 100.0
         """Minimum value of beta."""
 
