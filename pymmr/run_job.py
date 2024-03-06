@@ -224,7 +224,10 @@ with open(sys.argv[1], "r") as f:
                 inv.max_it = int(value)
             elif "data" in keyword.lower() and "weight" in keyword.lower():
                 inv.data_weighting = value
-
+            elif "checkpointing" in keyword.lower():
+                inv.checkpointing = int(value)
+            elif "start" in keyword.lower() and "checkpoint" in keyword.lower():
+                inv.start_from_chkpt = int(value)
 
 # Done reading parameter file
 
@@ -244,13 +247,13 @@ if verbose:
     print(f"Parameter file: {sys.argv[1]}")
 
 if data_mmr is not None or "mmr" in job:
-    # we will have MMR data to invert of MMR data to model
+    # we will have MMR data to invert or MMR data to model
     g = build_from_vtk(GridMMR, model_file, comm=comm)
-    m_ref = sigma = g.fromVTK("Conductivity", model_file)
 else:
     # we have ERT data only
     g = build_from_vtk(GridDC, model_file, comm=comm)
-    m_ref = sigma = g.fromVTK("Conductivity", model_file)
+
+m_ref = sigma = g.fromVTK("Conductivity", model_file)
 
 g.verbose = verbose
 g.set_solver(solver_name, tol, max_it, precon, do_perm)
