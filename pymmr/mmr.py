@@ -6,6 +6,7 @@ Module pour la modélisation et l'inversion en magnétorésistivité
 @author: giroux
 
 Référence principale:
+Référence principale:
 
 @Article{chen02b,
   author       = {Chen, Jiuping and Haber, Eldad and Oldenburg, Douglas W.},

@@ -781,6 +781,7 @@ class GridFV:
             Gradient matrix
         """
         if v is None:
+            # centers to faces
             return self._gradient_centre()
         else:
             return self._gradient_faces(v)
@@ -1461,11 +1462,10 @@ class MeshFV(SimplexMesh):
             return self.edge_curl
 
     def _face_curl(self):
-        """edge to face"""
+        """faces to edges"""
 
-        # Calculation of curl, from face to edges
-
-        # Vector defined on faces is J
+        # Calculation of curl, from faces to edges
+        # https://en.wikipedia.org/wiki/Curl_(mathematics)
 
         # For each edge, we have to
         # - collect tetrahedra that contains the considered edge and identify the triangles holding the edge
@@ -1476,20 +1476,84 @@ class MeshFV(SimplexMesh):
         # - compute the dot product between J and r and sum over segments
         # - compute midpoint of the considered segment
         # - compute area of the triangles formed by the midpoint and each segment, and sum over all
-        raise NotImplementedError()
+
+        # find edges on the mesh boundary
+        be = self._edges[np.unique(self._face_edges[self.boundary_face_list])]
+        be = be.tolist()
+        # loop over edges
+        for e in self._edges:
+            # process edge not on boundary
+            if e.tolist() not in be:
+
+                # find tetraherda holding the edge
+                tet = []
+                tet_no = []
+                for n, t in enumerate(self.simplices):
+                    if e[0] in t and e[1] in t:
+                        tet.append(t)
+                        tet_no.append(n)
+
+                # find triangles holding the edge
+                triangles = []
+                tri_no = []
+                for nt in np.unique(self._simplex_faces[tet_no]):
+                    f = self._faces[nt]
+                    if e[0] in f and e[1] in f:
+                        triangles.append(f)
+                        tri_no.append(nt)
+
+                # get barycenter of each triangle
+                bary = []
+                for t in triangles:
+                    bary.append((self.nodes[t[0]] + self.nodes[t[1]] + self.nodes[t[2]]) / 3.)
+
+                # start with a tetrahedron and look for one next to it
+                order = []
+                tet_to_process = copy.copy(tet_no)
+                tet_to_process.append(tet_no[0])   # to allow finding triangle opposite to the first that will be picked
+                tet_processed = []
+                t_no = tet_to_process[0]
+                while len(tet_to_process) > 1:
+                    if len(tet_processed) > 1 and tet_no[0] in tet_processed:
+                        tet_processed.remove(tet_no[0])   # remove to be able to reprocess it with the last tet
+                    t_faces = self._simplex_faces[t_no]
+                    for nb in self.neighbors[t_no]:
+                        if nb == -1 or nb in tet_processed:
+                            continue
+                        nb_faces = self._simplex_faces[nb]
+                        for nf in t_faces:
+                            if nf in nb_faces:
+                                o = np.where(nf == tri_no)[0]
+                                order.append(o[0])
+                                break
+                        tet_processed.append(t_no)
+                        tet_to_process.remove(t_no)
+                        t_no = nb
+                        break
+
+                mid_pt = 0.5 * (self.nodes[e[0]] + self.nodes[e[1]])
+
+                r = []
+                area = []
+                for n in range(len(order)-1):
+                    r.append(bary[order[n+1]] - bary[order[n]])
+                    v1 = bary[order[n]] - mid_pt
+                    v2 = bary[order[n+1]] - mid_pt
+                    area.append(0.5 * np.linalg.norm(np.cross(v1, v2)))
+                r.append(bary[order[0]] - bary[order[-1]])
+                v1 = bary[order[0]] - mid_pt
+                v2 = bary[order[-1]] - mid_pt
+                area.append(0.5 * np.linalg.norm(np.cross(v1, v2)))
+
+                self._save_edge_data(e, bary, order, triangles)
+
 
     def build_D(self):
         return self.face_divergence
 
-    def build_G(self, to_faces=False):
-        if to_faces:
-            return self._face_gradient()
-        else:
-            return self.stencil_cell_gradient
-
-    def _face_gradient(self):
-        """edge to face"""
-        raise NotImplementedError()
+    def build_G(self):
+        # centers to faces
+        return self.stencil_cell_gradient
 
     def build_M(self, v, harmon=True):
         M = self.average_cell_to_face
@@ -1542,13 +1606,82 @@ class MeshFV(SimplexMesh):
         writer.SetInputData(mesh)
         writer.Write()
 
+    def _save_edge_data(self, e, bary, order, triangles):
+        # save edge for visualization
+        pts = vtk.vtkPoints()
+        pts.InsertNextPoint(self.nodes[e[0]])
+        pts.InsertNextPoint(self.nodes[e[1]])
+        pdata = vtk.vtkPolyData()
+        pdata.SetPoints(pts)
+        line = vtk.vtkPolyLine()
+        line.GetPointIds().SetNumberOfIds(2)
+        line.GetPointIds().SetId(0, 0)
+        line.GetPointIds().SetId(1, 1)
+        ca = vtk.vtkCellArray()
+        ca.InsertNextCell(line)
+        pdata.SetLines(ca)
+        writer = vtk.vtkXMLPolyDataWriter()
+        writer.SetFileName('/tmp/edge.vtp')
+        writer.SetInputData(pdata)
+        writer.Update()
 
-# %% Solveur
+        pts = vtk.vtkPoints()
+        pts.InsertNextPoint(0.5 * (self.nodes[e[0]] + self.nodes[e[1]]))
+        pdata = vtk.vtkPolyData()
+        pdata.SetPoints(pts)
+        writer = vtk.vtkXMLPolyDataWriter()
+        writer.SetFileName('/tmp/mid_pt.vtp')
+        writer.SetInputData(pdata)
+        writer.Update()
+
+        pts = vtk.vtkPoints()
+        for b in bary:
+            pts.InsertNextPoint(b)
+        pdata = vtk.vtkPolyData()
+        pdata.SetPoints(pts)
+        writer = vtk.vtkXMLPolyDataWriter()
+        writer.SetFileName('/tmp/bary.vtp')
+        writer.SetInputData(pdata)
+        writer.Update()
+
+        line = vtk.vtkPolyLine()
+        line.GetPointIds().SetNumberOfIds(len(order)+1)
+        for n, o in enumerate(order):
+            line.GetPointIds().SetId(n, o)
+        line.GetPointIds().SetId(len(order), 0)
+        ca = vtk.vtkCellArray()
+        ca.InsertNextCell(line)
+        pdata.SetLines(ca)
+        writer = vtk.vtkXMLPolyDataWriter()
+        writer.SetFileName('/tmp/seg.vtp')
+        writer.SetInputData(pdata)
+        writer.Update()
+
+        pts = vtk.vtkPoints()
+        pt_no = []
+        for n, p in enumerate(np.unique(triangles).tolist()):
+            pts.InsertNextPoint(self.nodes[p])
+            pt_no.append(n)
+        tri = vtk.vtkCellArray()
+        for t in triangles:
+            tri.InsertNextCell(3, t)
+        mesh = vtk.vtkUnstructuredGrid()
+        mesh.SetPoints(pts)
+        mesh.SetCells(vtk.VTK_TRIANGLE, tri)
+
+        writer = vtk.vtkXMLUnstructuredGridWriter()
+        writer.SetFileName('/tmp/tri_edge.vtu')
+        writer.SetInputData(mesh)
+        writer.Write()
+
+
+
+# %% Solver
 
 
 class Solver:
     """
-    Class to solver a system Ax = b with a choice of solvers
+    Class to solve a system Ax = b with a choice of solvers
 
     Parameters
     ----------
@@ -1928,8 +2061,8 @@ if __name__ == "__main__":
 
     pts = np.array(
         [
-            [0.05, 0.0, -1.0],
-            [0.0, 0.05, 1.0],
+            [0.05, 0.0, -0.8],
+            [0.0, 0.05, 0.75],
             [-0.5, 0.0, 0.1],
             [0.0, 0.9, 0.05],
             [0.5, 0.5, -0.2],
@@ -1943,5 +2076,7 @@ if __name__ == "__main__":
     mesh = MeshFV(pts, tet)
 
     G = mesh.build_G()
+    C = mesh.build_C()
 
     mesh.toVTK(dict(), "/tmp/test_mesh")
+
