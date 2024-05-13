@@ -142,6 +142,7 @@ def _get_umf_family(A):
 
     return family, A_new
 
+
 @numba.jit(numba.f8[:,:](numba.f8[:], numba.f8[:], numba.f8[:], numba.f8[:]), nopython=True)
 def tetra_coord(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray):
     # Almost the same as Hugues' function,
@@ -189,7 +190,7 @@ def barycentric(a: np.ndarray, b: np.ndarray, c: np.ndarray, p: np.ndarray):
     return np.array([u, v, w])
 
 
-def inside_triangle_box(v1, v2, v3, p):
+def inside_triangle_box(v1: np.ndarray, v2: np.ndarray, v3: np.ndarray, p: np.ndarray):
     x_min = min((v1[0], v2[0], v3[0])) - 1.e-6
     x_max = max((v1[0], v2[0], v3[0])) + 1.e-6
     y_min = min((v1[1], v2[1], v3[1])) - 1.e-6
@@ -203,7 +204,7 @@ def inside_triangle_box(v1, v2, v3, p):
         return True
 
 
-def inside_tetrahedron_box(v1, v2, v3, v4, p):
+def inside_tetrahedron_box(v1: np.ndarray, v2: np.ndarray, v3: np.ndarray, v4: np.ndarray, p: np.ndarray):
     x_min = min((v1[0], v2[0], v3[0], v4[0])) - 1.e-6
     x_max = max((v1[0], v2[0], v3[0], v4[0])) + 1.e-6
     y_min = min((v1[1], v2[1], v3[1], v4[1])) - 1.e-6
@@ -218,7 +219,15 @@ def inside_tetrahedron_box(v1, v2, v3, v4, p):
 
 # %%
 
+
 class BaseFV:
+    """Base class for finite volume modelling.
+
+        Parameters
+        ----------
+        comm : MPI Communicator, optional
+            If None, use MPI_COMM_WORLD
+    """
 
     def __init__(self, comm=None):
         if comm is None:
