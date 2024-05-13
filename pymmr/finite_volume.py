@@ -1842,6 +1842,37 @@ class MeshFV(BaseFV, SimplexMesh):
         writer.SetInputData(mesh)
         writer.Write()
 
+    def _inside_tet(self, tet_no, p):
+        v1 = self.nodes[self.simplices[tet_no, 0]]
+        v2 = self.nodes[self.simplices[tet_no, 1]]
+        v3 = self.nodes[self.simplices[tet_no, 2]]
+        v4 = self.nodes[self.simplices[tet_no, 3]]
+
+        # if not inside_tetrahedron_box(v1, v2, v3, v4, p):
+        #     return False
+
+        M1 = tetra_coord(v1, v2, v3, v4)
+        # apply the transform to P (v1 is the origin)
+        newp = M1.dot(p-v1)
+        # perform test
+        return np.all(newp >= 0.) and np.all(newp <= 1.) and np.sum(newp) <= 1.
+
+    def _inside_tri(self, tri_no, p):
+        v1 = np.array(self.nodes[self.tri_surf[tri_no, 0]])
+        v2 = np.array(self.nodes[self.tri_surf[tri_no, 1]])
+        v3 = np.array(self.nodes[self.tri_surf[tri_no, 2]])
+
+        if not inside_triangle_box(v1, v2, v3, p):
+            return False
+
+        b = barycentric(v1, v2, v3, p)
+        return b[1] >= 0. and b[2] >= 0. and (b[1] + b[2]) <= 1.
+
+    def print_info(self, file=None):
+        print('    Mesh: {0:d} voxels, {1:d} nodes'.format(len(self.simplices), len(self.nodes)), file=file)
+        # print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
+        # print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
+        # print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
 
 
 # %% Solver
