@@ -390,7 +390,7 @@ if __name__ == "__main__":
             m_active = g.ind_roi
 
         g.verbose = False
-        g.solver_A.verbose = False
+        g.fv.solver_A.verbose = False
         S_save, data_inv, rms, misfit, smy = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert, m_active=m_active)
 
         if verbose:
@@ -399,7 +399,7 @@ if __name__ == "__main__":
             print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
         x, y, z = g.get_roi_nodes()
-        g2 = GridFV(x, y, z)
+        g2 = GridFV((x, y, z))
 
         fields = {}
         for i in range(len(S_save)):
