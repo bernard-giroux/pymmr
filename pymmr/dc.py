@@ -308,6 +308,32 @@ class GridDC:
 
             return self.fv.x[ind_x], self.fv.y[ind_y], self.fv.z[ind_z]
 
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
+        """Define parameters of solver to be used during forward modelling.
+
+        Parameters
+        ----------
+        name : `string` or `callable`
+            If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
+            If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
+        tol : float, optional
+            Tolerance for the iterative solver
+        max_it : int, optional
+            Max nbr of iteration for the iterative solver
+        precon : bool, optional
+            Apply preconditionning.
+        do_perm : bool, optional
+            Apply inverse Cuthill-McKee permutation.
+        comm : MPI Communicator or None
+            for mumps solver
+
+        Notes
+        -----
+        `precon` et `do_perm` are used only with iterative solvers.
+
+        """
+        self.fv.set_solver(name, tol, max_it, precon, do_perm, comm)
+
     def fromVTK(self, fieldname, filename):
         return self.fv.fromVTK(fieldname, filename)
 
