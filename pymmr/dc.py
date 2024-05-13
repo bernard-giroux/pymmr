@@ -51,11 +51,11 @@ from pymmr.finite_volume import GridFV, MeshFV, Solver
 # %% Some functions
 
 @jit("boolean(boolean[:])", nopython=True)
-def all(a):
+def all(a: np.ndarray):
     return a.sum() == a.size
 
 
-def sortrows(a, sort_back=False):
+def sortrows(a: np.ndarray, sort_back=False):
     """
     Sort rows of 2D array
 
