@@ -5,7 +5,15 @@ Module for finite volume modeling
 
 @author: giroux
 
-References:
+Notes
+-----
+This module assumes a cartesian coordinate system where
+x : easting
+y : northing
+z : elevation
+
+References
+----------
     
 @book{haber2014computational,
   title={Computational methods in geophysical electromagnetics},

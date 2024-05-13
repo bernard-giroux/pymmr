@@ -77,6 +77,15 @@ with the same meaning for `c?_?`, `cs`, `wt`, and `date` fields, and:
 - `p2_x` `p2_y` `p2_z` : the coordinates of the second potential electrode (in m)
 - `V` : the measured voltage (in mV)
 
+Notes
+-----
+*** Important ***
+In this package we are using a cartesian coordinate system where
+x : easting
+y : northing
+z : elevation
+
+
 """
 
 from mpi4py import MPI
