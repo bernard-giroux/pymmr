@@ -131,7 +131,7 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
         - instance of the grid
         - conductivity (if return_sigma is True)
     """
-    if grid_class not in (GridDC, GridMMR):
+    if grid_class not in (GridDC, GridMMR, GridFV):
         raise ValueError("Grid class '{}' not valid".format(grid_class))
 
     extension = filename.split(".")[-1]
