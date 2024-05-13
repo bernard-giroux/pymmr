@@ -84,9 +84,10 @@ np.savetxt(filename, np.c_[c1c2, xo, dobs1, np.ones((dobs1.shape[0],))], header=
 
 # %%
 
-dobs = dobs1 + np.random.default_rng().normal(0.0, 0.03, dobs1.shape)
+# dobs = dobs1 + np.random.default_rng().normal(0.0, 0.03, dobs1.shape)
 
-data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs, wt=np.ones((3*dobs.shape[0],)), cs=1.0, date=None)
+# data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs, wt=np.ones((3*dobs.shape[0],)), cs=1.0, date=None)
+data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs1, wt=np.ones((3*dobs1.shape[0],)), cs=1.0, date=None)
 
 # %%
 inv = Inversion()
