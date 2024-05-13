@@ -15,7 +15,7 @@ References:
 }
 
 @MastersThesis{lelievre03,
-  author       = {Peter George Leli\`evre},
+  author       = {Peter George Lelièvre},
   school       = {University of British Columbia},
   title        = {Forward modeling and inversion of geophysical magnetic data},
   year         = {2003}
@@ -29,6 +29,8 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import bicgstab, spsolve, use_solver, factorized
 from scipy.sparse.csgraph import reverse_cuthill_mckee
+
+import numba
 
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
@@ -62,7 +64,7 @@ try:
     import pypastix
 
     has_pastix = True
-except ImportError:
+except (ImportError, OSError):
     has_pastix = False
 
 

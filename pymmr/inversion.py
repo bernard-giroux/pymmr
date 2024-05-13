@@ -46,7 +46,6 @@ import numpy as np
 import scipy.sparse as sp
 import matplotlib.pyplot as plt
 
-
 # %%  Define namedtuple for input data
 
 DataMMR = namedtuple("DataMMR", "xs xo data wt cs date")
@@ -760,13 +759,13 @@ class Inversion:
 
                 ax[7].text(0.2, 0.75, "RMS = {0:g}".format(rms[-1]))
                 ax[7].text(0.2, 0.60, "$\\beta$ = {0:g}".format(beta))
-                ax[7].text(0.2, 0.45, "$\|J\|$ = {0:g}".format(np.linalg.norm(J)))
-                ax[7].text(0.2, 0.30, "$\|WTW\|$ = {0:g}".format(sp.linalg.norm(WTW)))
-                ax[7].text(0.2, 0.15, "$\|D\|$ = {0:g}".format(sp.linalg.norm(D)))
+                ax[7].text(0.2, 0.45, "$\\|J\\|$ = {0:g}".format(np.linalg.norm(J)))
+                ax[7].text(0.2, 0.30, "$\\|WTW\\|$ = {0:g}".format(sp.linalg.norm(WTW)))
+                ax[7].text(0.2, 0.15, "$\\|D\\|$ = {0:g}".format(sp.linalg.norm(D)))
                 ax[7].axis("off")
                 ax[8].axis("off")
 
-                fig.suptitle(f"Iteration {i+1}")
+                fig.suptitle(f"Iteration {i + 1}")
                 fig.tight_layout()
                 if self.save_plots:
                     filename = self.basename + "_it{0:02d}".format(i + 1) + ".pdf"
@@ -849,7 +848,8 @@ class Inversion:
             print("End of inversion.")
 
         # inversion completed -> delete checkpoint file
-        os.remove(self.basename + "_chkpt.pkl")
+        if self.checkpointing:
+            os.remove(self.basename + "_chkpt.pkl")
 
         return sigma_inv, data_inv, rms, misfit, smy
 
