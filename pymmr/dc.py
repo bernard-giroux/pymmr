@@ -43,7 +43,7 @@ except ImportError:
             return wrapper_jit
         return decorator_jit
 
-from pymmr.finite_volume import GridFV, Solver
+from pymmr.finite_volume import GridFV, MeshFV, Solver
 
 # TODO: généraliser ROI pour voxels arbitraires
 
@@ -92,17 +92,23 @@ def sortrows(a, sort_back=False):
 
 # %%  class GridDC
 
-class GridDC(GridFV):
+class GridDC:
     """Grid for DC resistivity modelling.
 
     Parameters
     ----------
-    x : array of float
-        Node coordinates along x (m)
-    y : array of float
-        Node coordinates along y (m)
-    z : array of float
-        Node coordinates along z (m)
+    param_fv : tuple
+        parameters to instantiate the finite volume mesh/grid
+        if tuple has 3 elements, a grid in built and the elements are
+            x : array of float
+                Node coordinates along x (m)
+            y : array of float
+                Node coordinates along y (m)
+            z : array of float
+                Node coordinates along z (m)
+        if tuple has 2 elements, a mesh in built and the elements are
+            pts : array of float
+            tet: array of int
     units : str, optional
         Units of voltage at output
     comm : MPI Communicator, optional
@@ -111,8 +117,17 @@ class GridDC(GridFV):
 
     units_scaling_factors = {'mV': 1.e3, 'V': 1.0}
 
-    def __init__(self, x, y, z, units='mV', comm=None):
-        GridFV.__init__(self, x, y, z, comm)
+    def __init__(self, param_fv, units='mV', comm=None):
+        if len(param_fv) != 3:
+            raise ValueError('GridDC: param_fv must have 3 elements')
+
+        if param_fv[0].ndim == 1:
+            x, y, z = param_fv
+            self.fv = GridFV(x, y, z, comm)
+        else:
+            pts, tet, surface = param_fv
+            self.fv = MeshFV(pts, tet, surface, comm)
+
         self._c1c2 = None
         self._cs = None
         self._p1p2 = None
@@ -128,11 +143,16 @@ class GridDC(GridFV):
         self.electrodes_sorted = False
         self.sort_back = None
         self.roi = None
-        self.ind_roi = np.arange(self.nc)
+        self.ind_roi = np.arange(self.fv.nc)
         self.in_inv = False    # set to True when grid is used in inversion
         self.c1c2_u = None
         self.cs12_u = None
         self.units = units
+        self.verbose = False
+
+    @property
+    def nc(self):
+        return self.fv.nc
 
     @property
     def c1c2(self):
@@ -155,8 +175,8 @@ class GridDC(GridFV):
         else:
             raise ValueError('Size of source term must be nobs x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
-               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
+            if self.fv.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+               self.fv.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
                 raise ValueError('Source term outside grid')
         self._c1c2 = tmp
         self.electrodes_sorted = False
@@ -195,8 +215,8 @@ class GridDC(GridFV):
         else:
             raise ValueError('Measurement points should be nobs x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
-                (self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False
+            if self.fv.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+                (self.fv.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False
                  and not np.any(tmp[ns, 3:] == np.inf)):
                     raise ValueError('Measurement point outside grid')
         self._p1p2 = tmp
@@ -255,15 +275,15 @@ class GridDC(GridFV):
             return
         self.roi = roi
         xmin, xmax, ymin, ymax, zmin, zmax = roi
-        if self.is_inside(xmin, ymin, zmin) is False or \
-            self.is_inside(xmax, ymax, zmax) is False:
+        if self.fv.is_inside(xmin, ymin, zmin) is False or \
+            self.fv.is_inside(xmax, ymax, zmax) is False:
                 raise ValueError('Region of interest extending beyond grid')
 
-        ind_x, = np.where(np.logical_and(self.xc >= xmin, self.xc < xmax))
-        ind_y, = np.where(np.logical_and(self.yc >= ymin, self.yc < ymax))
-        ind_z, = np.where(np.logical_and(self.zc >= zmin, self.zc < zmax))
+        ind_x, = np.where(np.logical_and(self.fv.xc >= xmin, self.fv.xc < xmax))
+        ind_y, = np.where(np.logical_and(self.fv.yc >= ymin, self.fv.yc < ymax))
+        ind_z, = np.where(np.logical_and(self.fv.zc >= zmin, self.fv.zc < zmax))
 
-        self.ind_roi = self.ind(ind_x, ind_y, ind_z)
+        self.ind_roi = self.fv.ind(ind_x, ind_y, ind_z)
 
     def get_roi_nodes(self):
         """
@@ -274,21 +294,24 @@ class GridDC(GridFV):
         tuple of ndarray
             x, y, z
         """
-        if np.array_equal(self.ind_roi, np.arange(self.nc)):
-            return self.x, self.y, self.z
+        if np.array_equal(self.ind_roi, np.arange(self.fv.nc)):
+            return self.fv.x, self.fv.y, self.fv.z
         else:
             xmin, xmax, ymin, ymax, zmin, zmax = self.roi
             # get indices of voxels
-            ind_x, = np.where(np.logical_and(self.xc >= xmin, self.xc < xmax))
-            ind_y, = np.where(np.logical_and(self.yc >= ymin, self.yc < ymax))
-            ind_z, = np.where(np.logical_and(self.zc >= zmin, self.zc < zmax))
+            ind_x, = np.where(np.logical_and(self.fv.xc >= xmin, self.fv.xc < xmax))
+            ind_y, = np.where(np.logical_and(self.fv.yc >= ymin, self.fv.yc < ymax))
+            ind_z, = np.where(np.logical_and(self.fv.zc >= zmin, self.fv.zc < zmax))
 
             # add node at end
             ind_x = np.r_[ind_x, ind_x[-1]+1]
             ind_y = np.r_[ind_y, ind_y[-1]+1]
             ind_z = np.r_[ind_z, ind_z[-1]+1]
 
-            return self.x[ind_x], self.y[ind_y], self.z[ind_z]
+            return self.fv.x[ind_x], self.fv.y[ind_y], self.fv.z[ind_z]
+
+    def fromVTK(self, fieldname, filename):
+        return self.fv.fromVTK(fieldname, filename)
 
     def fwd_mod(self, sigma=None, calc_J=False, calc_sens=False, q=None, keep_solver=True):
         """
@@ -343,8 +366,8 @@ class GridDC(GridFV):
                 print('    Correction at boundary: applied')
             else:
                 print('    Correction at boundary: not applied')
-            if self.solver_A is not None:
-                self.solver_A.print_info()
+            if self.fv.solver_A is not None:
+                self.fv.solver_A.print_info()
 
         if self.c1c2 is None:
             if self.sort_electrodes is False and self.c1c2_u is None:
@@ -394,15 +417,15 @@ class GridDC(GridFV):
 
         if sigma is not None:
             A, M = self._build_A(sigma)
-            if self.solver_A is None or keep_solver is False:
-                self.solver_A = Solver(self.get_solver_params(), A, self.verbose)
+            if self.fv.solver_A is None or keep_solver is False:
+                self.fv.solver_A = Solver(self.fv.get_solver_params(), A, self.verbose)
             else:
-                self.solver_A.A = A
-        elif self.solver_A is None:
+                self.fv.solver_A.A = A
+        elif self.fv.solver_A is None:
             raise RuntimeError('Variable sigma should be given as input.')
 
-        self.u = np.empty((self.nc, self.q.shape[1]))
-        self.u[:, :c1c2.shape[0]] = self.solver_A.solve(self.q[:, :c1c2.shape[0]])
+        self.u = np.empty((self.fv.nc, self.q.shape[1]))
+        self.u[:, :c1c2.shape[0]] = self.fv.solver_A.solve(self.q[:, :c1c2.shape[0]])
 
         if self.p1p2 is None:
             data = None
@@ -413,16 +436,16 @@ class GridDC(GridFV):
             if self.verbose:
                 print('  Computing sensitivity ... ', end='', flush=True)
             # TODO : use formulation of Haber (book), when number of p1p2 > number of voxels
-            self.u[:, c1c2.shape[0]:] = self.solver_A.solve(self.q[:, c1c2.shape[0]:], verbose=False)
+            self.u[:, c1c2.shape[0]:] = self.fv.solver_A.solve(self.q[:, c1c2.shape[0]:], verbose=False)
 
             sens = np.empty((self.ind_roi.size, self.c1c2.shape[0]))
-            S = self.build_M(sigma*sigma)
+            S = self.fv.build_M(sigma*sigma)
             Dm = sp.diags(1.0/sigma)
 
             if self.verbose:
                 print('  Filling sensitivity matrix ... ', end='', flush=True)
 
-            Gf = self.build_G_faces()
+            Gf = self.fv.build_G_faces()
 
             # items = [(n, c1c2, Dm, S, Gf) for n in range(self.c1c2.shape[0])]
             # with Pool() as pool:
@@ -457,12 +480,12 @@ class GridDC(GridFV):
         elif calc_J:
             if self.verbose:
                 print('  Computing current density ...', end='', flush=True)
-            J = np.empty((self.nf, self.q.shape[1]))
+            J = np.empty((self.fv.nf, self.q.shape[1]))
             for ns in range(self.q.shape[1]):
-                J[:, ns] = -M @ self.G @ self.u[:, ns]
+                J[:, ns] = -M @ self.fv.G @ self.u[:, ns]
 
-            if self.sort_electrodes and self.sort_back is not None:
-                J = J[:, self.sort_back]
+            # if self.sort_electrodes and self.sort_back is not None:
+            #     J = J[:, self.sort_back]
 
             if self.verbose:
                 print('done.\nEnd of modelling.')
@@ -475,10 +498,7 @@ class GridDC(GridFV):
     def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
         """Compute regularization matrix.
         """
-        # extract Gx, Gy & Gz from G
-        Gx = self.G[:self.nfx, :]
-        Gy = self.G[self.nfx:(self.nfx+self.nfy), :]
-        Gz = self.G[(self.nfx+self.nfy):, :]
+        Gx, Gy, Gz = self.fv.extract_Gxyz()
 
         if WGx is None:
             WGx = np.ones((Gx.shape[0], 1))
@@ -577,57 +597,25 @@ class GridDC(GridFV):
             Model weighting matrix.
         """
 
-        # extract Gx, Gy & Gz from G
-        Gx = self.G[:self.nfx, :]
-        Gy = self.G[self.nfx:(self.nfx+self.nfy), :]
-        Gz = self.G[(self.nfx+self.nfy):, :]
+        Gx, Gy, Gz = self.fv.extract_Gxyz()
 
         if WGx is not None:
-            Gx = sp.diags(WGx.diagonal(), shape=(self.nfx, self.nfx), format='csr') @ Gx
+            Gx = sp.diags(WGx.diagonal(), shape=(self.fv.nfx, self.fv.nfx), format='csr') @ Gx
         if WGy is not None:
-            Gy = sp.diags(WGy.diagonal(), shape=(self.nfy, self.nfy), format='csr') @ Gy
+            Gy = sp.diags(WGy.diagonal(), shape=(self.fv.nfy, self.fv.nfy), format='csr') @ Gy
         if WGz is not None:
-            Gz = sp.diags(WGz.diagonal(), shape=(self.nfz, self.nfz), format='csr') @ Gz
+            Gz = sp.diags(WGz.diagonal(), shape=(self.fv.nfz, self.fv.nfz), format='csr') @ Gz
 
         Gs = sp.vstack((par.alx*Gx, par.aly*Gy, par.alz*Gz), format='csr')
-        V = sp.diags(np.ones((self.nc,)), format='csr')
-        Wt = sp.diags(wt, shape=(self.nc, self.nc), format='csr')
+        V = sp.diags(np.ones((self.fv.nc,)), format='csr')
+        Wt = sp.diags(wt, shape=(self.fv.nc, self.fv.nc), format='csr')
 
         WtW = Wt.T @ (Gs.T @ Gs + par.als * V) @ Wt
         WtW = WtW[m_active, :]
         return WtW[:, m_active]
 
-    def calc_WdW(self, wt, dobs, par):
-        """Compute data weighting matrix.
-
-        Parameters
-        ----------
-        wt : array_like
-            Weight in %.
-        dobs : array_like
-            Observed data.
-        par :
-            Weighting parameters.
-        Returns
-        -------
-        output : `csr_matrix`
-            Data weighting matrix.
-        """
-        dtw = 0.01 * wt.flatten() * np.abs(dobs.flatten()) + par.e
-        dtw = 1. / dtw
-
-        # normalisation
-        dtw = dtw / dtw.max()
-
-        dtw[wt.flatten() > par.max_err] = 0.0
-
-        return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
-
     def print_info(self, file=None):
-        print('    Grid: {0:d} x {1:d} x {2:d} voxels'.format(self.nx, self.ny, self.nz), file=file)
-        print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
-        print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
-        print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
+        self.fv.print_info(file)
         if self.roi is not None:
             print('    Region of interest:', file=file)
             print('      X min: {0:e}\tX max: {1:e}'.format(self.roi[0], self.roi[1]), file=file)
@@ -679,23 +667,24 @@ class GridDC(GridFV):
             src = "C1: " + str(self.c1c2_u[n, 0]) + " " + str(self.c1c2_u[n, 1]) + " " + str(self.c1c2_u[n, 2])
             src += ", C2: " + str(self.c1c2_u[n, 3]) + " " + str(self.c1c2_u[n, 4]) + " " + str(self.c1c2_u[n, 5])
             metadata = {"Source dipole": src}
-            
+
+            jx, jy, jz = self.fv.extract_xyz_faces(J[:, n])
             filename = basename+'_Jx_dc_dip'+str(n+1)
-            self.toVTK({'Jx': J[:self.nfx, n]}, filename, component='x', metadata=metadata)
+            self.fv.toVTK({'Jx': jx}, filename, component='x', metadata=metadata)
             filename = basename+'_Jy_dc_dip'+str(n+1)
-            self.toVTK({'Jy': J[self.nfx:(self.nfx+self.nfy), n]}, filename, component='y', metadata=metadata)
+            self.fv.toVTK({'Jy': jy}, filename, component='y', metadata=metadata)
             filename = basename+'_Jz_dc_dip'+str(n+1)
-            self.toVTK({'Jz': J[(self.nfx+self.nfy):, n]}, filename, component='z', metadata=metadata)
+            self.fv.toVTK({'Jz': jz}, filename, component='z', metadata=metadata)
 
     def _build_A(self, sigma):
         # Build LHS matrix
-        M = self.build_M(sigma)
-        A = self.D @ M @ self.G
+        M = self.fv.build_M(sigma)
+        A = self.fv.D @ M @ self.fv.G
         # I, J, V = sp.find(A[0, :])
         # for jj in J:
         #     A[0, jj] = 0.0
-        # A[0, 0] = 1.0/(self.hx[0] * self.hy[0] * self.hz[0])
-        A[0, 0] += 1.0/(self.hx[0] * self.hy[0] * self.hz[0])
+        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
+        A[0, 0] += 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
         
         return A, M
 
@@ -703,16 +692,14 @@ class GridDC(GridFV):
 
         # make sure electrodes are at least at the depth of the first cell center
         p1p2 = self.p1p2.copy()
-        ind = p1p2[:, 2] < self.zc[0]
-        p1p2[ind, 2] = self.zc[0]
-        ind = p1p2[:, 5] < self.zc[0]
-        p1p2[ind, 5] = self.zc[0]
+        p1p2[:, :3] = self.fv.process_surface_elec(p1p2[:, :3])
+        p1p2[:, 3:6] = self.fv.process_surface_elec(p1p2[:, 3:6])
 
         self.Q = []
         for ns in range(self.n_c1c2_u):
             ind = self.ind_c1c2 == ns
-            Q = self.linear_interp(p1p2[ind, 0], p1p2[ind, 1], p1p2[ind, 2])
-            Q -= self.linear_interp(p1p2[ind, 3], p1p2[ind, 4], p1p2[ind, 5])
+            Q = self.fv.linear_interp(p1p2[ind, 0], p1p2[ind, 1], p1p2[ind, 2])
+            Q -= self.fv.linear_interp(p1p2[ind, 3], p1p2[ind, 4], p1p2[ind, 5])
             self.Q.append(Q)
 
     def _build_q(self):
@@ -720,10 +707,8 @@ class GridDC(GridFV):
         if self.keep_c1c2:
             c1c2 = self.c1c2_u.copy()
             # make sure electrodes are at least at the depth of the first cell center
-            ind = c1c2[:, 2] < self.zc[0]
-            c1c2[ind, 2] = self.zc[0]
-            ind = c1c2[:, 5] < self.zc[0]
-            c1c2[ind, 5] = self.zc[0]
+            c1c2[:, :3] = self.fv.process_surface_elec(c1c2[:, :3])
+            c1c2[:, 3:6] = self.fv.process_surface_elec(c1c2[:, 3:6])
 
             if self.cs is None:
                 warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
@@ -732,17 +717,16 @@ class GridDC(GridFV):
         else:
             c1c2 = np.vstack((self.c12_u, self.p12_u))
             # make sure electrodes are at least at the depth of the first cell center
-            ind = c1c2[:, 2] < self.zc[0]
-            c1c2[ind, 2] = self.zc[0]
+            c1c2[:, :3] = self.fv.process_surface_elec(c1c2[:, :3])
             cs = np.r_[self.cs_u, self.cp_u]
 
         # volume des voxels
-        iv = 1.0 / self.volume_voxels()
-        q = sp.lil_matrix((self.nc, c1c2.shape[0]))
+        iv = 1.0 / self.fv.volume_voxels()
+        q = sp.lil_matrix((self.fv.nc, c1c2.shape[0]))
         for i in range(c1c2.shape[0]):
-            Q = self.linear_interp(c1c2[i, 0], c1c2[i, 1], c1c2[i, 2])
+            Q = self.fv.linear_interp(c1c2[i, 0], c1c2[i, 1], c1c2[i, 2])
             if c1c2.shape[1] == 6:
-                Q -= self.linear_interp(c1c2[i, 3], c1c2[i, 4], c1c2[i, 5])
+                Q -= self.fv.linear_interp(c1c2[i, 3], c1c2[i, 4], c1c2[i, 5])
             q[:, i] = -cs[i] * Q.toarray() * iv
         self.q = q.tocsr()
         self.u0 = None
@@ -753,13 +737,11 @@ class GridDC(GridFV):
         if self.keep_c1c2:
             c1c2 = self.c1c2_u.copy()
             # keep track of electrodes below the surface
-            below_surf_c1 = c1c2[:, 2] != self.z[0]
-            below_surf_c2 = c1c2[:, 5] != self.z[0]
+            below_surf_c1 = self.fv.below_surface(c1c2[:, :3])
+            below_surf_c2 = self.fv.below_surface(c1c2[:, 3:6])
             # make sure electrodes are at least at the depth of the first cell center
-            ind = c1c2[:, 2] < self.zc[0]
-            c1c2[ind, 2] = self.zc[0]
-            ind = c1c2[:, 5] < self.zc[0]
-            c1c2[ind, 5] = self.zc[0]
+            c1c2[:, :3] = self.fv.process_surface_elec(c1c2[:, :3])
+            c1c2[:, 3:6] = self.fv.process_surface_elec(c1c2[:, 3:6])
             if self.cs is None:
                 warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
                 self.cs = np.ones((c1c2.shape[0],))
@@ -767,16 +749,15 @@ class GridDC(GridFV):
         else:
             c1c2 = np.vstack((self.c12_u, self.p12_u))
             # keep track of electrodes below the surface
-            below_surf_c1 = c1c2[:, 2] != self.z[0]
+            below_surf_c1 = self.fv.below_surface(c1c2[:, :3])
             # make sure electrodes are at least at the depth of the first cell center
-            ind = c1c2[:, 2] < self.zc[0]
-            c1c2[ind, 2] = self.zc[0]
+            c1c2[:, :3] = self.fv.process_surface_elec(c1c2[:, :3])
             cs = np.r_[self.cs_u, self.cp_u]
 
-        z, y, x = np.meshgrid(self.zc, self.yc, self.xc, indexing='ij')
+        x, y, z = self.fv.centre_voxels()
         avg_cond = gmean(ref_model.flatten())
 
-        self.u0 = np.empty((self.nc, c1c2.shape[0]))
+        self.u0 = np.empty((self.fv.nc, c1c2.shape[0]))
 
         # turn off warning b/c we get a divide by zero that we will fix later
         np.seterr(divide='ignore')
@@ -815,27 +796,27 @@ class GridDC(GridFV):
             ind = np.nonzero(np.isinf(self.u0[:, i]))
             if ind[0].size > 0:
                 for j in range(ind[0].size):
-                    ix, iy, iz = self.revind(ind[0][j])
+                    ix, iy, iz = self.fv.revind(ind[0][j])
                     if iz == 0:
-                        self.u0[ind[0][j], i] = np.mean([self.u0[self.ind(ix+1, iy, iz), i],
-                                                         self.u0[self.ind(ix, iy+1, iz), i],
-                                                         self.u0[self.ind(ix, iy, iz+1), i],
-                                                         self.u0[self.ind(ix-1, iy, iz), i],
-                                                         self.u0[self.ind(ix, iy-1, iz), i]])
+                        self.u0[ind[0][j], i] = np.mean([self.u0[self.fv.ind(ix+1, iy, iz), i],
+                                                         self.u0[self.fv.ind(ix, iy+1, iz), i],
+                                                         self.u0[self.fv.ind(ix, iy, iz+1), i],
+                                                         self.u0[self.fv.ind(ix-1, iy, iz), i],
+                                                         self.u0[self.fv.ind(ix, iy-1, iz), i]])
                     else:
-                        self.u0[ind[0][j], i] = np.mean([self.u0[self.ind(ix+1, iy, iz), i],
-                                                         self.u0[self.ind(ix, iy+1, iz), i],
-                                                         self.u0[self.ind(ix, iy, iz+1), i],
-                                                         self.u0[self.ind(ix-1, iy, iz), i],
-                                                         self.u0[self.ind(ix, iy-1, iz), i],
-                                                         self.u0[self.ind(ix, iy, iz-1), i]])
-        M = avg_cond * sp.eye(self.nf, self.nf)
-        A = self.D @ M @ self.G
+                        self.u0[ind[0][j], i] = np.mean([self.u0[self.fv.ind(ix+1, iy, iz), i],
+                                                         self.u0[self.fv.ind(ix, iy+1, iz), i],
+                                                         self.u0[self.fv.ind(ix, iy, iz+1), i],
+                                                         self.u0[self.fv.ind(ix-1, iy, iz), i],
+                                                         self.u0[self.fv.ind(ix, iy-1, iz), i],
+                                                         self.u0[self.fv.ind(ix, iy, iz-1), i]])
+        M = avg_cond * sp.eye(self.fv.nf, self.fv.nf)
+        A = self.fv.D @ M @ self.fv.G
         # I, J, V = sp.find(A[0, :])
         # for jj in J:
         #     A[0, jj] = 0.0
-        # A[0, 0] = 1.0/(self.hx[0] * self.hy[0] * self.hz[0])
-        A[0, 0] += 1.0 / (self.hx[0] * self.hy[0] * self.hz[0])
+        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
+        A[0, 0] += 1.0 / (self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
 
         self.q = sp.csr_matrix(A @ self.u0)
 
@@ -959,25 +940,25 @@ class GridDC(GridFV):
         mp = m_ref.copy()
         mp[m_active] = m
 
-        S = self.build_M(np.exp(mp)).power(2)
+        S = self.fv.build_M(np.exp(mp)).power(2)
 
         Dm = sp.csr_matrix((np.exp(-m), (np.arange(m.size), np.arange(m.size))))
 
-        gu = np.empty((self.nc, u.shape[1]))
+        gu = np.empty((self.fv.nc, u.shape[1]))
 
         if v.shape[1] == u.shape[1]:
             for i in range(u.shape[1]):
-                Gc = self.build_G(self.G @ u[:, i])
+                Gc = self.fv.build_G(self.fv.G @ u[:, i])
                 Gc = Gc[:, m_active]
 
-                gui = self.D @ (S @ (Gc @ (Dm @ v[:, i])))
+                gui = self.fv.D @ (S @ (Gc @ (Dm @ v[:, i])))
                 gu[:, i] = gui
         elif v.shape[1] < u.shape[1]:
             for i in range(u.shape[1]):
-                Gc = self.build_G(self.G @ u[:, i])
+                Gc = self.fv.build_G(self.fv.G @ u[:, i])
                 Gc = Gc[:, m_active]
 
-                gui = self.D @ (S @ (Gc @ (Dm @ v)))
+                gui = self.fv.D @ (S @ (Gc @ (Dm @ v)))
                 gu[:, i] = gui.flatten()
         return sp.csr_matrix(gu)
 
@@ -986,27 +967,27 @@ class GridDC(GridFV):
         mp = m_ref.copy()
         mp[m_active] = m
 
-        S = self.build_M(np.exp(mp)).power(2)
+        S = self.fv.build_M(np.exp(mp)).power(2)
 
         Dm = sp.csr_matrix((np.exp(-m), (np.arange(m.size), np.arange(m.size))))
 
         gu = np.empty((m.size, u.shape[1]))
         for i in range(u.shape[1]):
-            Gc = self.build_G(self.G @ u[:, i])
+            Gc = self.fv.build_G(self.fv.G @ u[:, i])
             Gc = Gc[:, m_active]
 
-            gui = Dm.T @ (Gc.T @ (S.T @ (self.D.T @ v[:, i])))
+            gui = Dm.T @ (Gc.T @ (S.T @ (self.fv.D.T @ v[:, i])))
             gu[:, i] = gui.flatten()
         return np.sum(gu, axis=1)
 
     def _fill_jacobian(self, n, c1c2, Dm, S, Gf):
         u = self.u[:, self.ind_c1[n]] - self.u[:, self.ind_c2[n]]
         u_r = self.u[:, c1c2.shape[0] + self.ind_p1[n]] - self.u[:, c1c2.shape[0] + self.ind_p2[n]]
-        v = sp.diags(self.G @ u)
+        v = sp.diags(self.fv.G @ u)
         Gc = v @ Gf
         # Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
-        tmp = -self._units_scaling * A @ self.G @ u_r
+        tmp = -self._units_scaling * A @ self.fv.G @ u_r
         return tmp[self.ind_roi], n
 
     def _check_cs(self):
@@ -1032,7 +1013,7 @@ class GridDC(GridFV):
 
 class VerticalDyke():
     """
-    Compute voltage for a profil/sounding crossing a vertical dyke.
+    Compute voltage for a profile/sounding crossing a vertical dyke.
 
     Reference
     ---------
@@ -1105,7 +1086,7 @@ class VerticalDyke():
         must hold the same number of rows, which correspond to the possible
         c1p1, c1p2, c2p1, & c2p2 combinations.
 
-        The profil varies along x; y and z coordinates are ignored.
+        The profile varies along x; y and z coordinates are ignored.
 
         """
 

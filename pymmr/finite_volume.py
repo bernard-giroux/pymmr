@@ -132,11 +132,251 @@ def _get_umf_family(A):
 
     return family, A_new
 
+@numba.jit(numba.f8[:,:](numba.f8[:], numba.f8[:], numba.f8[:], numba.f8[:]), nopython=True)
+def tetra_coord(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray):
+    # Almost the same as Hugues' function,
+    # except it does not involve the homogeneous coordinates.
+    # v1 = b - a
+    # v2 = c - a
+    # v3 = d - a
+    # mat = np.array((v1,v2,v3)).T
+    mat = np.empty((3, 3))
+    mat[:, 0] = b - a
+    mat[:, 1] = c - a
+    mat[:, 2] = d - a
+    # mat is 3x3 here
+    return np.linalg.inv(mat)
+
+
+@numba.jit(numba.f8(numba.f8, numba.f8, numba.f8, numba.f8, numba.f8, numba.f8), nopython=True)
+def triangle_area_2D(x1, y1, x2, y2, x3, y3):
+    return (x1 - x2) * (y2 - y3) - (x2 - x3) * (y1 - y2)
+
+
+@numba.jit(numba.f8[:](numba.f8[:],numba.f8[:],numba.f8[:],numba.f8[:]), nopython=True)
+def barycentric(a: np.ndarray, b: np.ndarray, c: np.ndarray, p: np.ndarray):
+    ab = b - a
+    ac = c - a
+    m = np.cross(ab, ac)
+    x = np.abs(m[0])
+    y = np.abs(m[1])
+    z = np.abs(m[2])
+    if x >= y and x >= z:
+        nu = triangle_area_2D(p[1], p[2], b[1], b[2], c[1], c[2])
+        nv = triangle_area_2D(p[1], p[2], c[1], c[2], a[1], a[2])
+        ood = 1. / m[0]
+    elif y >= x and y >= z:
+        nu = triangle_area_2D(p[0], p[2], b[0], b[2], c[0], c[2])
+        nv = triangle_area_2D(p[0], p[2], c[0], c[2], a[0], a[2])
+        ood = 1. / m[1]
+    else:
+        nu = triangle_area_2D(p[0], p[1], b[0], b[1], c[0], c[1])
+        nv = triangle_area_2D(p[0], p[1], c[0], c[1], a[0], a[1])
+        ood = 1. / m[2]
+    u = nu * ood
+    v = nv * ood
+    w = 1.0 - u - v
+    return np.array([u, v, w])
+
+
+def inside_triangle_box(v1, v2, v3, p):
+    x_min = min((v1[0], v2[0], v3[0])) - 1.e-6
+    x_max = max((v1[0], v2[0], v3[0])) + 1.e-6
+    y_min = min((v1[1], v2[1], v3[1])) - 1.e-6
+    y_max = max((v1[1], v2[1], v3[1])) + 1.e-6
+    z_min = min((v1[2], v2[2], v3[2])) - 1.e-6
+    z_max = max((v1[2], v2[2], v3[2])) + 1.e-6
+
+    if p[0] < x_min or x_max < p[0] or p[1] < y_min or y_max < p[1] or p[2] < z_min or z_max < p[2]:
+        return False
+    else:
+        return True
+
+
+def inside_tetrahedron_box(v1, v2, v3, v4, p):
+    x_min = min((v1[0], v2[0], v3[0], v4[0])) - 1.e-6
+    x_max = max((v1[0], v2[0], v3[0], v4[0])) + 1.e-6
+    y_min = min((v1[1], v2[1], v3[1], v4[1])) - 1.e-6
+    y_max = max((v1[1], v2[1], v3[1], v4[1])) + 1.e-6
+    z_min = min((v1[2], v2[2], v3[2], v4[2])) - 1.e-6
+    z_max = max((v1[2], v2[2], v3[2], v4[2])) + 1.e-6
+
+    if p[0] < x_min or x_max < p[0] or p[1] < y_min or y_max < p[1] or p[2] < z_min or z_max < p[2]:
+        return False
+    else:
+        return True
+
+# %%
+
+class BaseFV:
+
+    def __init__(self, comm=None):
+        if comm is None:
+            from mpi4py import MPI
+
+            comm = MPI.COMM_WORLD
+        self.comm = comm
+        self.myid = comm.rank
+        self.verbose = False
+        self.solver = bicgstab
+        self.tol = 1e-9
+        self.max_it = 1000
+        self._want_pardiso = False
+        self._want_pastix = False
+        self.want_superlu = False
+        if has_umfpack:
+            # we want UMFPACK by default if available, if not SuperLU will be used
+            self._want_umfpack = True
+        else:
+            self._want_umfpack = False
+            self.want_superlu = True
+        self._want_mumps = False
+        self.solver_A = None
+        self.precon = False
+        self.do_perm = False
+
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
+        """Define parameters of solver to be used during forward modelling.
+
+        Parameters
+        ----------
+        name : `string` or `callable`
+            If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
+            If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
+        tol : float, optional
+            Tolerance for the iterative solver
+        max_it : int, optional
+            Max nbr of iteration for the iterative solver
+        precon : bool, optional
+            Apply preconditionning.
+        do_perm : bool, optional
+            Apply inverse Cuthill-McKee permutation.
+        comm : MPI Communicator or None
+            for mumps solver
+
+        Notes
+        -----
+        `precon` et `do_perm` are used only with iterative solvers.
+        """
+        if callable(name):
+            self.solver = name
+            self.tol = tol
+            self.max_it = max_it
+            self.want_pardiso = False
+            self.want_pastix = False
+            self.want_superlu = False
+            self.want_umfpack = False
+            self.want_mumps = False
+        elif "superlu" in name:
+            self.want_pardiso = False
+            self.want_pastix = False
+            self.want_superlu = True
+            self.want_umfpack = False
+            self.want_mumps = False
+        elif "pardiso" in name:
+            self.want_pardiso = True
+            self.want_pastix = False
+            self.want_superlu = False
+            self.want_umfpack = False
+            self.want_mumps = False
+        elif "pastix" in name:
+            self.want_pastix = True
+            self.want_pardiso = False
+            self.want_superlu = False
+            self.want_umfpack = False
+            self.want_mumps = False
+        elif "umfpack" in name:
+            self.want_umfpack = True
+            self.want_superlu = False
+            self.want_pardiso = False
+            self.want_pastix = False
+            self.want_mumps = False
+        elif "mumps" in name:
+            self.want_pardiso = False
+            self.want_pastix = False
+            self.want_superlu = False
+            self.want_umfpack = False
+            self.want_mumps = True
+        else:
+            raise RuntimeError("Solver " + name + " not implemented")
+
+        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
+        self.precon = precon
+        self.do_perm = do_perm
+        self.comm = comm
+
+    def get_solver_params(self):
+        """Return parameters needed to instantiate Solver."""
+        if self.want_mumps:
+            return ("mumps",)
+        elif self.want_pardiso:
+            return ("pardiso",)
+        elif self.want_pastix:
+            return ("pastix",)
+        elif self.want_superlu:
+            return ("superlu",)
+        elif self.want_umfpack:
+            return ("umfpack",)
+        else:
+            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
+
+    @property
+    def want_pardiso(self):
+        """Using solver pardiso (if available)."""
+        return self._want_pardiso
+
+    @want_pardiso.setter
+    def want_pardiso(self, val):
+        if val is True and has_pardiso is False:
+            warnings.warn("Pardiso not available, default solver used.", RuntimeWarning, stacklevel=2)
+            self._want_pardiso = False
+        else:
+            self._want_pardiso = val
+
+    @property
+    def want_pastix(self):
+        """Using solver pastix (if available)."""
+        return self._want_pastix
+
+    @want_pastix.setter
+    def want_pastix(self, val):
+        if val is True and has_pastix is False:
+            warnings.warn("Pastix not available, default solver used.", RuntimeWarning, stacklevel=2)
+            self._want_pastix = False
+        else:
+            self._want_pastix = val
+
+    @property
+    def want_umfpack(self):
+        """Using solver umfpack (if available)."""
+        return self._want_umfpack
+
+    @want_umfpack.setter
+    def want_umfpack(self, val):
+        if val is True and has_umfpack is False:
+            warnings.warn("UMFPACK not available, default solver used.", RuntimeWarning, stacklevel=2)
+            self._want_umfpack = False
+        else:
+            self._want_umfpack = val
+
+    @property
+    def want_mumps(self):
+        """Using solver mumps (if available)."""
+        return self._want_mumps
+
+    @want_mumps.setter
+    def want_mumps(self, val):
+        if val is True and has_mumps is False:
+            warnings.warn("MUMPS not available, default solver used.", RuntimeWarning, stacklevel=2)
+            self._want_mumps = False
+        else:
+            self._want_mumps = val
+
 
 # %% GridFV
 
 
-class GridFV:
+class GridFV(BaseFV):
     """Class to manage rectilinear grids for finite volume modelling.
 
     Parameters
@@ -158,33 +398,10 @@ class GridFV:
     """
 
     def __init__(self, x, y, z, comm=None):
-        if comm is None:
-            from mpi4py import MPI
-
-            comm = MPI.COMM_WORLD
-        self.comm = comm
-        self.myid = comm.rank
-
+        BaseFV.__init__(self, comm)
         self.x = x
         self.y = y
         self.z = z
-        self.verbose = False
-        self.solver = bicgstab
-        self.tol = 1e-9
-        self.max_it = 1000
-        self._want_pardiso = False
-        self._want_pastix = False
-        self.want_superlu = False
-        if has_umfpack:
-            # we want UMFPACK by default if available, if not SuperLU will be used
-            self._want_umfpack = True
-        else:
-            self._want_umfpack = False
-            self.want_superlu = True
-        self._want_mumps = False
-        self.solver_A = None
-        self.precon = False
-        self.do_perm = False
 
     def ind(self, i, j, k, component=None):
         """
@@ -340,7 +557,7 @@ class GridFV:
 
     @x.setter
     def x(self, val):
-        tmp = np.array(val, dtype=np.float64)
+        tmp = np.sort(np.array(val, dtype=np.float64))
         if tmp.ndim != 1:
             raise ValueError("1D array needed")
         if len(tmp) < 2:
@@ -359,7 +576,7 @@ class GridFV:
 
     @y.setter
     def y(self, val):
-        tmp = np.array(val, dtype=np.float64)
+        tmp = np.sort(np.array(val, dtype=np.float64))
         if tmp.ndim != 1:
             raise ValueError("1D array needed")
         if len(tmp) < 2:
@@ -378,7 +595,7 @@ class GridFV:
 
     @z.setter
     def z(self, val):
-        tmp = np.array(val, dtype=np.float64)
+        tmp = np.sort(np.array(val, dtype=np.float64))
         if tmp.ndim != 1:
             raise ValueError("1D array needed")
         if len(tmp) < 2:
@@ -425,21 +642,21 @@ class GridFV:
 
         Returns
         -------
-        ndarray nc x 3
+        tuple of 3 ndarray
             coordinates X, Y, Z
 
         """
         x = np.kron(np.ones((self.ny * self.nz,)), self.xc)
         y = np.kron(np.kron(np.ones((self.nz,)), self.yc), np.ones((self.nx,)))
         z = np.kron(self.zc, np.ones((self.nx * self.ny,)))
-        return np.c_[x, y, z]
+        return x, y, z
 
     def distance_weighting(self, xo, beta):
         """Calculate distance weighting matrix.
 
         Parameters
         ----------
-        xo : arraylike
+        xo : array_like
             coordinates of observation points.
         beta : float
             Détermine weighting intensity.
@@ -455,15 +672,13 @@ class GridFV:
 
         """
         dV = self.volume_voxels()
-        xyzc = self.centre_voxels()
+        xc, yc, zc = self.centre_voxels()
         R0 = 0.5 * dV.min() ** 0.33333333333333
         Q = np.zeros((self.nc,))
         for i in np.arange(xo.shape[0]):
-            R = np.sqrt(
-                (xyzc[:, 0] - xo[i, 0]) * (xyzc[:, 0] - xo[i, 0])
-                + (xyzc[:, 1] - xo[i, 1]) * (xyzc[:, 1] - xo[i, 1])
-                + (xyzc[:, 2] - xo[i, 2]) * (xyzc[:, 2] - xo[i, 2])
-            )
+            R = np.sqrt((xc - xo[i, 0]) * (xc - xo[i, 0]) +
+                        (yc - xo[i, 1]) * (yc - xo[i, 1]) +
+                        (zc - xo[i, 2]) * (zc - xo[i, 2]))
             R = (R + R0) ** 3
             R = (dV / R) ** 2
             Q += R
@@ -577,7 +792,7 @@ class GridFV:
                 continue
 
             im = np.argmin(np.abs(x[i] - xc))
-            if x[i] < xc[im]:
+            if x[i] <= xc[im] and im > 0:
                 ix[0] = im - 1
                 ix[1] = im
             else:
@@ -587,7 +802,7 @@ class GridFV:
             dx[1] = xc[ix[1]] - x[i]
 
             im = np.argmin(np.abs(y[i] - yc))
-            if y[i] < yc[im]:
+            if y[i] <= yc[im] and im > 0:
                 iy[0] = im - 1
                 iy[1] = im
             else:
@@ -597,7 +812,7 @@ class GridFV:
             dy[1] = yc[iy[1]] - y[i]
 
             im = np.argmin(np.abs(z[i] - zc))
-            if z[i] < zc[im]:
+            if z[i] <= zc[im] and im > 0:
                 iz[0] = im - 1
                 iz[1] = im
             else:
@@ -1171,6 +1386,34 @@ class GridFV:
             )
         )
 
+    def extract_Gxyz(self):
+        """Extract Gx, Gy & Gz from G.
+        """
+        Gx = self.G[:self.nfx, :]
+        Gy = self.G[self.nfx:(self.nfx + self.nfy), :]
+        Gz = self.G[(self.nfx + self.nfy):, :]
+        return Gx, Gy, Gz
+
+    def extract_xyz_faces(self, v):
+        if v.ndim == 1:
+            v = v.reshape(-1, 1)
+        return v[:self.nfx, :], v[self.nfx:(self.nfx+self.nfy), :], v[(self.nfx+self.nfy):, :]
+
+    def below_surface(self, pts):
+        """Return indices of electrodes that are not at the surface."""
+        return pts[:, 2] != self.z[-1]
+
+    def process_surface_elec(self, elec):
+        """Process surface Tx coordinate to make sure electrodes are at least at the depth of the first cell center.
+
+        Note
+        ----
+        Vertical axis is elevation, ie positive upwards.
+        """
+        ind = elec[:, 2] > self.zc[-1]
+        elec[ind, 2] = self.zc[-1]
+        return elec
+
     def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
         """
         Save a field in a vtk file.
@@ -1300,160 +1543,84 @@ class GridFV:
         else:
             return vtk_to_numpy(data)
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
-        """Define parameters of solver to be used during forward modelling.
-
-        Parameters
-        ----------
-        name : `string` or `callable`
-            If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
-            If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
-        tol : float, optional
-            Tolerance for the iterative solver
-        max_it : int, optional
-            Max nbr of iteration for the iterative solver
-        precon : bool, optional
-            Apply preconditionning.
-        do_perm : bool, optional
-            Apply inverse Cuthill-McKee permutation.
-        comm : MPI Communicator or None
-            for mumps solver
-
-        Notes
-        -----
-        `precon` et `do_perm` are used only with iterative solvers.
-        """
-        if callable(name):
-            self.solver = name
-            self.tol = tol
-            self.max_it = max_it
-            self.want_pardiso = False
-            self.want_pastix = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif "superlu" in name:
-            self.want_pardiso = False
-            self.want_pastix = False
-            self.want_superlu = True
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif "pardiso" in name:
-            self.want_pardiso = True
-            self.want_pastix = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif "pastix" in name:
-            self.want_pastix = True
-            self.want_pardiso = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif "umfpack" in name:
-            self.want_umfpack = True
-            self.want_superlu = False
-            self.want_pardiso = False
-            self.want_pastix = False
-            self.want_mumps = False
-        elif "mumps" in name:
-            self.want_pardiso = False
-            self.want_pastix = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = True
-        else:
-            raise RuntimeError("Solver " + name + " not implemented")
-
-        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
-        self.precon = precon
-        self.do_perm = do_perm
-        self.comm = comm
-
-    def get_solver_params(self):
-        """Return parameters needed to instantiate Solver."""
-        if self.want_mumps:
-            return ("mumps",)
-        elif self.want_pardiso:
-            return ("pardiso",)
-        elif self.want_pastix:
-            return ("pastix",)
-        elif self.want_superlu:
-            return ("superlu",)
-        elif self.want_umfpack:
-            return ("umfpack",)
-        else:
-            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
-
-    @property
-    def want_pardiso(self):
-        """Using solver pardiso (if available)."""
-        return self._want_pardiso
-
-    @want_pardiso.setter
-    def want_pardiso(self, val):
-        if val is True and has_pardiso is False:
-            warnings.warn("Pardiso not available, default solver used.", RuntimeWarning, stacklevel=2)
-            self._want_pardiso = False
-        else:
-            self._want_pardiso = val
-
-    @property
-    def want_pastix(self):
-        """Using solver pastix (if available)."""
-        return self._want_pastix
-
-    @want_pastix.setter
-    def want_pastix(self, val):
-        if val is True and has_pastix is False:
-            warnings.warn("Pastix not available, default solver used.", RuntimeWarning, stacklevel=2)
-            self._want_pastix = False
-        else:
-            self._want_pastix = val
-
-    @property
-    def want_umfpack(self):
-        """Using solver umfpack (if available)."""
-        return self._want_umfpack
-
-    @want_umfpack.setter
-    def want_umfpack(self, val):
-        if val is True and has_umfpack is False:
-            warnings.warn("UMFPACK not available, default solver used.", RuntimeWarning, stacklevel=2)
-            self._want_umfpack = False
-        else:
-            self._want_umfpack = val
-
-    @property
-    def want_mumps(self):
-        """Using solver mumps (if available)."""
-        return self._want_mumps
-
-    @want_mumps.setter
-    def want_mumps(self, val):
-        if val is True and has_mumps is False:
-            warnings.warn("MUMPS not available, default solver used.", RuntimeWarning, stacklevel=2)
-            self._want_mumps = False
-        else:
-            self._want_mumps = val
+    def print_info(self, file=None):
+        print('    Grid: {0:d} x {1:d} x {2:d} voxels'.format(self.nx, self.ny, self.nz), file=file)
+        print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
+        print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
+        print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
 
 
 # %% MeshFV
 
 
-class MeshFV(SimplexMesh):
+class MeshFV(BaseFV, SimplexMesh):
     """Class to manage tetrahedral meshes for finite volume modelling.
 
     Parameters
     ----------
     pts : array_like
         Coordinates of the nodes making the mesh
-    tet : array_like on int
+    tet : array_like of int
         Indices of the nodes forming the tetrahedra
     """
 
-    def __init__(self, pts, tet):
+    def __init__(self, pts, tet, tri_surf, comm=None):
+        BaseFV.__init__(self, comm)
         SimplexMesh.__init__(self, pts, tet)
+        self.tri_surf = np.array(tri_surf)
+
+    @property
+    def nc(self):
+        return self.n_cells
+
+    def is_inside(self, x, y, z):
+        """Check if point is inside mesh.
+
+        Parameters
+        ----------
+        x : float
+            coordinate along X.
+        y : float
+            coordinate along Y.
+        z : float
+            coordinate along Z.
+
+        Returns
+        -------
+        True if point is inside grid
+
+        """
+        p = np.array([x, y, z])
+        for i in range(self.n_cells):
+            if self._inside_tet(i, p):
+                return True
+        else:
+            return False
+
+    def below_surface(self, pts):
+        """Return indices of electrodes that are not at the surface."""
+        ind = np.zeros((pts.shape[0],), dtype=bool)
+        for npt in range(pts.shape[0]):
+            p = pts[npt, :]
+            for tri_no in range(len(self.tri_surf)):
+                if self._inside_tri(tri_no, p):
+                    ind[npt] = True
+                    break
+        return ind
+
+    def process_surface_elec(self, elec):
+        pass
+
+    def centre_voxels(self):
+        """Returns coordinates at the centres of voxels.
+
+        Returns
+        -------
+        tuple of 3 ndarray
+            coordinates X, Y, Z
+
+        """
+        return self.cell_centers[:, 0], self.cell_centers[:, 1], self.cell_centers[:, 2]
 
     def build_C(self, to_faces=True):
         if to_faces:
@@ -1546,7 +1713,6 @@ class MeshFV(SimplexMesh):
                 area.append(0.5 * np.linalg.norm(np.cross(v1, v2)))
 
                 self._save_edge_data(e, bary, order, triangles)
-
 
     def build_D(self):
         return self.face_divergence

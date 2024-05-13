@@ -32,22 +32,28 @@ import numpy as np
 import scipy.sparse as sp
 
 from pymmr.dc import GridDC
-from pymmr.finite_volume import calc_padding, GridFV, Solver
+from pymmr.finite_volume import calc_padding, GridFV, MeshFV, Solver
 
 
 # %% class GridMMR
 
-class GridMMR(GridDC):
+class GridMMR():
     """Grid for magnetometric resistivity modelling.
 
     Parameters
     ----------
-    x : array of float
-        Node coordinates along x (m)
-    y : array of float
-        Node coordinates along y (m)
-    z : array of float
-        Node coordinates along z (m)
+    param_fv : tuple
+        parameters to instantiate the finite volume mesh/grid
+        if tuple has 3 elements, a grid in built and the elements are
+            x : array of float
+                Node coordinates along x (m)
+            y : array of float
+                Node coordinates along y (m)
+            z : array of float
+                Node coordinates along z (m)
+        if tuple has 2 elements, a mesh in built and the elements are
+            pts : array of float
+            tet: array of int
     units : str, optional
         B-field units
     comm : MPI Communicator, optional
@@ -62,10 +68,19 @@ class GridMMR(GridDC):
 
     units_scaling_factors = {'pT': 1.e12, 'nT': 1.e9}
 
-    def __init__(self, x, y, z, units='pT', comm=None):
-        GridDC.__init__(self, x, y, z, units=units, comm=comm)
-        self.gdc = GridDC(x, y, z, units='mV', comm=comm)
-        self.gdc.verbose = False
+    def __init__(self, param_fv, units='pT', comm=None):
+        if len(param_fv) != 3:
+            raise ValueError('GridDC: param_fv must have 3 elements')
+
+        if param_fv[0].ndim == 1:
+            x, y, z = param_fv
+            self.fv = GridFV(x, y, z, comm=comm)
+        else:
+            pts, tet, surface = param_fv
+            self.fv = MeshFV(pts, tet, surface, comm=comm)
+
+        self.dc = GridDC(param_fv, units='mV', comm=comm)
+        self.dc.verbose = False
         self.acq_checked = False
         self._xs = None
         self._xo = None
@@ -78,24 +93,25 @@ class GridMMR(GridDC):
         self.nobs_xs = None
         self.nobs_mmr = 0
         self.units = units
+        self.verbose = False
 
     @property
     def apply_bc(self):
-        return self.gdc.apply_bc
+        return self.dc.apply_bc
 
     @apply_bc.setter
     def apply_bc(self, val):
-        if "gdc" in self.__dict__:
-            self.gdc.apply_bc = val
+        if "dc" in self.__dict__:
+            self.dc.apply_bc = val
 
     @property
     def in_inv(self):
-        return self.gdc.in_inv
+        return self.dc.in_inv
 
     @in_inv.setter
     def in_inv(self, val):
-        if 'gdc' in self.__dict__:
-            self.gdc.in_inv = val
+        if 'dc' in self.__dict__:
+            self.dc.in_inv = val
 
     @property
     def xs(self):
@@ -118,8 +134,8 @@ class GridMMR(GridDC):
         else:
             raise ValueError('Size of source term must be nsrc x 6')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
-               self.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
+            if self.fv.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
+               self.fv.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
                 raise ValueError('Source term outside grid')
         self._xs = tmp
         self.acq_checked = False
@@ -145,30 +161,37 @@ class GridMMR(GridDC):
         else:
             raise ValueError('Observation points should be nobs x 3')
         for ns in range(tmp.shape[0]):
-            if self.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False:
+            if self.fv.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False:
                 raise ValueError('Observation points outside grid')
-#            if tmp[ns, 2] < self.zc[0]:
-#                tmp[ns, 2] = self.zc[0]
         self._xo = tmp
         self.acq_checked = False
 
     @property
+    def cs(self):
+        """Intensity of source current."""
+        return self._cs
+
+    @cs.setter
+    def cs(self, val):
+        self._cs = val
+
+    @property
     def c1c2(self):
         """Coordinates of injection points for DC resistivity modelling (m)."""
-        return self.gdc.c1c2
+        return self.dc.c1c2
 
     @c1c2.setter
     def c1c2(self, val):
-        self.gdc.c1c2 = val
+        self.dc.c1c2 = val
 
     @property
     def p1p2(self):
         """Coordinates of measurement points for DC resistivity modelling (m)."""
-        return self.gdc.p1p2
+        return self.dc.p1p2
 
     @p1p2.setter
     def p1p2(self, val):
-        self.gdc.p1p2 = val
+        self.dc.p1p2 = val
 
     @property
     def units(self):
@@ -207,7 +230,7 @@ class GridMMR(GridDC):
         self._check_cs()
 
     def set_survey_ert(self, c1c2, p1p2, cs):
-        self.gdc.set_survey_ert(c1c2, p1p2, cs)
+        self.dc.set_survey_ert(c1c2, p1p2, cs)
 
     def check_acquisition(self):
         """Check consistency of `xs` and `xo`."""
@@ -275,42 +298,8 @@ class GridMMR(GridDC):
         `precon` et `do_perm` are used only with iterative solvers.
 
         """
-        self.gdc.set_solver(name, tol, max_it, precon, do_perm, comm)
-        if callable(name):
-            self.solver = name
-            self.tol = tol
-            self.max_it = max_it
-            self.want_pardiso = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif 'superlu' in name:
-            self.want_pardiso = False
-            self.want_superlu = True
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif 'pardiso' in name:
-            self.want_pardiso = True
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif 'umfpack' in name:
-            self.want_umfpack = True
-            self.want_superlu = False
-            self.want_pardiso = False
-            self.want_mumps = False
-        elif 'mumps' in name:
-            self.want_pardiso = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = True
-        else:
-            raise RuntimeError('Solver '+name+' not implemented')
-
-        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
-        self.precon = precon
-        self.do_perm = do_perm
-        self.comm = comm
+        self.dc.fv.set_solver(name, tol, max_it, precon, do_perm, comm)
+        self.fv.set_solver(name, tol, max_it, precon, do_perm, comm)
 
     def set_roi(self, roi):
         """Define region of interest for computing sensitivity or for inversion.
@@ -322,8 +311,8 @@ class GridMMR(GridDC):
         """
         # on applique la ROI à la grille DC car la grille MMR contient des
         # noeuds additionnels pour l'air
-        self.gdc.set_roi(roi)
-        self.ind_roi = self.gdc.ind_roi
+        self.dc.set_roi(roi)
+        self.ind_roi = self.dc.ind_roi
 
     def data_to_obs(self, data, field_data=True):
         """Rearrange data for inversion."""
@@ -338,6 +327,12 @@ class GridMMR(GridDC):
             d = np.r_[d, data[i1:i1+self.nobs_xs[i], :3].T.reshape(-1, 1)]
             i1 += self.nobs_xs[i]
         return d
+
+    def print_info(self, file=None):
+        self.dc.print_info(file)
+
+    def fromVTK(self, fieldname, filename):
+        return self.fv.fromVTK(fieldname, filename)
 
     def fwd_mod(self, sigma, calc_sens=False, keep_solver=False):
         """Forward modelling.
@@ -370,7 +365,7 @@ class GridMMR(GridDC):
         only once.  Option `keep_solver` allows this, matrix A being factorized
         when the solver is instantiated.
         """
-        if self.z.size == self.gdc.z.size:
+        if self.fv.nc == self.dc.fv.nc:
             self._add_air()
 
         if self.xs is None:
@@ -381,22 +376,22 @@ class GridMMR(GridDC):
 
         if self.verbose:
             print('\nForward modelling - Magnetometric resistivity')
-            self.gdc.print_info()
-            if self.solver_A is not None:
-                self.solver_A.print_info()
+            self.dc.print_info()
+            if self.fv.solver_A is not None:
+                self.fv.solver_A.print_info()
 
         if self.acq_checked is False:
             self.check_acquisition()
 
-        if self.in_inv and self.gdc.c1c2 is not None:
+        if self.in_inv and self.dc.c1c2 is not None:
             # joint inversion
-            res_dc = self.gdc.fwd_mod(sigma, calc_sens=calc_sens)
+            res_dc = self.dc.fwd_mod(sigma, calc_sens=calc_sens)
 
-        c1c2_u_save = copy.copy(self.gdc.c1c2_u)
-        cs12_u_save = copy.copy(self.gdc.cs12_u)
-        self.gdc.c1c2_u = self.xs_u
-        self.gdc.cs12_u = self.cs_u
-        self.gdc.sort_electrodes = False
+        c1c2_u_save = copy.copy(self.dc.c1c2_u)
+        cs12_u_save = copy.copy(self.dc.cs12_u)
+        self.dc.c1c2_u = self.xs_u
+        self.dc.cs12_u = self.cs_u
+        self.dc.sort_electrodes = False
 
         if self.verbose:
             print('  Computing interpolation matrices ... ', end='', flush=True)
@@ -408,36 +403,41 @@ class GridMMR(GridDC):
         # get current density from forward DC modeling
         if self.verbose:
             print('  Compute current density ... ', end='', flush=True)
-        _, Jdc = self.gdc.fwd_mod(sigma, calc_J=True)
-        u_dc = self.gdc.u.copy()
+        _, Jdc = self.dc.fwd_mod(sigma, calc_J=True)
+        u_dc = self.dc.u.copy()
 
         if self.verbose:
             print('done.')
 
-        Jx = Jdc[:self.gdc.nfx, :]
-        Jy = Jdc[self.gdc.nfx:(self.gdc.nfx+self.gdc.nfy), :]
-        Jz = Jdc[(self.gdc.nfx+self.gdc.nfy):, :]
+        Jx = Jdc[:self.dc.fv.nfx, :]
+        Jy = Jdc[self.dc.fv.nfx:(self.dc.fv.nfx+self.dc.fv.nfy), :]
+        Jz = Jdc[(self.dc.fv.nfx+self.dc.fv.nfy):, :]
 
         if self.verbose:
             print('  Solving MMR system')
 
         # create MMR source term from Jdc (J is 0 in air)
-        q = np.zeros((self.nf, self.xs_u.shape[0]))
+        q = np.zeros((self.fv.nf, self.xs_u.shape[0]))
         for i in range(self.xs_u.shape[0]):
-            q[(self.nfx-self.gdc.nfx):self.nfx, i] = Jx[:, i]
-            q[(self.nfx+self.nfy-self.gdc.nfy):(self.nfx+self.nfy), i] = Jy[:, i]
-            q[(self.nfx+self.nfy+self.nfz-self.gdc.nfz):, i] = Jz[:, i]
+            # q[(self.fv.nfx-self.dc.fv.nfx):self.fv.nfx, i] = Jx[:, i]
+            # q[(self.fv.nfx+self.fv.nfy-self.dc.fv.nfy):(self.fv.nfx+self.fv.nfy), i] = Jy[:, i]
+            # q[(self.fv.nfx+self.fv.nfy+self.fv.nfz-self.dc.fv.nfz):, i] = Jz[:, i]
 
-        if self.solver_A is None or keep_solver is False:
-            self.solver_A = Solver(self.get_solver_params(), self._build_A(), self.verbose)
-        if self.solver_A.A is None:
-            self.solver_A.A = self._build_A()
-        self.u = self.solver_A.solve(q)
+            q[:self.dc.fv.nfx, i] = Jx[:, i]
+            q[self.fv.nfx:(self.fv.nfx+self.dc.fv.nfy), i] = Jy[:, i]
+            q[(self.fv.nfx+self.fv.nfy):(self.fv.nfx+self.fv.nfy+self.dc.fv.nfz), i] = Jz[:, i]
+
+
+        if self.fv.solver_A is None or keep_solver is False:
+            self.fv.solver_A = Solver(self.fv.get_solver_params(), self._build_A(), self.verbose)
+        if self.fv.solver_A.A is None:
+            self.fv.solver_A.A = self._build_A()
+        self.u = self.fv.solver_A.solve(q)
 
         B = self.C_f @ self.u
-        Bx = self._units_scaling * B[:self.nex, :]
-        By = self._units_scaling * B[self.nex:(self.nex+self.ney), :]
-        Bz = self._units_scaling * B[(self.nex+self.ney):, :]
+        Bx = self._units_scaling * B[:self.fv.nex, :]
+        By = self._units_scaling * B[self.fv.nex:(self.fv.nex+self.fv.ney), :]
+        Bz = self._units_scaling * B[(self.fv.nex+self.fv.ney):, :]
 
         no = self.xo_all.shape[0]
         data = np.empty((no*q.shape[1], self.xo_all.shape[1]))
@@ -448,7 +448,7 @@ class GridMMR(GridDC):
         if self.in_inv is False:
             data = data[self.ind_back, :]
         else:
-            self.gdc.sort_electrodes = True
+            self.dc.sort_electrodes = True
             data = self.data_to_obs(data, False)
 
         if calc_sens:
@@ -457,26 +457,26 @@ class GridMMR(GridDC):
                 print('    Computing adjoint terms ... ', end='', flush=True)
 
             q = self._adj()
-            M = self.gdc.build_M(sigma)
-            q_a = self.gdc.D @ M @ q
+            M = self.dc.fv.build_M(sigma)
+            q_a = self.dc.fv.D @ M @ q
             t = np.max(np.abs(q_a), axis=0)
             q_a /= np.tile(t, (q_a.shape[0], 1))
 
             if self.verbose:
                 print('    Solving DC adjoint problem ... ', end='', flush=True)
-            self.gdc.fwd_mod(calc_J=False, q=q_a)
+            self.dc.fwd_mod(calc_J=False, q=q_a)
             if self.verbose:
                 print('done.')
 
-            q2 = self.gdc.u * np.tile(t, (self.gdc.u.shape[0], 1))
+            q2 = self.dc.u * np.tile(t, (self.dc.u.shape[0], 1))
 
             if self.verbose:
                 print('    Assembling matrices ... ', end='', flush=True)
-            sens = np.empty((self.gdc.ind_roi.size, self.nobs_mmr*3))
-            S = self.gdc.build_M(sigma*sigma)
+            sens = np.empty((self.dc.ind_roi.size, self.nobs_mmr*3))
+            S = self.dc.fv.build_M(sigma*sigma)
             Dm = sp.diags(1.0/sigma)
 
-            Gf = self.gdc.build_G_faces()
+            Gf = self.dc.fv.build_G_faces()
             for ns in range(self.xs_u.shape[0]):
                 self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2, Gf)
 
@@ -486,29 +486,29 @@ class GridMMR(GridDC):
         if self.verbose:
             print('End of modelling.')
 
-        self.gdc.c1c2_u = c1c2_u_save
-        self.gdc.cs12_u = cs12_u_save
+        self.dc.c1c2_u = c1c2_u_save
+        self.dc.cs12_u = cs12_u_save
         if calc_sens:
-            if self.in_inv and self.gdc.c1c2 is not None:
+            if self.in_inv and self.dc.c1c2 is not None:
                 data = np.r_[data, res_dc[0].reshape(-1, 1)]
                 sens = np.c_[sens, res_dc[1]]
             return data, sens
         else:
-            if self.in_inv and self.gdc.c1c2 is not None:
+            if self.in_inv and self.dc.c1c2 is not None:
                 data = np.r_[data, res_dc.reshape(-1, 1)]
             return data
 
     def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
-        return self.gdc.calc_WtW(wt, par, m_active, WGx, WGy, WGz)
+        return self.dc.calc_WtW(wt, par, m_active, WGx, WGy, WGz)
 
     def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
-        return self.gdc.calc_reg(Q, par, xc, xref, WGx, WGy, WGz, m_active)
+        return self.dc.calc_reg(Q, par, xc, xref, WGx, WGy, WGz, m_active)
 
     def distance_weighting(self, xo, beta):
-        return self.gdc.distance_weighting(xo, beta)
+        return self.dc.fv.distance_weighting(xo, beta)
 
     def get_roi_nodes(self):
-        return self.gdc.get_roi_nodes()
+        return self.dc.get_roi_nodes()
 
     def save_sensitivity(self, sens, basename):
         """Save sensitivity to VTK files.
@@ -520,7 +520,7 @@ class GridMMR(GridDC):
         basename : str
             basename for output files (1 per dipole).
         """
-        x, y, z = self.gdc.get_roi_nodes()
+        x, y, z = self.dc.get_roi_nodes()
         # grille temporaire pour sauvegarder sens
         g2 = GridFV(x, y, z)
         xo = self.xo[self.ind_s, :]
@@ -552,25 +552,27 @@ class GridMMR(GridDC):
 
     def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
         # add air layers
-        dz_air = calc_padding(self.gdc.hz[0], n_cells=n_crois_cells, factor=factor)
-        dz_air = np.r_[self.hz[0]+np.zeros((n_const_cells,)), dz_air]
+        dz_air = calc_padding(self.dc.fv.hz[-1], n_cells=n_crois_cells, factor=factor)
+        dz_air = np.r_[self.fv.hz[-1]+np.zeros((n_const_cells,)), dz_air]
         z_air = np.cumsum(dz_air)
-        self.z = np.r_[self.gdc.z[0] - z_air[::-1], self.gdc.z]
+        self.fv.z = np.r_[self.dc.fv.z, self.dc.fv.z[-1] + z_air]
 
     def _adj(self):
         Qx, Qy, Qz = self.Q
-        Jx = Qx @ self.C_f[:self.nex, :]
-        Jy = Qy @ self.C_f[self.nex:self.nex+self.ney, :]
-        Jz = Qz @ self.C_f[self.nex+self.ney:, :]
+        Jx = Qx @ self.C_f[:self.fv.nex, :]
+        Jy = Qy @ self.C_f[self.fv.nex:self.fv.nex+self.fv.ney, :]
+        Jz = Qz @ self.C_f[self.fv.nex+self.fv.ney:, :]
 
         J = sp.hstack((Jx.T, Jy.T, Jz.T))
 
-        ind_earth = np.r_[self.ind(np.arange(self.nx-1), np.arange(self.ny), np.where(self.zc > 0), 'fx'),
-                          self.nfx+self.ind(np.arange(self.nx), np.arange(self.ny-1), np.where(self.zc > 0), 'fy'),
-                          self.nfx+self.nfy+self.ind(np.arange(self.nx), np.arange(self.ny),
-                                                     np.where(self.z[1:-1] > 0), 'fz')]
+        ind_earth = np.r_[self.fv.ind(np.arange(self.fv.nx-1), np.arange(self.fv.ny),
+                                      np.where(self.fv.zc < self.dc.fv.z[-1]), 'fx'),
+                          self.fv.nfx+self.fv.ind(np.arange(self.fv.nx), np.arange(self.fv.ny-1),
+                                                  np.where(self.fv.zc < self.dc.fv.z[-1]), 'fy'),
+                          self.fv.nfx+self.fv.nfy+self.fv.ind(np.arange(self.fv.nx), np.arange(self.fv.ny),
+                                                              np.where(self.fv.z[1:-1] < self.dc.fv.z[-1]), 'fz')]
 
-        q = self.solver_A.solve(J)
+        q = self.fv.solver_A.solve(J)
         q = q[ind_earth, :]
         return q
 
@@ -579,11 +581,11 @@ class GridMMR(GridDC):
         M_e = M_c = 1. / (4.*np.pi*1e-7)   # ( mu_0 in H/m)
 
         # curl matrices
-        C_e = self.build_C()                # projecting from cell edges to faces
-        self.C_f = self.build_C(to_faces=False)  # projecting from cell faces to edges
+        C_e = self.fv.build_C()                # projecting from cell edges to faces
+        self.C_f = self.fv.build_C(to_faces=False)  # projecting from cell faces to edges
 
         # assemble
-        A = M_e * C_e @ self.C_f - M_c * self.G @ self.D
+        A = M_e * C_e @ self.C_f - M_c * self.fv.G @ self.fv.D
 
         return A
 
@@ -592,9 +594,9 @@ class GridMMR(GridDC):
         Qy = []
         Qz = []
         for n in range(xo.shape[0]):
-            Qx.append(self.linear_interp(xo[n, 0], xo[n, 1], xo[n, 2], 'ex'))
-            Qy.append(self.linear_interp(xo[n, 0], xo[n, 1], xo[n, 2], 'ey'))
-            Qz.append(self.linear_interp(xo[n, 0], xo[n, 1], xo[n, 2], 'ez'))
+            Qx.append(self.fv.linear_interp(xo[n, 0], xo[n, 1], xo[n, 2], 'ex'))
+            Qy.append(self.fv.linear_interp(xo[n, 0], xo[n, 1], xo[n, 2], 'ey'))
+            Qz.append(self.fv.linear_interp(xo[n, 0], xo[n, 1], xo[n, 2], 'ez'))
         Qx = sp.vstack(Qx)
         Qy = sp.vstack(Qy)
         Qz = sp.vstack(Qz)
@@ -607,27 +609,28 @@ class GridMMR(GridDC):
             i0 = np.sum(self.nobs_xs[:n]*3)
         i1 = i0 + self.nobs_xs[n]*3
 
-        v = sp.diags(self.gdc.G @ u_dc[:, n])
+        v = sp.diags(self.dc.fv.G @ u_dc[:, n])
         Gc = v @ Gf
-        # Gc = self.gdc.build_G(self.gdc.G @ u_dc[:, n])
+        # Gc = self.dc.build_G(self.dc.G @ u_dc[:, n])
         A = -Dm @ Gc.T @ S
-        tmp = A @ q - A @ self.gdc.G @ q2
+        tmp = A @ q - A @ self.dc.fv.G @ q2
 
         mask_xs = self.mask[n*self.xo_all.shape[0]:(n+1)*self.xo_all.shape[0]]
         mask_xs = np.r_[mask_xs, mask_xs, mask_xs]
-        tmp = tmp[self.gdc.ind_roi, :]
+        tmp = tmp[self.dc.ind_roi, :]
         J[:, i0:i1] = self._units_scaling * tmp[:, mask_xs]
 
     def _check_cs(self):
         """Verify validity of current source intensity."""
-        if self._cs is None:
+        if self.cs is None:
             raise ValueError('Current source undefined')
-        if np.isscalar(self._cs):
-            self._cs = self._cs + np.zeros((self.xs.shape[0],))
-        elif isinstance(self._cs, np.ndarray):
-            if self._cs.ndim != 1:
-                self._cs = self._cs.flatten()
-            if self._cs.size != self.xs.shape[0]:
+        if np.isscalar(self.cs):
+            self.cs = self.cs + np.zeros((self.xs.shape[0],))
+        elif isinstance(self.cs, np.ndarray):
+            if self.cs.ndim != 1:
+                self.cs = self.cs.flatten()
+            if self.cs.size != self.xs.shape[0]:
                 raise ValueError('Number of current source should match number of source terms')
+
 
 

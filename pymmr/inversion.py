@@ -238,6 +238,33 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
     return x, error, it + 1
 
 
+def calc_WdW(wt, dobs, par):
+    """Compute data weighting matrix.
+
+    Parameters
+    ----------
+    wt : array_like
+        Weight in %.
+    dobs : array_like
+        Observed data.
+    par :
+        Weighting parameters.
+    Returns
+    -------
+    output : `csr_matrix`
+        Data weighting matrix.
+    """
+    dtw = 0.01 * wt.flatten() * np.abs(dobs.flatten()) + par.e
+    dtw = 1. / dtw
+
+    # normalisation
+    dtw = dtw / dtw.max()
+
+    dtw[wt.flatten() > par.max_err] = 0.0
+
+    return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
+
+
 def df_to_data(df):
     """Create namedtuple from DataFrame."""
 
@@ -423,14 +450,14 @@ class Inversion:
         self.start_from_chkpt = False
 
     def run(
-        self,
-        g,
-        m_ref,
-        data_mmr=None,
-        data_ert=None,
-        m0=None,
-        m_weight=None,
-        m_active=None,
+            self,
+            g,
+            m_ref,
+            data_mmr=None,
+            data_ert=None,
+            m0=None,
+            m_weight=None,
+            m_active=None,
     ):
         """Run inversion.
 
@@ -539,7 +566,7 @@ class Inversion:
             if self.model_weighting == "distance":
                 print("      Distance weighting β: {0:g}".format(self.beta_dw))
             print("    Conductivity bounds: {0:g} < 𝜎 < {1:g}".format(self.sigma_min, self.sigma_max))
-            g.solver_A.print_info()
+            g.fv.solver_A.print_info()
             if self.checkpointing:
                 print("    Checkpointing: ON")
             else:
@@ -557,7 +584,7 @@ class Inversion:
                         xo = np.unique(np.r_[g.p1p2[:, :3], g.p1p2[:, 3:]], axis=0)
                     else:
                         xo = np.unique(np.r_[xo, g.p1p2[:, :3], g.p1p2[:, 3:]], axis=0)
-                m_weight = g.distance_weighting(xo, self.beta_dw)
+                m_weight = g.fv.distance_weighting(xo, self.beta_dw)
             else:
                 m_weight = np.ones(m_ref.shape)
         if m_active is None:
@@ -592,7 +619,7 @@ class Inversion:
 
         WTW = g.calc_WtW(m_weight, self, m_active)
         if "variance" in self.data_weighting:
-            D = g.calc_WdW(wt, dobs, self)
+            D = calc_WdW(wt, dobs, self)
         elif "*" in self.data_weighting:
             D = sp.eye(dobs.size)
         else:
