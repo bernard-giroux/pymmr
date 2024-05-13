@@ -73,11 +73,9 @@ class GridMMR():
             raise ValueError('GridDC: param_fv must have 3 elements')
 
         if param_fv[0].ndim == 1:
-            x, y, z = param_fv
-            self.fv = GridFV(x, y, z, comm=comm)
+            self.fv = GridFV(param_fv, comm=comm)
         else:
-            pts, tet, surface = param_fv
-            self.fv = MeshFV(pts, tet, surface, comm=comm)
+            self.fv = MeshFV(param_fv, comm=comm)
 
         self.dc = GridDC(param_fv, units='mV', comm=comm)
         self.dc.verbose = False

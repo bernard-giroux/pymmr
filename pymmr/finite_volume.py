@@ -391,12 +391,14 @@ class GridFV(BaseFV):
 
     Parameters
     ----------
-    x : array_like
-        Node coordinates along x
-    y : array_like
-        Node coordinates along y
-    z : array_like
-        Node coordinates along z
+    param: tuple
+        parameters to instantiate the finite volume grid
+        x : array_like
+            Node coordinates along x
+        y : array_like
+            Node coordinates along y
+        z : array_like
+            Node coordinates along z
     comm : MPI Communicator, optional
         If None, use MPI_COMM_WORLD
 
@@ -407,8 +409,9 @@ class GridFV(BaseFV):
 
     """
 
-    def __init__(self, x, y, z, comm=None):
+    def __init__(self, param, comm=None):
         BaseFV.__init__(self, comm)
+        x, y, z = param
         self.x = x
         self.y = y
         self.z = z
@@ -1568,14 +1571,19 @@ class MeshFV(BaseFV, SimplexMesh):
 
     Parameters
     ----------
-    pts : array_like
-        Coordinates of the nodes making the mesh
-    tet : array_like of int
-        Indices of the nodes forming the tetrahedra
+    param: tuple
+        parameters to instantiate the finite volume mesh
+        pts : array_like
+            Coordinates of the nodes making the mesh
+        tet : array_like of int
+            Indices of the nodes forming the tetrahedra
+        tri_surf : array_like of int
+            Indices of the nodes forming the triangulated surface of the ground
     """
 
-    def __init__(self, pts, tet, tri_surf, comm=None):
+    def __init__(self, param, comm=None):
         BaseFV.__init__(self, comm)
+        pts, tet, tri_surf = param
         SimplexMesh.__init__(self, pts, tet)
         self.tri_surf = np.array(tri_surf)
 
