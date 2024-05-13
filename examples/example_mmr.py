@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import sys
 
 import numpy as np
@@ -11,18 +12,21 @@ from pymmr.finite_volume import calc_padding, GridFV
 from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, DataMMR
 
+os.chdir('/Users/giroux/GitHub/pymmr/examples')
+
+# %%
 
 x = np.arange(-60.0 * 16, 60.01 * 16, 60)
 y = np.arange(-60.0 * 16, 60.01 * 16, 60)
-z = np.arange(0.0, 60.01 * 16, 60)
+z = np.arange(-60.0 * 16, 0.01, 60)
 
 pad = np.cumsum(calc_padding(60.0, 10))
 
 x = np.r_[x[0] - pad[::-1], x, x[-1] + pad]
 y = np.r_[y[0] - pad[::-1], y, y[-1] + pad]
-z = np.r_[z, z[-1] + pad]
+z = np.r_[z[0] - pad, z]
 
-g = GridMMR(x, y, z)
+g = GridMMR((x, y, z))
 g.verbose = True
 g.set_solver("mumps")
 
@@ -60,26 +64,29 @@ ind[14] = 500
 c1c2 = c1c2[ind, :]
 xo = xo[ind, :]
 
-g.xs = c1c2
-g.xo = xo
-
-g.cs = 1.0
+g.set_survey_mmr(xs=c1c2, xo=xo, cs=1.0)
 g.apply_bc = True
 
-sigma = 0.001 + np.zeros((g.gdc.nc,))
+sigma = 0.001 + np.zeros((g.dc.nc,))
 
-ix = np.where(np.logical_and(g.xc > -200, g.xc < 200))[0]
-iy = np.where(np.logical_and(g.yc > -200, g.yc < 200))[0]
-iz = np.where(np.logical_and(g.gdc.zc > 80, g.gdc.zc < 480))[0]
-sigma[g.gdc.ind(ix, iy, iz)] = 0.1
+ix = np.where(np.logical_and(g.fv.xc > -200, g.fv.xc < 200))[0]
+iy = np.where(np.logical_and(g.fv.yc > -200, g.fv.yc < 200))[0]
+iz = np.where(np.logical_and(g.dc.fv.zc < -80, g.dc.fv.zc > -480))[0]
+sigma[g.dc.fv.ind(ix, iy, iz)] = 0.1
+
+# %%
 
 dobs1 = g.fwd_mod(sigma)
+
+filename = "data_mmr.dat"
+header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz cs"
+np.savetxt(filename, np.c_[c1c2, xo, dobs1, np.ones((dobs1.shape[0],))], header=header, fmt="%g")
 
 # %%
 
 dobs = dobs1 + np.random.default_rng().normal(0.0, 0.03, dobs1.shape)
 
-data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs, wt=np.ones((3*dobs.shape[0],)))
+data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs, wt=np.ones((3*dobs.shape[0],)), cs=1.0, date=None)
 
 # %%
 inv = Inversion()
@@ -88,22 +95,22 @@ inv.beta = 2500
 inv.beta_min = 100
 inv.show_plots = True
 
-m_ref = 0.001 + np.zeros((g.gdc.nc,))
+m_ref = 0.001 + np.zeros((g.dc.nc,))
 
-g.set_roi([-400, 400, -400, 400, 0, 960])
+g.set_roi([-400, 400, -400, 400, -960, 0])
 g.verbose = False
 
 results = inv.run(g, m_ref, data_mmr=data_mmr, m_active=g.ind_roi)
 
-S_save, data_inv, rms = results
+sigma_inv, data_inv, rms, misfit, smy = results
 
-x, y, z = g.gdc.get_roi_nodes()
+x, y, z = g.dc.get_roi_nodes()
 g2 = GridFV(x, y, z)
 
 fields = {}
-for i in range(len(S_save)):
-    name = "iteration {0:d}".format(i + 1)
-    fields[name] = S_save[i]
+for n, sigma in enumerate(sigma_inv):
+    name = 'iteration {0:d}'.format(n+1)
+    fields[name] = sigma
 
 g2.toVTK(fields, "example_mmr")
 
