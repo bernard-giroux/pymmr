@@ -243,7 +243,7 @@ def calc_WdW(wt, dobs, par):
     Parameters
     ----------
     wt : array_like
-        Weight in %.
+        Measurement error in %.
     dobs : array_like
         Observed data.
     par :
@@ -252,6 +252,11 @@ def calc_WdW(wt, dobs, par):
     -------
     output : `csr_matrix`
         Data weighting matrix.
+
+    Notes
+    -----
+    The noise model is described in the book Eldad Haber (eq 6.6)
+    Computational Methods in Geophysical Electromagnetics
     """
     dtw = 0.01 * wt.flatten() * np.abs(dobs.flatten()) + par.e
     dtw = 1. / dtw
@@ -259,6 +264,7 @@ def calc_WdW(wt, dobs, par):
     # normalisation
     dtw = dtw / dtw.max()
 
+    # data with % error larger than cutoff have no weight
     dtw[wt.flatten() > par.max_err] = 0.0
 
     return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
@@ -396,10 +402,10 @@ class Inversion:
 
         # Data weighting
         self.e = 0.1
-        """epsilon min, to reduce weight of low values."""
+        """instrument error or error floor (in measurement units)."""
 
         self.max_err = 10.0
-        """Acceptable std-dev."""
+        """Acceptable measurement error in %."""
 
         self.beta_dw = 0.5
         """Beta for distance weighting."""
@@ -560,7 +566,7 @@ class Inversion:
             print("      Cooling factor: {0:g}".format(self.beta_cooling))
             print("      Min value: {0:g}".format(self.beta_min))
             print("    Data weighting: " + self.data_weighting)
-            print("      𝜖: {0:g}".format(self.e))
+            print("      error floor 𝜖: {0:g}".format(self.e))
             print("    Model weighting: " + self.model_weighting)
             if self.model_weighting == "distance":
                 print("      Distance weighting β: {0:g}".format(self.beta_dw))
