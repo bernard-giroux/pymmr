@@ -391,7 +391,8 @@ if __name__ == "__main__":
 
         g.verbose = False
         g.fv.solver_A.verbose = False
-        S_save, data_inv, rms, misfit, smy = inv.run(g, m_ref, data_mmr=data_mmr, data_ert=data_ert, m_active=m_active)
+        S_save, data_inv, rms, misfit, smy = inv.run(g, m0=m_ref, m_ref=m_ref, data_mmr=data_mmr, data_ert=data_ert,
+                                                     m_active=m_active)
 
         if verbose:
             endtime = datetime.now()

@@ -44,7 +44,10 @@ import warnings
 
 import numpy as np
 import scipy.sparse as sp
+import matplotlib
 import matplotlib.pyplot as plt
+default_backend = matplotlib.get_backend()
+
 
 # %%  Define namedtuple for input data
 
@@ -457,10 +460,10 @@ class Inversion:
     def run(
             self,
             g,
+            m0,
             m_ref,
             data_mmr=None,
             data_ert=None,
-            m0=None,
             m_weight=None,
             m_active=None,
     ):
@@ -470,14 +473,14 @@ class Inversion:
         ----------
         g : Grid instance
             GridMMR (or GridDC if `data_mmr` is None)
+        m0 : array_like
+            Initial model (equal to m_ref if None).
         m_ref : array_like
             Reference model (S/m).
         data_mmr : DataMMR, optional
             MMR data.  B-field units are pT. Data weight (std dev) in %.
         data_ert : DataERT, optional
             DC resistivity data.  Voltage should be in mV. Data weight (std dev) in %.
-        m0 : array_like, optional
-            Initial model (equal to m_ref if None).
         m_weight : array_like, optional
             Model weights.
         m_active : array_like, optional
@@ -508,6 +511,11 @@ class Inversion:
 
         if data_mmr is None and data_ert is None:
             raise ValueError("No data to invert")
+
+        if self.show_plots is False:
+            matplotlib.use("pdf")
+        else:
+            matplotlib.use(default_backend)
 
         dobs = None
         wt = None
@@ -597,7 +605,7 @@ class Inversion:
             # TODO: if m_active is not set, this should be transferred to g to use ROI
 
         if m0 is None:
-            m0 = m_ref.copy()
+            m0 = m_ref
 
         if self.param_transf == "conductivity":
             xt = m0[m_active].copy()
@@ -610,12 +618,20 @@ class Inversion:
         else:
             raise ValueError("Wrong value for param_transf")
 
+        np.seterr(divide='ignore')
         if self.param_transf == "log_conductivity":
+            ind = m_ref == 0.0
             m_ref = np.log(m_ref)
+            m_ref[ind] = 0.0
         elif self.param_transf == "log_resistivity":
+            ind = m_ref == 0.0
             m_ref = np.log(1 / m_ref)
+            m_ref[ind] = 0.0
         elif self.param_transf == "resistivity":
+            ind = m_ref == 0.0
             m_ref = 1 / m_ref
+            m_ref[ind] = 0.0
+        np.seterr(divide='warn')
 
         g.in_inv = True
         xc0 = xt.copy()
