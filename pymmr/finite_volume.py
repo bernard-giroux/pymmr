@@ -2227,11 +2227,13 @@ class Solver:
                     self.ctx.set_centralized_sparse(val)
                 else:
                     self.ctx.set_centralized_assembled_values(val.data)
-            if self.verbose:
-                print("    Factorizing matrix A ... ", end="", flush=True)
             if same_struct:
+                if self.verbose:
+                    print("    Factorizing matrix A ... ", end="", flush=True)
                 self.ctx.run(job=2)  # Factorization
             else:
+                if self.verbose:
+                    print("    Analyzing & factorizing matrix A ... ", end="", flush=True)
                 self.ctx.run(job=4)  # Analysis & Factorization
             if self.verbose:
                 print("done.")
