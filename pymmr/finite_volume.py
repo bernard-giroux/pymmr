@@ -2182,6 +2182,14 @@ class Solver:
 
     @A.setter
     def A(self, val):
+        # check if we have same structure
+        same_struct = False
+        if self._A is not None:
+            i1, j1, _ = sp.find(self._A)
+            i2, j2, _ = sp.find(val)
+            if i1.shape == i2.shape and j1.shape == j2.shape:
+                if np.all(i1 == i2) and np.all(j1 == j2):
+                    same_struct = True
         self._A = val
         if self.want_pastix:
             if self.pastix_solver is not None:
@@ -2212,11 +2220,17 @@ class Solver:
             if val.shape[0] != val.shape[1]:
                 raise RuntimeError("MUMPS: matrix must be square")
             if self.ctx.myid == 0:
-                self.ctx.set_shape(val.shape[0])
-                self.ctx.set_centralized_sparse(val)
+                if not same_struct:
+                    self.ctx.set_shape(val.shape[0])
+                    self.ctx.set_centralized_sparse(val)
+                else:
+                    self.ctx.set_centralized_assembled_values(val.data)
             if self.verbose:
                 print("    Factorizing matrix A ... ", end="", flush=True)
-            self.ctx.run(job=4)  # Analysis & Factorization
+            if same_struct:
+                self.ctx.run(job=2)  # Factorization
+            else:
+                self.ctx.run(job=4)  # Analysis & Factorization
             if self.verbose:
                 print("done.")
 
