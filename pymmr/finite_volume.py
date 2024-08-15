@@ -2030,6 +2030,8 @@ class Solver:
         elif solver_par[0] == "superlu":
             self.want_superlu = True
             use_solver(useUmfpack=False)
+            if A is None:
+                return
             if verbose:
                 print("    Factorizing matrix A ... ", end="", flush=True)
             solve = factorized(A.tocsc())
