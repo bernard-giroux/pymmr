@@ -63,7 +63,7 @@ xo = xo[ind, :]
 g.xs = c1c2
 g.xo = xo
 
-g.cs = 1.0
+g.set_survey_mmr(xs=c1c2, xo=xo, cs=1.0)
 g.apply_bc = True
 
 sigma = 0.001 + np.zeros((g.gdc.nc,))
@@ -79,7 +79,7 @@ dobs1 = g.fwd_mod(sigma)
 
 dobs = dobs1 + np.random.default_rng().normal(0.0, 0.03, dobs1.shape)
 
-data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs, wt=np.ones((3*dobs.shape[0],)))
+data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs, wt=np.ones((3*dobs.shape[0],)), cs=1.0, date=None)
 
 # %%
 inv = Inversion()
