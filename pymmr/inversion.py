@@ -822,7 +822,8 @@ class Inversion:
             print("End of inversion.")
 
         # inversion completed -> delete checkpoint file
-        os.remove(self.basename + "_chkpt.pkl")
+        if self.checkpointing:
+            os.remove(self.basename + "_chkpt.pkl")
 
         return sigma_inv, data_inv, rms, misfit, smy
 

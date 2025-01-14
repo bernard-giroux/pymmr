@@ -60,8 +60,8 @@ try:
 except ImportError:
     import types
     MPI = types.SimpleNamespace()
-    MPI.comm = types.SimpleNamespace()
-    MPI.comm.rank = None
+    MPI.COMM_WORLD = types.SimpleNamespace()
+    MPI.COMM_WORLD.rank = None
 
 try:
     import pypastix
@@ -163,8 +163,6 @@ class GridFV:
 
     def __init__(self, x, y, z, comm=None):
         if comm is None:
-            from mpi4py import MPI
-
             comm = MPI.COMM_WORLD
         self.comm = comm
         self.myid = comm.rank
