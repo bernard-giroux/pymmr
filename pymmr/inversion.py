@@ -733,9 +733,9 @@ class Inversion:
 
                 ax[7].text(0.2, 0.75, "RMS = {0:g}".format(rms[-1]))
                 ax[7].text(0.2, 0.60, "$\\beta$ = {0:g}".format(beta))
-                ax[7].text(0.2, 0.45, "$\|J\|$ = {0:g}".format(np.linalg.norm(J)))
-                ax[7].text(0.2, 0.30, "$\|WTW\|$ = {0:g}".format(sp.linalg.norm(WTW)))
-                ax[7].text(0.2, 0.15, "$\|D\|$ = {0:g}".format(sp.linalg.norm(D)))
+                ax[7].text(0.2, 0.45, "$\\|J\\|$ = {0:g}".format(np.linalg.norm(J)))
+                ax[7].text(0.2, 0.30, "$\\|WTW\\|$ = {0:g}".format(sp.linalg.norm(WTW)))
+                ax[7].text(0.2, 0.15, "$\\|D\\|$ = {0:g}".format(sp.linalg.norm(D)))
                 ax[7].axis("off")
                 ax[8].axis("off")
 
