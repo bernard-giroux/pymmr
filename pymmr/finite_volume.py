@@ -15,7 +15,7 @@ References:
 }
 
 @MastersThesis{lelievre03,
-  author       = {Peter George Lelievre},
+  author       = {Peter George Lelièvre},
   school       = {University of British Columbia},
   title        = {Forward modeling and inversion of geophysical magnetic data},
   year         = {2003}
