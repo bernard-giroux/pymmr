@@ -54,6 +54,9 @@ data_ert = df_to_data(df_ert)
 inv = Inversion()
 inv.max_it = 5
 inv.beta = 2500
+inv.alx = 0.5
+inv.aly = 0.5
+inv.alz = 0.5
 inv.beta_min = 100
 inv.show_plots = True
 
@@ -61,13 +64,13 @@ m_ref = 0.001 + np.zeros((g.dc.nc,))
 
 g.set_roi([-400, 400, -400, 400, -960, 0])
 
-results = inv.run(g, data_mmr=data_mmr, m_ref=m_ref, data_ert=data_ert, m_active=g.ind_roi)
+results = inv.run(g, data_mmr=data_mmr, m0=m_ref, m_ref=m_ref, data_ert=data_ert, m_active=g.ind_roi)
 
 sigma_inv, data_inv, rms, misfit, smy = results
 
 
 x, y, z = g.dc.get_roi_nodes()
-g2 = GridFV(x, y, z)
+g2 = GridFV((x, y, z))
 
 fields = {}
 for n, sigma in enumerate(sigma_inv):

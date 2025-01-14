@@ -159,12 +159,15 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
         cell_array = reader.GetOutput().GetCells()
         list_pts = vtk.vtkIdList()
         cell_id = vtk_to_numpy(reader.GetOutput().GetCellData().GetArray("CellEntityIds"))
+        tmp = vtk_to_numpy(reader.GetOutput().GetCellData().GetArray("Conductivity"))
+        sigma = []
 
         for n in range(cell_array.GetNumberOfCells()):
             if cell_array.GetCellSize(n) == 4:
                 # we have a tetrahedra
                 cell_array.GetCellAtId(n, list_pts)
                 tet.append([list_pts.GetId(nn) for nn in range(list_pts.GetNumberOfIds())])
+                sigma.append(tmp[n])
             elif cell_array.GetCellSize(n) == 3 and cell_id[n] == 1:
                 # we have a triangle forming the ground surface
                 cell_array.GetCellAtId(n, list_pts)
@@ -173,7 +176,7 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
                 raise ValueError('Cell size not valid')
 
         if return_sigma:
-            sigma = vtk_to_numpy(reader.GetOutput().GetCellData().GetArray("Conductivity"))
+            sigma = np.array(sigma)
             return grid_class((pts, tet, surface), comm=comm), sigma
         else:
             return grid_class((pts, tet, surface), comm=comm)

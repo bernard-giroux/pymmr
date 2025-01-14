@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<VTKFile type="RectilinearGrid" version="0.1" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
+  <RectilinearGrid WholeExtent="0 14 0 14 0 16">
+    <Piece Extent="0 14 0 14 0 16"                                                    >
+      <PointData>
+      </PointData>
+      <CellData>
+        <DataArray type="Float64" Name="Conductivity" format="appended" RangeMin="0.001"                RangeMax="0.1"                  offset="0"                   />
+      </CellData>
+      <Coordinates>
+        <DataArray type="Float32" Name="Array 0x1377e0a60" format="appended" RangeMin=""                     RangeMax=""                     offset="196"                 />
+        <DataArray type="Float32" Name="Array 0x1377dc8c0" format="appended" RangeMin=""                     RangeMax=""                     offset="288"                 />
+        <DataArray type="Float32" Name="Array 0x1377e5cb0" format="appended" RangeMin=""                     RangeMax=""                     offset="380"                 />
+      </Coordinates>
+    </Piece>
+  </RectilinearGrid>
+  <AppendedData encoding="base64">
+   _AQAAAACAAAAAYgAAfwAAAA==eJzt1DENgFAQREFpKCBBA67AARKwgRP6XxAcULG5y2wz5et2HPc1r8s0SJIkSZIkSZIkSZIkSZIkSZIkyYD79u78rJ7enz2SObv/i17tHsmc3f9Fr3aPZM7u/6JXu0cyZ/d/0avdI5mz+7/o1e6RzNn9X/Rq90iSZD0f3XveJQ==AQAAAACAAAA8AAAAMQAAAA==eJxjYLh0mIFhCxBPA+ICIDYB4g+HgGwgBoECJyAfiE2cgWwgngbEW4D4kjMA/xkPZw==AQAAAACAAAA8AAAAMQAAAA==eJxjYLh0mIFhCxBPA+ICIDYB4g+HgGwgBoECJyAfiE2cgWwgngbEW4D4kjMA/xkPZw==AQAAAACAAABEAAAAOAAAAA==eJxjYCg4wsCQCMRBQOwMxCZArArEYkDMDsQfDjMwXALiLUA8DYgLgNgEiD8cArKBmIEBAIVkEyM=
+  </AppendedData>
+</VTKFile>

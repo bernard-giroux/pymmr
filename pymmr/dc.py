@@ -43,7 +43,7 @@ except ImportError:
             return wrapper_jit
         return decorator_jit
 
-from pymmr.finite_volume import GridFV, MeshFV, Solver
+from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver, GridFVNodal
 
 # TODO: généraliser ROI pour voxels arbitraires
 
@@ -118,13 +118,20 @@ class GridDC:
     units_scaling_factors = {'mV': 1.e3, 'V': 1.0}
 
     def __init__(self, param_fv, units='mV', comm=None):
-        if len(param_fv) != 3:
-            raise ValueError('GridDC: param_fv must have 3 elements')
+        if len(param_fv) not in (2, 3):
+            raise ValueError('GridDC: param_fv must have 2 or 3 elements')
 
-        if param_fv[0].ndim == 1:
-            self.fv = GridFV(param_fv, comm)
+        if len(param_fv) == 3:
+            if param_fv[0].ndim == 1:
+                self.fv = GridFV(param_fv, comm)
+            else:
+                self.fv = MeshFV(param_fv, comm)
         else:
-            self.fv = MeshFV(param_fv, comm)
+            # we have 2
+            if param_fv[0].ndim == 1:
+                self.fv = Grid25FV(param_fv, comm)
+            else:
+                raise ValueError('2.5D not yet implemented for triangular meshes')
 
         self._c1c2 = None
         self._cs = None
@@ -216,7 +223,7 @@ class GridDC:
             if self.fv.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
                 (self.fv.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False
                  and not np.any(tmp[ns, 3:] == np.inf)):
-                    raise ValueError('Measurement point outside grid')
+                    raise ValueError('Measurement points ({0:f}, {1:f}, {2:f}) - ({3:f}, {4:f}, {5:f}) outside grid'.format(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2], tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]))
         self._p1p2 = tmp
         self.electrodes_sorted = False
         self.Q = None  # reset interpolation matrix because electrodes will be sorted
@@ -274,8 +281,8 @@ class GridDC:
         self.roi = roi
         xmin, xmax, ymin, ymax, zmin, zmax = roi
         if self.fv.is_inside(xmin, ymin, zmin) is False or \
-            self.fv.is_inside(xmax, ymax, zmax) is False:
-                raise ValueError('Region of interest extending beyond grid')
+           self.fv.is_inside(xmax, ymax, zmax) is False:
+            raise ValueError('Region of interest extending beyond grid')
 
         ind_x, = np.where(np.logical_and(self.fv.xc >= xmin, self.fv.xc < xmax))
         ind_y, = np.where(np.logical_and(self.fv.yc >= ymin, self.fv.yc < ymax))
@@ -440,16 +447,16 @@ class GridDC:
             self._build_q()
 
         if sigma is not None:
-            A, M = self._build_A(sigma)
+            A, M = self.fv.build_A(sigma)
             if self.fv.solver_A is None or keep_solver is False:
                 self.fv.solver_A = Solver(self.fv.get_solver_params(), A, self.verbose)
             else:
-                self.fv.solver_A.A = A
+                self.fv.A = A
         elif self.fv.solver_A is None:
             raise RuntimeError('Variable sigma should be given as input.')
 
         self.u = np.empty((self.fv.nc, self.q.shape[1]))
-        self.u[:, :c1c2.shape[0]] = self.fv.solver_A.solve(self.q[:, :c1c2.shape[0]])
+        self.u[:, :c1c2.shape[0]] = self.fv.solve(self.q[:, :c1c2.shape[0]])
 
         if self.p1p2 is None:
             data = None
@@ -700,18 +707,6 @@ class GridDC:
             filename = basename+'_Jz_dc_dip'+str(n+1)
             self.fv.toVTK({'Jz': jz}, filename, component='z', metadata=metadata)
 
-    def _build_A(self, sigma):
-        # Build LHS matrix
-        M = self.fv.build_M(sigma)
-        A = self.fv.D @ M @ self.fv.G
-        # I, J, V = sp.find(A[0, :])
-        # for jj in J:
-        #     A[0, jj] = 0.0
-        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
-        A[0, 0] += 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
-        
-        return A, M
-
     def _build_Q(self):
 
         # make sure electrodes are at least at the depth of the first cell center
@@ -751,7 +746,7 @@ class GridDC:
             Q = self.fv.linear_interp(c1c2[i, 0], c1c2[i, 1], c1c2[i, 2])
             if c1c2.shape[1] == 6:
                 Q -= self.fv.linear_interp(c1c2[i, 3], c1c2[i, 4], c1c2[i, 5])
-            q[:, i] = -cs[i] * Q.toarray() * iv
+            q[:, i] = cs[i] * Q.toarray() * iv
         self.q = q.tocsr()
         self.u0 = None
 
@@ -760,89 +755,47 @@ class GridDC:
 
         if self.keep_c1c2:
             c1c2 = self.c1c2_u.copy()
-            # keep track of electrodes below the surface
-            below_surf_c1 = self.fv.below_surface(c1c2[:, :3])
-            below_surf_c2 = self.fv.below_surface(c1c2[:, 3:6])
-            # make sure electrodes are at least at the depth of the first cell center
-            c1c2[:, :3] = self.fv.process_surface_elec(c1c2[:, :3])
-            c1c2[:, 3:6] = self.fv.process_surface_elec(c1c2[:, 3:6])
             if self.cs is None:
                 warnings.warn('Current source intensity undefined, using 1 A', RuntimeWarning, stacklevel=2)
                 self.cs = np.ones((c1c2.shape[0],))
             cs = self.cs12_u
         else:
             c1c2 = np.vstack((self.c12_u, self.p12_u))
-            # keep track of electrodes below the surface
-            below_surf_c1 = self.fv.below_surface(c1c2[:, :3])
-            # make sure electrodes are at least at the depth of the first cell center
-            c1c2[:, :3] = self.fv.process_surface_elec(c1c2[:, :3])
             cs = np.r_[self.cs_u, self.cp_u]
 
-        x, y, z = self.fv.centre_voxels()
         avg_cond = gmean(ref_model.flatten())
 
-        self.u0 = np.empty((self.fv.nc, c1c2.shape[0]))
+        self.u0 = self.fv.compute_u_homog(c1c2, avg_cond, cs)
 
-        # turn off warning b/c we get a divide by zero that we will fix later
-        np.seterr(divide='ignore')
-        if self.keep_c1c2:
-            for i in range(c1c2.shape[0]):
-                pve1 = np.sqrt((x - c1c2[i, 0])**2 + (y - c1c2[i, 1])**2 + (z - c1c2[i, 2])**2)
-                # norm of negative current electrode and 1st potential electrode
-                nve1 = np.sqrt((x - c1c2[i, 3])**2 + (y - c1c2[i, 4])**2 + (z - c1c2[i, 5])**2)
-                if below_surf_c1[i] or below_surf_c2[i]:
-                    # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0])**2 + (y - c1c2[i, 1])**2 + (z + c1c2[i, 2])**2)
-                    nveimag1 = np.sqrt((x - c1c2[i, 3])**2 + (y - c1c2[i, 4])**2 + (z + c1c2[i, 5])**2)
-                    gf = 4.0
-                else:
-                    pveimag1 = np.inf
-                    nveimag1 = np.inf
-                    gf = 2.0
-                self.u0[:, i] = cs[i]/(avg_cond*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
-                # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
+        if self.fv.dim == 3:
+            A, _ = self.fv.build_A(avg_cond)
+            self.q = sp.csr_matrix(A @ self.u0)
         else:
-            # we have just one current electrode
-            for i in range(c1c2.shape[0]):
-                pve1 = np.sqrt((x - c1c2[i, 0])**2 + (y - c1c2[i, 1])**2 + (z - c1c2[i, 2])**2)
-                if below_surf_c1[i]:
-                    # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0])**2 + (y - c1c2[i, 1])**2 + (z + c1c2[i, 2])**2)
-                    gf = 4.0
-                else:
-                    pveimag1 = np.inf
-                    gf = 2.0
-                self.u0[:, i] = cs[i] / (avg_cond*gf*np.pi) * (1./pve1 + 1./pveimag1).flatten()
-        np.seterr(divide='warn')
+            # 2.5 D
+            A0, _ = self.fv.build_A(avg_cond)
+            A0 = A0.tocsc()
+            sigma_diag = avg_cond * sp.diags(np.ones((self.fv.nc,)), 0,
+                                             shape=(self.fv.nc, self.fv.nc), format='csc')
+            # A = sp.csr_matrix(A0.shape)
+            A = np.zeros(A0.shape)
+            I = sp.eye(A.shape[0], A.shape[1])
+            for i in range(self.fv.k.size):
+                L = A0 + self.fv.k[i] ** 2 * sigma_diag
+                # A += self.fv.g[i] * sp.linalg.inv(L)
+                self.fv.solver_A.A = L
+                A += self.fv.g[i] * self.fv.solver_A.solve(I)
 
-        # check for singularities due to the source being on a node
-        for i in range(c1c2.shape[0]):
-            ind = np.nonzero(np.isinf(self.u0[:, i]))
-            if ind[0].size > 0:
-                for j in range(ind[0].size):
-                    ix, iy, iz = self.fv.revind(ind[0][j])
-                    if iz == 0:
-                        self.u0[ind[0][j], i] = np.mean([self.u0[self.fv.ind(ix+1, iy, iz), i],
-                                                         self.u0[self.fv.ind(ix, iy+1, iz), i],
-                                                         self.u0[self.fv.ind(ix, iy, iz+1), i],
-                                                         self.u0[self.fv.ind(ix-1, iy, iz), i],
-                                                         self.u0[self.fv.ind(ix, iy-1, iz), i]])
-                    else:
-                        self.u0[ind[0][j], i] = np.mean([self.u0[self.fv.ind(ix+1, iy, iz), i],
-                                                         self.u0[self.fv.ind(ix, iy+1, iz), i],
-                                                         self.u0[self.fv.ind(ix, iy, iz+1), i],
-                                                         self.u0[self.fv.ind(ix-1, iy, iz), i],
-                                                         self.u0[self.fv.ind(ix, iy-1, iz), i],
-                                                         self.u0[self.fv.ind(ix, iy, iz-1), i]])
-        M = avg_cond * sp.eye(self.fv.nf, self.fv.nf)
-        A = self.fv.D @ M @ self.fv.G
-        # I, J, V = sp.find(A[0, :])
-        # for jj in J:
-        #     A[0, jj] = 0.0
-        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
-        A[0, 0] += 1.0 / (self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
+            # import time
+            # t0 = time.time()
+            self.q = np.linalg.solve(A, self.u0)
+            # t1 = time.time() - t0
 
-        self.q = sp.csr_matrix(A @ self.u0)
+            # self.q = sp.linalg.spsolve(A, self.u0)
+            # t0 = time.time()
+            # self.fv.solver_A.A = sp.coo_matrix(A)
+            # self.q = self.fv.solver_A.solve(self.u0)
+            # t2 = time.time() - t0
+            # print('numpy:', t1, 'mumps', t2)
 
     def _sort_electrodes(self):
 
@@ -1106,7 +1059,7 @@ class VerticalDyke():
 
         Notes
         -----
-        c1c2 & p1p2 can have 3 or 6 columns, to represent poles or  dipoles, but
+        c1c2 & p1p2 can have 3 or 6 columns, to represent poles or dipoles, but
         must hold the same number of rows, which correspond to the possible
         c1p1, c1p2, c2p1, & c2p2 combinations.
 

@@ -35,7 +35,6 @@ For data weighting using the Jacobian
 
 
 
-
 """
 from collections import namedtuple
 import os
@@ -56,6 +55,23 @@ DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt cs date")
 
 
 # %% Some functions
+
+
+def _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta):
+    """Utility function for cglscd."""
+    z = M * r  # calcul du gradient modifié
+    rho = (r.T @ z).item()
+    if it == 0:
+        p = z.copy()
+    else:
+        beta_k = rho / rho_1  # calcul du coefficient beta_k
+        p = z + beta_k * p
+
+    q = D @ (J @ p)
+    alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
+    x += alpha_k * p  # calcul de la descente
+    zz -= alpha_k * q
+    return x, zz, rho, p
 
 
 def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WTWt=0):
@@ -134,14 +150,13 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
 
     zz = D @ (b - J @ x)  # initialisation du gradient
 
+    p = 0.0
     if reg_var == "model":
+        r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x + dxc))
         b1 = (((D * D) @ b).T @ J).T - beta * CTC @ dxc
         bnrm2 = np.linalg.norm(b1)
-
         if bnrm2 == 0.0:
             bnrm2 = 1.0
-        r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x + dxc))
-
         error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
 
         if error < tol:
@@ -149,18 +164,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
 
         rho_1 = 1.0
         for it in np.arange(max_it):
-            z = M * r  # calcul du gradient modifié
-            rho = (r.T @ z).item()
-            if it == 0:
-                p = z.copy()
-            else:
-                beta_k = rho / rho_1  # calcul du coefficient beta_k
-                p = z + beta_k * p
-
-            q = D @ (J @ p)
-            alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
-            x += alpha_k * p  # calcul de la descente
-            zz -= alpha_k * q
+            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
             r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x + dxc))  # gradient
             error = np.linalg.norm(r) / bnrm2
             if error <= tol:
@@ -171,6 +175,8 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
         r = P * ((zz.T @ D) @ J).T - beta * CTC @ x
         b1 = (((D * D) @ b).T @ J).T
         bnrm2 = np.linalg.norm(b1)
+        if bnrm2 == 0.0:
+            bnrm2 = 1.0
         error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
 
         if error < tol:
@@ -178,18 +184,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
 
         rho_1 = 1.0
         for it in np.arange(max_it):
-            z = M * r  # calcul du gradient modifié
-            rho = (r.T @ z).item()
-            if it == 0:
-                p = z.copy()
-            else:
-                beta_k = rho / rho_1  # calcul du coefficient beta_k
-                p = z + beta_k * p
-
-            q = D @ (J @ p)
-            alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
-            x += alpha_k * p  # calcul de la descente
-            zz -= alpha_k * q
+            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
             r = P * (((zz.T @ D) @ J).T - beta * CTC @ x)  # gradient
             error = np.linalg.norm(r) / bnrm2
             if error <= tol:
@@ -197,14 +192,11 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
             rho_1 = rho
 
     elif reg_var == "time-lapse":
+        r = P * (((zz.T @ D) @ J).T - alpha * WTWt @ dxc - CTC @ x)
         b1 = (((D * D) @ b).T @ J).T - alpha * WTWt @ dxc
         bnrm2 = np.linalg.norm(b1)
-
         if bnrm2 == 0.0:
             bnrm2 = 1.0
-
-        r = P * (((zz.T @ D) @ J).T - alpha * WTWt @ dxc - CTC @ x)
-
         error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
 
         if error < tol:
@@ -212,18 +204,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
 
         rho_1 = 1.0
         for it in np.arange(max_it):
-            z = M * r  # calcul du gradient modifié
-            rho = (r.T @ z).item()
-            if it == 0:
-                p = z.copy()
-            else:
-                beta_k = rho / rho_1  # calcul du coefficient beta_k
-                p = z + beta_k * p
-
-            q = D @ J @ p
-            alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
-            x += alpha_k * p  # calcul de la descente
-            zz -= alpha_k * q
+            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
             r = P * (((zz.T @ D) @ J).T - alpha * WTWt @ dxc - CTC @ x)  # calcul du gradient
             error = np.linalg.norm(r) / bnrm2
             if error <= tol:

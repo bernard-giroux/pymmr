@@ -92,6 +92,9 @@ data_mmr = DataMMR(xs=c1c2, xo=xo, data=dobs1, wt=np.ones((3*dobs1.shape[0],)), 
 # %%
 inv = Inversion()
 inv.max_it = 5
+inv.alx = 0.5
+inv.aly = 0.5
+inv.alz = 0.5
 inv.beta = 2500
 inv.beta_min = 100
 inv.show_plots = True
@@ -101,12 +104,12 @@ m_ref = 0.001 + np.zeros((g.dc.nc,))
 g.set_roi([-400, 400, -400, 400, -960, 0])
 g.verbose = False
 
-results = inv.run(g, m_ref, data_mmr=data_mmr, m_active=g.ind_roi)
+results = inv.run(g, m0=m_ref, m_ref=m_ref, data_mmr=data_mmr, m_active=g.ind_roi)
 
 sigma_inv, data_inv, rms, misfit, smy = results
 
 x, y, z = g.dc.get_roi_nodes()
-g2 = GridFV(x, y, z)
+g2 = GridFV((x, y, z))
 
 fields = {}
 for n, sigma in enumerate(sigma_inv):
