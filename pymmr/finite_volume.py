@@ -60,9 +60,20 @@ except ImportError:
     has_umfpack = False
 
 try:
-    import mumps
+    from mpi4py import MPI  # mpi only needed with mumps
+    has_mpi4py = True
+except ImportError:
+    has_mpi4py = False
+    import types
+    MPI = types.SimpleNamespace()
+    MPI.comm = types.SimpleNamespace()
+    MPI.comm.rank = None
 
+try:
+    import mumps
     has_mumps = True
+    if not has_mpi4py:
+        has_mumps = False
 except ImportError:
     # except ImportError as err:
     #     print(err)
@@ -231,8 +242,6 @@ class BaseFV:
 
     def __init__(self, comm=None):
         if comm is None:
-            from mpi4py import MPI
-
             comm = MPI.COMM_WORLD
         self.comm = comm
         self.myid = comm.rank
