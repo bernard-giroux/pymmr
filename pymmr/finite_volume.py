@@ -60,25 +60,21 @@ try:
 except ImportError:
     has_umfpack = False
 
+has_mumps = False
 try:
     from mpi4py import MPI  # mpi only needed with mumps
-    has_mpi4py = True
+
+    try:
+        import mumps
+        has_mumps = True
+    except ImportError:
+        pass
+
 except ImportError:
-    has_mpi4py = False
     import types
     MPI = types.SimpleNamespace()
-    MPI.comm = types.SimpleNamespace()
-    MPI.comm.rank = None
-
-try:
-    import mumps
-    has_mumps = True
-    if not has_mpi4py:
-        has_mumps = False
-except ImportError:
-    # except ImportError as err:
-    #     print(err)
-    has_mumps = False
+    MPI.COMM_WORLD = types.SimpleNamespace()
+    MPI.COMM_WORLD.rank = None
 
 try:
     import pypastix
