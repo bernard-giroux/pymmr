@@ -15,7 +15,7 @@ References:
 }
 
 @MastersThesis{lelievre03,
-  author       = {Peter George Leli\`evre},
+  author       = {Peter George Lelievre},
   school       = {University of British Columbia},
   title        = {Forward modeling and inversion of geophysical magnetic data},
   year         = {2003}
@@ -37,30 +37,34 @@ from discretize import SimplexMesh
 
 try:
     import pypardiso
-
     has_pardiso = True
 except ImportError:
     has_pardiso = False
 
 try:
     import scikits.umfpack as um
-
     has_umfpack = True
 except ImportError:
     has_umfpack = False
 
+has_mumps = False
 try:
-    import mumps
+    from mpi4py import MPI  # mpi only needed with mumps
 
-    has_mumps = True
+    try:
+        import mumps
+        has_mumps = True
+    except ImportError:
+        pass
+
 except ImportError:
-    # except ImportError as err:
-    #     print(err)
-    has_mumps = False
+    import types
+    MPI = types.SimpleNamespace()
+    MPI.comm = types.SimpleNamespace()
+    MPI.comm.rank = None
 
 try:
     import pypastix
-
     has_pastix = True
 except ImportError:
     has_pastix = False
