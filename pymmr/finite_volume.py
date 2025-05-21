@@ -3266,7 +3266,7 @@ class Solver:
         if callable(solver_par[0]):
             # solveur itératif
 
-            slv = solver_par[0]
+            self.slv = solver_par[0]
             self.tol = solver_par[1]
             self.max_it = solver_par[2]
             self.precon = solver_par[3]
@@ -3302,7 +3302,7 @@ class Solver:
                 if self.verbose:
                     print("done.")
 
-            self.solver = lambda A, b: slv(A, b, x0=self.x0, tol=self.tol, max_iter=self.max_it, M=self.Mpre)
+            self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages
@@ -3598,6 +3598,7 @@ class Solver:
                 self.Mpre = sp.linalg.aslinearoperator(Ainv)
             if self.verbose:
                 print("done.")
+        self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
 
     def _solve_mumps(self, A, b):
         if self.ctx.myid == 0:
@@ -3619,7 +3620,7 @@ class Solver:
         elif self.ctx is not None:
             print("    Solver: MUMPS")
         else:
-            print("    Solver: " + self.solver.__name__)
+            print("    Solver: " + self.slv.__name__)
             print("      max_it: " + str(self.max_it))
             print("      tolerance: " + str(self.tol))
             if self.do_perm:
