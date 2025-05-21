@@ -12,9 +12,13 @@ x : easting
 y : northing
 z : elevation
 
+This coordinate system (elevation -> z positive upward) has implications on the 
+definition of the sign of current source in DC resistivity modeling, which is 
+opposite of the case where the z axis is depth (positive downward).
+
 References
 ----------
-    
+
 @book{haber2014computational,
   title={Computational methods in geophysical electromagnetics},
   author={Haber, Eldad},
@@ -281,7 +285,7 @@ class BaseFV:
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : bool, optional
-            Apply preconditionning.
+            Apply preconditioning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
         comm : MPI Communicator or None
@@ -1502,6 +1506,13 @@ class GridFV(BaseFV):
         return self.solver_A.solve(b)
 
     def compute_u_homog(self, c1c2, sigma, cs):
+        """Compute the potential at the center of the voxels for a given set of electrodes.
+        
+        Note
+        ----
+        Current intensity is multiplied by -1 because we are working with elevation (z positive upward) and first
+        electrode is the source (current "going down in the ground") and second is the sink (current "coming back")
+        """
         x, y, z = self.centre_voxels()
         u0 = np.empty((self.nc, c1c2.shape[0]))
         # turn off warning b/c we get a divide by zero that we will fix later
@@ -1527,7 +1538,7 @@ class GridFV(BaseFV):
                     pveimag1 = np.inf
                     nveimag1 = np.inf
                     gf = 2.0
-                u0[:, i] = cs[i] / (sigma*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
+                u0[:, i] = -cs[i] / (sigma*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
             # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
 
         elif c1c2.shape[1] == 3:
@@ -1545,7 +1556,7 @@ class GridFV(BaseFV):
                 else:
                     pveimag1 = np.inf
                     gf = 2.0
-                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
+                u0[:, i] = -cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
         else:
             raise ValueError("c1c2 must be either n x 3 or n x 6")
         np.seterr(divide='warn')
@@ -3278,7 +3289,7 @@ class Solver:
 
             if self.precon:
                 if self.verbose:
-                    print("  Computing preconditionning matrix ... ", end="", flush=True)
+                    print("  Computing preconditioning matrix ... ", end="", flush=True)
                 try:
                     self.Mpre = sp.linalg.spilu(self.A.tocsc())
                     self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
@@ -3372,9 +3383,9 @@ class Solver:
 
         Parameters
         ----------
-        rhs : arraylike
+        rhs : array_like
             right hand side term.
-        x0 : arraylike, optional
+        x0 : array_like, optional
             Initial solution initiale.
         verbose : bool, optional
             print info messages.
@@ -3575,7 +3586,7 @@ class Solver:
 
         if self.precon:
             if self.verbose:
-                print("  Computing preconditionning matrix ... ", end="", flush=True)
+                print("  Computing preconditioning matrix ... ", end="", flush=True)
             try:
                 self.Mpre = sp.linalg.spilu(self.A.tocsc())
                 self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
@@ -3616,9 +3627,9 @@ class Solver:
             else:
                 print("    Inverse Cuthill-McKee Permutation: not used")
             if self.precon:
-                print("    Preconditionning: used")
+                print("    Preconditioning: used")
             else:
-                print("    Preconditionning: not used")
+                print("    Preconditioning: not used")
 
 
 if __name__ == "__main__":
@@ -3643,4 +3654,3 @@ if __name__ == "__main__":
     C = mesh.build_C()
 
     mesh.toVTK(dict(), "/tmp/test_mesh")
-

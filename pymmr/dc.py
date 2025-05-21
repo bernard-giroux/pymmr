@@ -328,7 +328,7 @@ class GridDC:
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : bool, optional
-            Apply preconditionning.
+            Apply preconditioning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
         comm : MPI Communicator or None
@@ -510,7 +510,7 @@ class GridDC:
 
         elif calc_J:
             if self.verbose:
-                print('  Computing current density ...', end='', flush=True)
+                print('  Computing current density ... ', end='', flush=True)
             J = np.empty((self.fv.nf, self.q.shape[1]))
             for ns in range(self.q.shape[1]):
                 J[:, ns] = -M @ self.fv.G @ self.u[:, ns]
@@ -746,7 +746,8 @@ class GridDC:
             Q = self.fv.linear_interp(c1c2[i, 0], c1c2[i, 1], c1c2[i, 2])
             if c1c2.shape[1] == 6:
                 Q -= self.fv.linear_interp(c1c2[i, 3], c1c2[i, 4], c1c2[i, 5])
-            q[:, i] = cs[i] * Q.toarray() * iv
+            q[:, i] = -cs[i] * Q.toarray() * iv     # Note: -1 because we are working with elevation (z positive upward) and first
+            # electrode is the source (current "going down in the ground") and second is the sink (current "coming back")
         self.q = q.tocsr()
         self.u0 = None
 
