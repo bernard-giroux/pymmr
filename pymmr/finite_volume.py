@@ -12,8 +12,8 @@ x : easting
 y : northing
 z : elevation
 
-This coordinate system (elevation -> z positive upward) has implications on the 
-definition of the sign of current source in DC resistivity modeling, which is 
+This coordinate system (elevation -> z positive upward) has implications on the
+definition of the sign of current source in DC resistivity modeling, which is
 opposite of the case where the z axis is depth (positive downward).
 
 References
@@ -55,7 +55,7 @@ from discretize import SimplexMesh, TensorMesh
 try:
     import pypardiso
     has_pardiso = True
-except ImportError:
+except (ImportError, OSError) as e:
     has_pardiso = False
 
 try:
@@ -1507,7 +1507,7 @@ class GridFV(BaseFV):
 
     def compute_u_homog(self, c1c2, sigma, cs):
         """Compute the potential at the center of the voxels for a given set of electrodes.
-        
+
         Note
         ----
         Current intensity is multiplied by -1 because we are working with elevation (z positive upward) and first

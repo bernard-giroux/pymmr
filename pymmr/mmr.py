@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Module pour la modélisation et l'inversion en magnétorésistivité
+Module for magnetometric resistivity modelling
 
 @author: giroux
 
-Référence principale:
-Référence principale:
+Main reference:
 
 @Article{chen02b,
   author       = {Chen, Jiuping and Haber, Eldad and Oldenburg, Douglas W.},
@@ -207,9 +206,9 @@ class GridMMR():
 
         Parameters
         ----------
-        xs : array_like, optional
+        xs : array_like
             Coordinates of injection points (m).
-        xo : array_like, optional
+        xo : array_like
             Coordinates of measurement points (m).
         cs : scalar or array_like
             Intensity of current source
@@ -285,7 +284,7 @@ class GridMMR():
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : bool, optional
-            Apply preconditionning.
+            Apply preconditioning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
         comm : MPI Communicator or None
@@ -350,7 +349,7 @@ class GridMMR():
             components Bx, By & Bz (pT)
         sens : ndarray
             Sensitivity matrix if `calc_sens` is True.
-            
+
         Notes
         -----
         - If `xs` and `xo` have a different number of rows, the response is
@@ -400,7 +399,7 @@ class GridMMR():
 
         # get current density from forward DC modeling
         if self.verbose:
-            print('  Compute current density ... ', end='', flush=True)
+            print('  Computing current density ... ', end='', flush=True)
         _, Jdc = self.dc.fwd_mod(sigma, calc_J=True)
         u_dc = self.dc.u.copy()
 
