@@ -55,8 +55,11 @@ from discretize import SimplexMesh, TensorMesh
 try:
     import pypardiso
     has_pardiso = True
-except (ImportError, OSError) as e:
+except ImportError:
     has_pardiso = False
+except OSError as e:
+    print(e)
+    has_pardiso = False 
 
 try:
     import scikits.umfpack as um
