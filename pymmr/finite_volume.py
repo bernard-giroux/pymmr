@@ -58,8 +58,8 @@ try:
 except ImportError:
     has_pardiso = False
 except OSError as e:
-    print(e)
-    has_pardiso = False 
+    print("Warning, importing pypardiso failed:", e)
+    has_pardiso = False
 
 try:
     import scikits.umfpack as um
