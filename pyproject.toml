@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymmr"
+version = "0.0.1"
+authors = [
+  { name="Bernard Giroux", email="bernard.giroux@inrs.ca" },
+]
+description = "Code for magnetometric resistivity data modeling and inversion"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "GPL-3.0-or-later"
+license-files = ["LICEN[CS]E*"]
+
+[project.urls]
+Homepage = "https://github.com/bernard-giroux/pymmr"
+Issues = "https://github.com/bernard-giroux/pymmr/issues"
