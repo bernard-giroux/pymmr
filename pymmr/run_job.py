@@ -37,7 +37,7 @@ The keywords are :
 - **show plots** : Show plots during inversion
 - **save plots** : Save plots produced during inversion
 - **boundary correction** : Apply correction described in Pidlisecky et al. 2007
-- **compute current** : Compute and save current density (forward modelling)
+- **compute current** : Compute and save current density (dc forward modelling)
 - **compute sensitivity** : Compute and save sensitivity (forward modelling)
 - **units** : units of voltage for forward modelling, "mV" or "V"
 
@@ -101,7 +101,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 import vtk
-from vtk.util.numpy_support import vtk_to_numpy
+from vtk.util.numpy_support import vtk_to_numpy  # pyright: ignore[reportMissingImports]
 
 from pymmr.finite_volume import GridFV
 from pymmr.dc import GridDC
@@ -278,9 +278,9 @@ if __name__ == "__main__":
                 elif "data" in keyword.lower() and "weight" in keyword.lower():
                     inv.data_weighting = value
                 elif "checkpointing" in keyword.lower():
-                    inv.checkpointing = int(value)
+                    inv.checkpointing = bool(value)
                 elif "start" in keyword.lower() and "checkpoint" in keyword.lower():
-                    inv.start_from_chkpt = int(value)
+                    inv.start_from_chkpt = bool(value)
 
     # Done reading parameter file
 
@@ -328,7 +328,7 @@ if __name__ == "__main__":
             if verbose:
                 print("Saving sensitivity ... ", end="", flush=True)
             data, sens = data
-            g.save_sensivitity(sens, basename)
+            g.save_sensitivity(sens, basename)
             if verbose:
                 print("done.")
 
@@ -363,7 +363,7 @@ if __name__ == "__main__":
             if verbose:
                 print("Saving sensitivity ... ", end="", flush=True)
             data, sens = data
-            g.save_sensivitity(sens, basename)
+            g.save_sensitivity(sens, basename)
             if verbose:
                 print("done.")
         elif calc_J:

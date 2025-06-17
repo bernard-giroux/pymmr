@@ -44,7 +44,6 @@ from scipy.sparse.csgraph import reverse_cuthill_mckee
 from scipy.special import kv, k0
 from scipy.optimize import minimize
 
-
 import numba
 
 import vtk
@@ -269,11 +268,17 @@ class BaseFV:
 
     @property
     def A(self):
-        return self.solver_A.A
+        if self.solver_A is not None:
+            return self.solver_A.A
+        else:
+            return None
 
     @A.setter
     def A(self, val):
-        self.solver_A.A = val
+        if self.solver_A is not None:
+            self.solver_A.A = val
+        else:
+            raise RuntimeError("Solver not defined, cannot set A")
 
     def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
         """Define parameters of solver to be used during forward modelling.
@@ -830,7 +835,7 @@ class GridFV(BaseFV):
         iy = [0, 0]
         iz = [0, 0]
 
-        if np.isscalar(x) is True:
+        if np.isscalar(x):
             x = np.array([x])
             y = np.array([y])
             z = np.array([z])

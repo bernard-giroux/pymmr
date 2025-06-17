@@ -519,7 +519,7 @@ class GridMMR():
         """
         x, y, z = self.dc.get_roi_nodes()
         # grille temporaire pour sauvegarder sens
-        g2 = GridFV(x, y, z)
+        g2 = GridFV((x, y, z))
         xo = self.xo[self.ind_s, :]
 
         # make 1 file for each injection dipole
