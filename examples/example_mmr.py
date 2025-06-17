@@ -60,9 +60,6 @@ ind[14] = 500
 c1c2 = c1c2[ind, :]
 xo = xo[ind, :]
 
-g.xs = c1c2
-g.xo = xo
-
 g.set_survey_mmr(xs=c1c2, xo=xo, cs=1.0)
 g.apply_bc = True
 
