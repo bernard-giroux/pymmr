@@ -35,7 +35,6 @@ For data weighting using the Jacobian
 
 
 
-
 """
 from collections import namedtuple
 import os
@@ -44,7 +43,9 @@ import warnings
 
 import numpy as np
 import scipy.sparse as sp
+import matplotlib
 import matplotlib.pyplot as plt
+default_backend = matplotlib.get_backend()
 
 
 # %%  Define namedtuple for input data
@@ -54,6 +55,23 @@ DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt cs date")
 
 
 # %% Some functions
+
+
+def _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta):
+    """Utility function for cglscd."""
+    z = M * r  # calcul du gradient modifié
+    rho = (r.T @ z).item()
+    if it == 0:
+        p = z.copy()
+    else:
+        beta_k = rho / rho_1  # calcul du coefficient beta_k
+        p = z + beta_k * p
+
+    q = D @ (J @ p)
+    alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
+    x += alpha_k * p  # calcul de la descente
+    zz -= alpha_k * q
+    return x, zz, rho, p
 
 
 def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WTWt=0):
@@ -132,14 +150,13 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
 
     zz = D @ (b - J @ x)  # initialisation du gradient
 
+    p = 0.0
     if reg_var == "model":
+        r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x + dxc))
         b1 = (((D * D) @ b).T @ J).T - beta * CTC @ dxc
         bnrm2 = np.linalg.norm(b1)
-
         if bnrm2 == 0.0:
             bnrm2 = 1.0
-        r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x + dxc))
-
         error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
 
         if error < tol:
@@ -147,18 +164,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
 
         rho_1 = 1.0
         for it in np.arange(max_it):
-            z = M * r  # calcul du gradient modifié
-            rho = (r.T @ z).item()
-            if it == 0:
-                p = z.copy()
-            else:
-                beta_k = rho / rho_1  # calcul du coefficient beta_k
-                p = z + beta_k * p
-
-            q = D @ (J @ p)
-            alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
-            x += alpha_k * p  # calcul de la descente
-            zz -= alpha_k * q
+            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
             r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x + dxc))  # gradient
             error = np.linalg.norm(r) / bnrm2
             if error <= tol:
@@ -169,6 +175,8 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
         r = P * ((zz.T @ D) @ J).T - beta * CTC @ x
         b1 = (((D * D) @ b).T @ J).T
         bnrm2 = np.linalg.norm(b1)
+        if bnrm2 == 0.0:
+            bnrm2 = 1.0
         error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
 
         if error < tol:
@@ -176,18 +184,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
 
         rho_1 = 1.0
         for it in np.arange(max_it):
-            z = M * r  # calcul du gradient modifié
-            rho = (r.T @ z).item()
-            if it == 0:
-                p = z.copy()
-            else:
-                beta_k = rho / rho_1  # calcul du coefficient beta_k
-                p = z + beta_k * p
-
-            q = D @ (J @ p)
-            alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
-            x += alpha_k * p  # calcul de la descente
-            zz -= alpha_k * q
+            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
             r = P * (((zz.T @ D) @ J).T - beta * CTC @ x)  # gradient
             error = np.linalg.norm(r) / bnrm2
             if error <= tol:
@@ -195,14 +192,11 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
             rho_1 = rho
 
     elif reg_var == "time-lapse":
+        r = P * (((zz.T @ D) @ J).T - alpha * WTWt @ dxc - CTC @ x)
         b1 = (((D * D) @ b).T @ J).T - alpha * WTWt @ dxc
         bnrm2 = np.linalg.norm(b1)
-
         if bnrm2 == 0.0:
             bnrm2 = 1.0
-
-        r = P * (((zz.T @ D) @ J).T - alpha * WTWt @ dxc - CTC @ x)
-
         error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
 
         if error < tol:
@@ -210,18 +204,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
 
         rho_1 = 1.0
         for it in np.arange(max_it):
-            z = M * r  # calcul du gradient modifié
-            rho = (r.T @ z).item()
-            if it == 0:
-                p = z.copy()
-            else:
-                beta_k = rho / rho_1  # calcul du coefficient beta_k
-                p = z + beta_k * p
-
-            q = D @ J @ p
-            alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
-            x += alpha_k * p  # calcul de la descente
-            zz -= alpha_k * q
+            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
             r = P * (((zz.T @ D) @ J).T - alpha * WTWt @ dxc - CTC @ x)  # calcul du gradient
             error = np.linalg.norm(r) / bnrm2
             if error <= tol:
@@ -236,6 +219,39 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
         )
 
     return x, error, it + 1
+
+
+def calc_WdW(wt, dobs, par):
+    """Compute data weighting matrix.
+
+    Parameters
+    ----------
+    wt : array_like
+        Measurement error in %.
+    dobs : array_like
+        Observed data.
+    par :
+        Weighting parameters.
+    Returns
+    -------
+    output : `csr_matrix`
+        Data weighting matrix.
+
+    Notes
+    -----
+    The noise model is described in the book Eldad Haber (eq 6.6)
+    Computational Methods in Geophysical Electromagnetics
+    """
+    dtw = 0.01 * wt.flatten() * np.abs(dobs.flatten()) + par.e
+    dtw = 1. / dtw
+
+    # normalisation
+    dtw = dtw / dtw.max()
+
+    # data with % error larger than cutoff have no weight
+    dtw[wt.flatten() > par.max_err] = 0.0
+
+    return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
 
 
 def df_to_data(df):
@@ -370,10 +386,10 @@ class Inversion:
 
         # Data weighting
         self.e = 0.1
-        """epsilon min, to reduce weight of low values."""
+        """instrument error or error floor (in measurement units)."""
 
         self.max_err = 10.0
-        """Acceptable std-dev."""
+        """Acceptable measurement error in %."""
 
         self.beta_dw = 0.5
         """Beta for distance weighting."""
@@ -423,14 +439,14 @@ class Inversion:
         self.start_from_chkpt = False
 
     def run(
-        self,
-        g,
-        m_ref,
-        data_mmr=None,
-        data_ert=None,
-        m0=None,
-        m_weight=None,
-        m_active=None,
+            self,
+            g,
+            m0,
+            m_ref,
+            data_mmr=None,
+            data_ert=None,
+            m_weight=None,
+            m_active=None,
     ):
         """Run inversion.
 
@@ -438,14 +454,14 @@ class Inversion:
         ----------
         g : Grid instance
             GridMMR (or GridDC if `data_mmr` is None)
+        m0 : array_like
+            Initial model (equal to m_ref if None).
         m_ref : array_like
             Reference model (S/m).
         data_mmr : DataMMR, optional
             MMR data.  B-field units are pT. Data weight (std dev) in %.
         data_ert : DataERT, optional
             DC resistivity data.  Voltage should be in mV. Data weight (std dev) in %.
-        m0 : array_like, optional
-            Initial model (equal to m_ref if None).
         m_weight : array_like, optional
             Model weights.
         m_active : array_like, optional
@@ -476,6 +492,11 @@ class Inversion:
 
         if data_mmr is None and data_ert is None:
             raise ValueError("No data to invert")
+
+        if self.show_plots is False:
+            matplotlib.use("pdf")
+        else:
+            matplotlib.use(default_backend)
 
         dobs = None
         wt = None
@@ -534,12 +555,12 @@ class Inversion:
             print("      Cooling factor: {0:g}".format(self.beta_cooling))
             print("      Min value: {0:g}".format(self.beta_min))
             print("    Data weighting: " + self.data_weighting)
-            print("      𝜖: {0:g}".format(self.e))
+            print("      error floor 𝜖: {0:g}".format(self.e))
             print("    Model weighting: " + self.model_weighting)
             if self.model_weighting == "distance":
                 print("      Distance weighting β: {0:g}".format(self.beta_dw))
             print("    Conductivity bounds: {0:g} < 𝜎 < {1:g}".format(self.sigma_min, self.sigma_max))
-            g.solver_A.print_info()
+            g.fv.solver_A.print_info()
             if self.checkpointing:
                 print("    Checkpointing: ON")
             else:
@@ -557,7 +578,7 @@ class Inversion:
                         xo = np.unique(np.r_[g.p1p2[:, :3], g.p1p2[:, 3:]], axis=0)
                     else:
                         xo = np.unique(np.r_[xo, g.p1p2[:, :3], g.p1p2[:, 3:]], axis=0)
-                m_weight = g.distance_weighting(xo, self.beta_dw)
+                m_weight = g.fv.distance_weighting(xo, self.beta_dw)
             else:
                 m_weight = np.ones(m_ref.shape)
         if m_active is None:
@@ -565,7 +586,7 @@ class Inversion:
             # TODO: if m_active is not set, this should be transferred to g to use ROI
 
         if m0 is None:
-            m0 = m_ref.copy()
+            m0 = m_ref
 
         if self.param_transf == "conductivity":
             xt = m0[m_active].copy()
@@ -578,12 +599,20 @@ class Inversion:
         else:
             raise ValueError("Wrong value for param_transf")
 
+        np.seterr(divide='ignore')
         if self.param_transf == "log_conductivity":
+            ind = m_ref == 0.0
             m_ref = np.log(m_ref)
+            m_ref[ind] = 0.0
         elif self.param_transf == "log_resistivity":
+            ind = m_ref == 0.0
             m_ref = np.log(1 / m_ref)
+            m_ref[ind] = 0.0
         elif self.param_transf == "resistivity":
+            ind = m_ref == 0.0
             m_ref = 1 / m_ref
+            m_ref[ind] = 0.0
+        np.seterr(divide='warn')
 
         g.in_inv = True
         xc0 = xt.copy()
@@ -592,7 +621,7 @@ class Inversion:
 
         WTW = g.calc_WtW(m_weight, self, m_active)
         if "variance" in self.data_weighting:
-            D = g.calc_WdW(wt, dobs, self)
+            D = calc_WdW(wt, dobs, self)
         elif "*" in self.data_weighting:
             D = sp.eye(dobs.size)
         else:
@@ -739,7 +768,7 @@ class Inversion:
                 ax[7].axis("off")
                 ax[8].axis("off")
 
-                fig.suptitle(f"Iteration {i+1}")
+                fig.suptitle(f"Iteration {i + 1}")
                 fig.tight_layout()
                 if self.save_plots:
                     filename = self.basename + "_it{0:02d}".format(i + 1) + ".pdf"

@@ -5,8 +5,20 @@ Module for finite volume modeling
 
 @author: giroux
 
-References:
-    
+Notes
+-----
+This module assumes a cartesian coordinate system where
+x : easting
+y : northing
+z : elevation
+
+This coordinate system (elevation -> z positive upward) has implications on the
+definition of the sign of current source in DC resistivity modeling, which is
+opposite of the case where the z axis is depth (positive downward).
+
+References
+----------
+
 @book{haber2014computational,
   title={Computational methods in geophysical electromagnetics},
   author={Haber, Eldad},
@@ -29,16 +41,23 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import bicgstab, spsolve, use_solver, factorized
 from scipy.sparse.csgraph import reverse_cuthill_mckee
+from scipy.special import kv, k0
+from scipy.optimize import minimize
+
+import numba
 
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 
-from discretize import SimplexMesh
+from discretize import SimplexMesh, TensorMesh
 
 try:
     import pypardiso
     has_pardiso = True
 except ImportError:
+    has_pardiso = False
+except OSError as e:
+    print("Warning, importing pypardiso failed:", e)
     has_pardiso = False
 
 try:
@@ -66,7 +85,7 @@ except ImportError:
 try:
     import pypastix
     has_pastix = True
-except ImportError:
+except (ImportError, OSError):
     has_pastix = False
 
 
@@ -137,39 +156,98 @@ def _get_umf_family(A):
     return family, A_new
 
 
-# %% GridFV
+@numba.jit(numba.f8[:,:](numba.f8[:], numba.f8[:], numba.f8[:], numba.f8[:]), nopython=True)
+def tetra_coord(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray):
+    # Almost the same as Hugues' function,
+    # except it does not involve the homogeneous coordinates.
+    # v1 = b - a
+    # v2 = c - a
+    # v3 = d - a
+    # mat = np.array((v1,v2,v3)).T
+    mat = np.empty((3, 3))
+    mat[:, 0] = b - a
+    mat[:, 1] = c - a
+    mat[:, 2] = d - a
+    # mat is 3x3 here
+    return np.linalg.inv(mat)
 
 
-class GridFV:
-    """Class to manage rectilinear grids for finite volume modelling.
+@numba.jit(numba.f8(numba.f8, numba.f8, numba.f8, numba.f8, numba.f8, numba.f8), nopython=True)
+def triangle_area_2D(x1, y1, x2, y2, x3, y3):
+    return (x1 - x2) * (y2 - y3) - (x2 - x3) * (y1 - y2)
 
-    Parameters
-    ----------
-    x : array_like
-        Node coordinates along x
-    y : array_like
-        Node coordinates along y
-    z : array_like
-        Node coordinates along z
-    comm : MPI Communicator, optional
-        If None, use MPI_COMM_WORLD
 
-    Notes
-    -----
-    Voxels are sorted column major, i.e. x is the fast axis
-    (choice dictated by convention used by VTK).
+@numba.jit(numba.f8[:](numba.f8[:],numba.f8[:],numba.f8[:],numba.f8[:]), nopython=True)
+def barycentric(a: np.ndarray, b: np.ndarray, c: np.ndarray, p: np.ndarray):
+    ab = b - a
+    ac = c - a
+    m = np.cross(ab, ac)
+    x = np.abs(m[0])
+    y = np.abs(m[1])
+    z = np.abs(m[2])
+    if x >= y and x >= z:
+        nu = triangle_area_2D(p[1], p[2], b[1], b[2], c[1], c[2])
+        nv = triangle_area_2D(p[1], p[2], c[1], c[2], a[1], a[2])
+        ood = 1. / m[0]
+    elif y >= x and y >= z:
+        nu = triangle_area_2D(p[0], p[2], b[0], b[2], c[0], c[2])
+        nv = triangle_area_2D(p[0], p[2], c[0], c[2], a[0], a[2])
+        ood = 1. / m[1]
+    else:
+        nu = triangle_area_2D(p[0], p[1], b[0], b[1], c[0], c[1])
+        nv = triangle_area_2D(p[0], p[1], c[0], c[1], a[0], a[1])
+        ood = 1. / m[2]
+    u = nu * ood
+    v = nv * ood
+    w = 1.0 - u - v
+    return np.array([u, v, w])
 
+
+def inside_triangle_box(v1: np.ndarray, v2: np.ndarray, v3: np.ndarray, p: np.ndarray):
+    x_min = min((v1[0], v2[0], v3[0])) - 1.e-6
+    x_max = max((v1[0], v2[0], v3[0])) + 1.e-6
+    y_min = min((v1[1], v2[1], v3[1])) - 1.e-6
+    y_max = max((v1[1], v2[1], v3[1])) + 1.e-6
+    z_min = min((v1[2], v2[2], v3[2])) - 1.e-6
+    z_max = max((v1[2], v2[2], v3[2])) + 1.e-6
+
+    if p[0] < x_min or x_max < p[0] or p[1] < y_min or y_max < p[1] or p[2] < z_min or z_max < p[2]:
+        return False
+    else:
+        return True
+
+
+def inside_tetrahedron_box(v1: np.ndarray, v2: np.ndarray, v3: np.ndarray, v4: np.ndarray, p: np.ndarray):
+    x_min = min((v1[0], v2[0], v3[0], v4[0])) - 1.e-6
+    x_max = max((v1[0], v2[0], v3[0], v4[0])) + 1.e-6
+    y_min = min((v1[1], v2[1], v3[1], v4[1])) - 1.e-6
+    y_max = max((v1[1], v2[1], v3[1], v4[1])) + 1.e-6
+    z_min = min((v1[2], v2[2], v3[2], v4[2])) - 1.e-6
+    z_max = max((v1[2], v2[2], v3[2], v4[2])) + 1.e-6
+
+    if p[0] < x_min or x_max < p[0] or p[1] < y_min or y_max < p[1] or p[2] < z_min or z_max < p[2]:
+        return False
+    else:
+        return True
+
+# %%
+
+
+class BaseFV:
+    """Base class for finite volume modelling.
+
+        Parameters
+        ----------
+        comm : MPI Communicator, optional
+            If None, use MPI_COMM_WORLD
     """
 
-    def __init__(self, x, y, z, comm=None):
+    def __init__(self, comm=None):
         if comm is None:
             comm = MPI.COMM_WORLD
         self.comm = comm
+        self.dim = 0
         self.myid = comm.rank
-
-        self.x = x
-        self.y = y
-        self.z = z
         self.verbose = False
         self.solver = bicgstab
         self.tol = 1e-9
@@ -187,6 +265,200 @@ class GridFV:
         self.solver_A = None
         self.precon = False
         self.do_perm = False
+
+    @property
+    def A(self):
+        if self.solver_A is not None:
+            return self.solver_A.A
+        else:
+            return None
+
+    @A.setter
+    def A(self, val):
+        if self.solver_A is not None:
+            self.solver_A.A = val
+        else:
+            raise RuntimeError("Solver not defined, cannot set A")
+
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
+        """Define parameters of solver to be used during forward modelling.
+
+        Parameters
+        ----------
+        name : `string` or `callable`
+            If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
+            If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
+        tol : float, optional
+            Tolerance for the iterative solver
+        max_it : int, optional
+            Max nbr of iteration for the iterative solver
+        precon : bool, optional
+            Apply preconditioning.
+        do_perm : bool, optional
+            Apply inverse Cuthill-McKee permutation.
+        comm : MPI Communicator or None
+            for mumps solver
+
+        Notes
+        -----
+        `precon` et `do_perm` are used only with iterative solvers.
+        """
+        if callable(name):
+            self.solver = name
+            self.tol = tol
+            self.max_it = max_it
+            self.want_pardiso = False
+            self.want_pastix = False
+            self.want_superlu = False
+            self.want_umfpack = False
+            self.want_mumps = False
+        elif "superlu" in name:
+            self.want_pardiso = False
+            self.want_pastix = False
+            self.want_superlu = True
+            self.want_umfpack = False
+            self.want_mumps = False
+        elif "pardiso" in name:
+            self.want_superlu = False
+            self.want_pardiso = True
+            self.want_pastix = False
+            self.want_umfpack = False
+            self.want_mumps = False
+        elif "pastix" in name:
+            self.want_superlu = False
+            self.want_pastix = True
+            self.want_pardiso = False
+            self.want_umfpack = False
+            self.want_mumps = False
+        elif "umfpack" in name:
+            self.want_superlu = False
+            self.want_umfpack = True
+            self.want_pardiso = False
+            self.want_pastix = False
+            self.want_mumps = False
+        elif "mumps" in name:
+            self.want_superlu = False
+            self.want_pardiso = False
+            self.want_pastix = False
+            self.want_umfpack = False
+            self.want_mumps = True
+        else:
+            raise RuntimeError("Solver " + name + " not implemented")
+
+        # the requested solver might not be available, in which case we turned to the default but name was not changed
+        if self.want_superlu:
+            name = 'superlu'
+
+        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
+        self.precon = precon
+        self.do_perm = do_perm
+        self.comm = comm
+
+    def get_solver_params(self):
+        """Return parameters needed to instantiate Solver."""
+        if self.want_mumps:
+            return ("mumps",)
+        elif self.want_pardiso:
+            return ("pardiso",)
+        elif self.want_pastix:
+            return ("pastix",)
+        elif self.want_superlu:
+            return ("superlu",)
+        elif self.want_umfpack:
+            return ("umfpack",)
+        else:
+            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
+
+    @property
+    def want_pardiso(self):
+        """Using solver pardiso (if available)."""
+        return self._want_pardiso
+
+    @want_pardiso.setter
+    def want_pardiso(self, val):
+        if val is True and has_pardiso is False:
+            warnings.warn("Pardiso not available, default solver used.", RuntimeWarning, stacklevel=2)
+            self._want_pardiso = False
+            self.want_umfpack = True
+        else:
+            self._want_pardiso = val
+
+    @property
+    def want_pastix(self):
+        """Using solver pastix (if available)."""
+        return self._want_pastix
+
+    @want_pastix.setter
+    def want_pastix(self, val):
+        if val is True and has_pastix is False:
+            warnings.warn("Pastix not available, default solver used.", RuntimeWarning, stacklevel=2)
+            self._want_pastix = False
+            self.want_umfpack = True
+        else:
+            self._want_pastix = val
+
+    @property
+    def want_umfpack(self):
+        """Using solver umfpack (if available)."""
+        return self._want_umfpack
+
+    @want_umfpack.setter
+    def want_umfpack(self, val):
+        if val is True and has_umfpack is False:
+            warnings.warn("UMFPACK not available, default solver used.", RuntimeWarning, stacklevel=2)
+            self._want_umfpack = False
+            self.want_superlu = True
+        else:
+            self._want_umfpack = val
+
+    @property
+    def want_mumps(self):
+        """Using solver mumps (if available)."""
+        return self._want_mumps
+
+    @want_mumps.setter
+    def want_mumps(self, val):
+        if val is True and has_mumps is False:
+            warnings.warn("MUMPS not available, default solver used.", RuntimeWarning, stacklevel=2)
+            self._want_mumps = False
+            self.want_umfpack = True
+        else:
+            self._want_mumps = val
+
+
+# %% GridFV
+
+
+class GridFV(BaseFV):
+    """Class to manage rectilinear grids for finite volume modelling.
+
+    Parameters
+    ----------
+    param: tuple
+        parameters to instantiate the finite volume grid
+        x : array_like
+            Node coordinates along x
+        y : array_like
+            Node coordinates along y
+        z : array_like
+            Node coordinates along z
+    comm : MPI Communicator, optional
+        If None, use MPI_COMM_WORLD
+
+    Notes
+    -----
+    Voxels are sorted column major, i.e. x is the fast axis
+    (choice dictated by convention used by VTK).
+
+    """
+
+    def __init__(self, param, comm=None):
+        BaseFV.__init__(self, comm)
+        x, y, z = param
+        self.x = x
+        self.y = y
+        self.z = z
+        self.dim = 3
 
     def ind(self, i, j, k, component=None):
         """
@@ -342,7 +614,7 @@ class GridFV:
 
     @x.setter
     def x(self, val):
-        tmp = np.array(val, dtype=np.float64)
+        tmp = np.sort(np.array(val, dtype=np.float64))
         if tmp.ndim != 1:
             raise ValueError("1D array needed")
         if len(tmp) < 2:
@@ -361,7 +633,7 @@ class GridFV:
 
     @y.setter
     def y(self, val):
-        tmp = np.array(val, dtype=np.float64)
+        tmp = np.sort(np.array(val, dtype=np.float64))
         if tmp.ndim != 1:
             raise ValueError("1D array needed")
         if len(tmp) < 2:
@@ -380,7 +652,7 @@ class GridFV:
 
     @z.setter
     def z(self, val):
-        tmp = np.array(val, dtype=np.float64)
+        tmp = np.sort(np.array(val, dtype=np.float64))
         if tmp.ndim != 1:
             raise ValueError("1D array needed")
         if len(tmp) < 2:
@@ -427,21 +699,21 @@ class GridFV:
 
         Returns
         -------
-        ndarray nc x 3
+        tuple of 3 ndarray
             coordinates X, Y, Z
 
         """
         x = np.kron(np.ones((self.ny * self.nz,)), self.xc)
         y = np.kron(np.kron(np.ones((self.nz,)), self.yc), np.ones((self.nx,)))
         z = np.kron(self.zc, np.ones((self.nx * self.ny,)))
-        return np.c_[x, y, z]
+        return x, y, z
 
     def distance_weighting(self, xo, beta):
         """Calculate distance weighting matrix.
 
         Parameters
         ----------
-        xo : arraylike
+        xo : array_like
             coordinates of observation points.
         beta : float
             Détermine weighting intensity.
@@ -457,15 +729,13 @@ class GridFV:
 
         """
         dV = self.volume_voxels()
-        xyzc = self.centre_voxels()
+        xc, yc, zc = self.centre_voxels()
         R0 = 0.5 * dV.min() ** 0.33333333333333
         Q = np.zeros((self.nc,))
         for i in np.arange(xo.shape[0]):
-            R = np.sqrt(
-                (xyzc[:, 0] - xo[i, 0]) * (xyzc[:, 0] - xo[i, 0])
-                + (xyzc[:, 1] - xo[i, 1]) * (xyzc[:, 1] - xo[i, 1])
-                + (xyzc[:, 2] - xo[i, 2]) * (xyzc[:, 2] - xo[i, 2])
-            )
+            R = np.sqrt((xc - xo[i, 0]) * (xc - xo[i, 0]) +
+                        (yc - xo[i, 1]) * (yc - xo[i, 1]) +
+                        (zc - xo[i, 2]) * (zc - xo[i, 2]))
             R = (R + R0) ** 3
             R = (dV / R) ** 2
             Q += R
@@ -565,7 +835,7 @@ class GridFV:
         iy = [0, 0]
         iz = [0, 0]
 
-        if np.isscalar(x) is True:
+        if np.isscalar(x):
             x = np.array([x])
             y = np.array([y])
             z = np.array([z])
@@ -579,7 +849,7 @@ class GridFV:
                 continue
 
             im = np.argmin(np.abs(x[i] - xc))
-            if x[i] < xc[im]:
+            if x[i] <= xc[im] and im > 0:
                 ix[0] = im - 1
                 ix[1] = im
             else:
@@ -589,7 +859,7 @@ class GridFV:
             dx[1] = xc[ix[1]] - x[i]
 
             im = np.argmin(np.abs(y[i] - yc))
-            if y[i] < yc[im]:
+            if y[i] <= yc[im] and im > 0:
                 iy[0] = im - 1
                 iy[1] = im
             else:
@@ -599,7 +869,7 @@ class GridFV:
             dy[1] = yc[iy[1]] - y[i]
 
             im = np.argmin(np.abs(z[i] - zc))
-            if z[i] < zc[im]:
+            if z[i] <= zc[im] and im > 0:
                 iz[0] = im - 1
                 iz[1] = im
             else:
@@ -622,6 +892,35 @@ class GridFV:
             Q[i, self.ind(ix[1], iy[1], iz[1], component)] = (1 - dx[1] / Dx) * (1 - dy[1] / Dy) * (1 - dz[1] / Dz)
 
         return Q.tocsr()
+
+    def build_A(self, sigma):
+        """Build LHS matrix for DC resistivity forward modeling.
+
+        Parameters
+        ----------
+        sigma : array_like
+            conductivity model
+
+        Returns
+        -------
+        tuple of 2 matrices:
+            - A : LHS matrix
+            - M : matrix of harmonic average of sigma
+        """
+        # Build LHS matrix
+        if np.isscalar(sigma) is True:
+            M = sigma * sp.eye(self.nf, self.nf)
+        else:
+            M = self.build_M(sigma)
+        A = -self.D @ M @ self.G
+        # I, J, V = sp.find(A[0, :])
+        # for jj in J:
+        #     A[0, jj] = 0.0
+        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
+        A[0, 0] += 1.0 / self.volume_voxels()[0]
+
+        return A, M
+
 
     def build_D(self):
         """Construction of divergence matrix.
@@ -1173,6 +1472,125 @@ class GridFV:
             )
         )
 
+    def extract_Gxyz(self):
+        """Extract Gx, Gy & Gz from G.
+        """
+        Gx = self.G[:self.nfx, :]
+        Gy = self.G[self.nfx:(self.nfx + self.nfy), :]
+        Gz = self.G[(self.nfx + self.nfy):, :]
+        return Gx, Gy, Gz
+
+    def extract_xyz_faces(self, v):
+        if v.ndim == 1:
+            v = v.reshape(-1, 1)
+        return v[:self.nfx, :], v[self.nfx:(self.nfx+self.nfy), :], v[(self.nfx+self.nfy):, :]
+
+    def below_surface(self, pts):
+        """Return indices of electrodes that are not at the surface."""
+        return pts[:, 2] != self.z[-1]
+
+    def process_surface_elec(self, elec):
+        """Process surface Tx coordinate to make sure electrodes are at least at the depth of the first cell center.
+
+        Parameters
+        ----------
+        elec : ndarray
+            coordinates of electrodes, n x 3
+
+        Returns
+        -------
+        ndarray
+            coordinates after correction
+
+        Note
+        ----
+        Vertical axis is elevation, ie positive upwards.
+        """
+        ind = elec[:, 2] > self.zc[-1]
+        elec[ind, 2] = self.zc[-1]
+        return elec
+
+    def solve(self, b):
+        return self.solver_A.solve(b)
+
+    def compute_u_homog(self, c1c2, sigma, cs):
+        """Compute the potential at the center of the voxels for a given set of electrodes.
+
+        Note
+        ----
+        Current intensity is multiplied by -1 because we are working with elevation (z positive upward) and first
+        electrode is the source (current "going down in the ground") and second is the sink (current "coming back")
+        """
+        x, y, z = self.centre_voxels()
+        u0 = np.empty((self.nc, c1c2.shape[0]))
+        # turn off warning b/c we get a divide by zero that we will fix later
+        np.seterr(divide='ignore')
+        if c1c2.shape[1] == 6:
+            # keep track of electrodes below the surface
+            below_surf_c1 = self.below_surface(c1c2[:, :3])
+            below_surf_c2 = self.below_surface(c1c2[:, 3:6])
+            # make sure electrodes are at least at the depth of the first cell center
+            c1c2[:, :3] = self.process_surface_elec(c1c2[:, :3])
+            c1c2[:, 3:6] = self.process_surface_elec(c1c2[:, 3:6])
+
+            for i in np.arange(c1c2.shape[0]):
+                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z - c1c2[i, 2]) ** 2)
+                # norm of negative current electrode and 1st potential electrode
+                nve1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (y - c1c2[i, 4]) ** 2 + (z - c1c2[i, 5]) ** 2)
+                if below_surf_c1[i] or below_surf_c2[i]:
+                    # norm of imaginary positive current electrode and 1st potential electrode
+                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z + c1c2[i, 2]) ** 2)
+                    nveimag1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (y - c1c2[i, 4]) ** 2 + (z + c1c2[i, 5]) ** 2)
+                    gf = 4.0
+                else:
+                    pveimag1 = np.inf
+                    nveimag1 = np.inf
+                    gf = 2.0
+                u0[:, i] = -cs[i] / (sigma*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
+            # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
+
+        elif c1c2.shape[1] == 3:
+            # keep track of electrodes below the surface
+            below_surf_c1 = self.below_surface(c1c2)
+            # make sure electrodes are at least at the depth of the first cell center
+            c1c2 = self.process_surface_elec(c1c2)
+
+            for i in np.arange(c1c2.shape[0]):
+                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z - c1c2[i, 2]) ** 2)
+                if below_surf_c1[i]:
+                    # norm of imaginary positive current electrode and 1st potential electrode
+                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z + c1c2[i, 2]) ** 2)
+                    gf = 4.0
+                else:
+                    pveimag1 = np.inf
+                    gf = 2.0
+                u0[:, i] = -cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
+        else:
+            raise ValueError("c1c2 must be either n x 3 or n x 6")
+        np.seterr(divide='warn')
+
+        # check for singularities due to the source being on a node
+        for i in range(c1c2.shape[0]):
+            ind = np.nonzero(np.isinf(u0[:, i]))
+            if ind[0].size > 0:
+                for j in range(ind[0].size):
+                    ix, iy, iz = self.revind(ind[0][j])
+                    if iz == 0:
+                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix+1, iy, iz), i],
+                                                    u0[self.ind(ix, iy+1, iz), i],
+                                                    u0[self.ind(ix, iy, iz+1), i],
+                                                    u0[self.ind(ix-1, iy, iz), i],
+                                                    u0[self.ind(ix, iy-1, iz), i]])
+                    else:
+                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix+1, iy, iz), i],
+                                                    u0[self.ind(ix, iy+1, iz), i],
+                                                    u0[self.ind(ix, iy, iz+1), i],
+                                                    u0[self.ind(ix-1, iy, iz), i],
+                                                    u0[self.ind(ix, iy-1, iz), i],
+                                                    u0[self.ind(ix, iy, iz-1), i]])
+
+        return u0
+
     def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
         """
         Save a field in a vtk file.
@@ -1302,160 +1720,204 @@ class GridFV:
         else:
             return vtk_to_numpy(data)
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
-        """Define parameters of solver to be used during forward modelling.
+    def print_info(self, file=None):
+        print('    Grid: {0:d} x {1:d} x {2:d} voxels'.format(self.nx, self.ny, self.nz), file=file)
+        print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
+        print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
+        print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
+
+
+# %% GridFVnodal
+
+
+class GridFVNodal(BaseFV, TensorMesh):
+
+    def __init__(self, param, comm=None):
+        BaseFV.__init__(self, comm)
+        x, y, z = param
+        self.dim = 3
+        TensorMesh.__init__(self, (np.diff(x), np.diff(y), np.diff(z)), origin=(x[0], y[0], z[0]))
+
+    @property
+    def nc(self):
+        return self.n_cells
+
+    @property
+    def dim(self):
+        return self._dim
+
+    @dim.setter
+    def dim(self, dim):
+        self._dim = dim
+
+    @property
+    def xc(self):
+        return self.cell_centers_x
+
+    @property
+    def yc(self):
+        return self.cell_centers_y
+
+    @property
+    def zc(self):
+        return self.cell_centers_z
+
+
+    def build_A(self, sigma):
+        """Build LHS matrix for DC resistivity forward modeling.
 
         Parameters
         ----------
-        name : `string` or `callable`
-            If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
-            If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
-        tol : float, optional
-            Tolerance for the iterative solver
-        max_it : int, optional
-            Max nbr of iteration for the iterative solver
-        precon : bool, optional
-            Apply preconditionning.
-        do_perm : bool, optional
-            Apply inverse Cuthill-McKee permutation.
-        comm : MPI Communicator or None
-            for mumps solver
+        sigma : array_like
+            conductivity model
 
-        Notes
-        -----
-        `precon` et `do_perm` are used only with iterative solvers.
+        Returns
+        -------
+        tuple of 2 matrices:
+            - A : LHS matrix
+            - M : matrix of harmonic average of sigma
         """
-        if callable(name):
-            self.solver = name
-            self.tol = tol
-            self.max_it = max_it
-            self.want_pardiso = False
-            self.want_pastix = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif "superlu" in name:
-            self.want_pardiso = False
-            self.want_pastix = False
-            self.want_superlu = True
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif "pardiso" in name:
-            self.want_pardiso = True
-            self.want_pastix = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif "pastix" in name:
-            self.want_pastix = True
-            self.want_pardiso = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = False
-        elif "umfpack" in name:
-            self.want_umfpack = True
-            self.want_superlu = False
-            self.want_pardiso = False
-            self.want_pastix = False
-            self.want_mumps = False
-        elif "mumps" in name:
-            self.want_pardiso = False
-            self.want_pastix = False
-            self.want_superlu = False
-            self.want_umfpack = False
-            self.want_mumps = True
+        # Build LHS matrix
+        if np.isscalar(sigma) is True:
+            M = sigma * sp.eye(self.n_edges, self.n_edges)
         else:
-            raise RuntimeError("Solver " + name + " not implemented")
+            M = self.get_edge_inner_product(sigma)
+        Grad = self.nodal_gradient
+        A = Grad.T.tocsr() @ M @ Grad
 
-        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
-        self.precon = precon
-        self.do_perm = do_perm
-        self.comm = comm
-
-    def get_solver_params(self):
-        """Return parameters needed to instantiate Solver."""
-        if self.want_mumps:
-            return ("mumps",)
-        elif self.want_pardiso:
-            return ("pardiso",)
-        elif self.want_pastix:
-            return ("pastix",)
-        elif self.want_superlu:
-            return ("superlu",)
-        elif self.want_umfpack:
-            return ("umfpack",)
-        else:
-            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
-
-    @property
-    def want_pardiso(self):
-        """Using solver pardiso (if available)."""
-        return self._want_pardiso
-
-    @want_pardiso.setter
-    def want_pardiso(self, val):
-        if val is True and has_pardiso is False:
-            warnings.warn("Pardiso not available, default solver used.", RuntimeWarning, stacklevel=2)
-            self._want_pardiso = False
-        else:
-            self._want_pardiso = val
-
-    @property
-    def want_pastix(self):
-        """Using solver pastix (if available)."""
-        return self._want_pastix
-
-    @want_pastix.setter
-    def want_pastix(self, val):
-        if val is True and has_pastix is False:
-            warnings.warn("Pastix not available, default solver used.", RuntimeWarning, stacklevel=2)
-            self._want_pastix = False
-        else:
-            self._want_pastix = val
-
-    @property
-    def want_umfpack(self):
-        """Using solver umfpack (if available)."""
-        return self._want_umfpack
-
-    @want_umfpack.setter
-    def want_umfpack(self, val):
-        if val is True and has_umfpack is False:
-            warnings.warn("UMFPACK not available, default solver used.", RuntimeWarning, stacklevel=2)
-            self._want_umfpack = False
-        else:
-            self._want_umfpack = val
-
-    @property
-    def want_mumps(self):
-        """Using solver mumps (if available)."""
-        return self._want_mumps
-
-    @want_mumps.setter
-    def want_mumps(self, val):
-        if val is True and has_mumps is False:
-            warnings.warn("MUMPS not available, default solver used.", RuntimeWarning, stacklevel=2)
-            self._want_mumps = False
-        else:
-            self._want_mumps = val
+        A[0, 0] += 1.0 / self.volume_voxels()[0]
+        return A, M
 
 
 # %% MeshFV
 
 
-class MeshFV(SimplexMesh):
+class MeshFV(BaseFV, SimplexMesh):
     """Class to manage tetrahedral meshes for finite volume modelling.
 
     Parameters
     ----------
-    pts : array_like
-        Coordinates of the nodes making the mesh
-    tet : array_like on int
-        Indices of the nodes forming the tetrahedra
+    param: tuple
+        parameters to instantiate the finite volume mesh
+        pts : array_like
+            Coordinates of the nodes making the mesh
+        tet : array_like of int
+            Indices of the nodes forming the tetrahedra
+        tri_surf : array_like of int
+            Indices of the nodes forming the triangulated surface of the ground
     """
 
-    def __init__(self, pts, tet):
+    def __init__(self, param, comm=None):
+        BaseFV.__init__(self, comm)
+        pts, tet, tri_surf = param
         SimplexMesh.__init__(self, pts, tet)
+        self.tri_surf = np.array(tri_surf)
+        self.dim = 3
+        self.D = self.face_divergence
+        self.G = self.stencil_cell_gradient
+
+    @property
+    def nc(self):
+        return self.n_cells
+
+    @property
+    def dim(self):
+        return self._dim
+
+    @dim.setter
+    def dim(self, dim):
+        self._dim = dim
+
+    @property
+    def nf(self):
+        return self.n_faces
+
+    def is_inside(self, x, y, z):
+        """Check if point is inside mesh.
+
+        Parameters
+        ----------
+        x : float
+            coordinate along X.
+        y : float
+            coordinate along Y.
+        z : float
+            coordinate along Z.
+
+        Returns
+        -------
+        True if point is inside grid
+
+        """
+        p = np.array([x, y, z])
+        for i in range(self.n_cells):
+            if self._inside_tet(i, p):
+                return True
+        else:
+            return False
+
+    def below_surface(self, pts):
+        """Return indices of points that are not at the surface."""
+        ind = np.zeros((pts.shape[0],), dtype=bool)
+        for npt in range(pts.shape[0]):
+            p = pts[npt, :]
+            for tri_no in range(len(self.tri_surf)):
+                if self._inside_tri(tri_no, p):
+                    ind[npt] = True
+                    break
+        return ind
+
+    def process_surface_elec(self, elec, ind):
+        """Process surface Tx coordinate to make sure electrodes are at least at the depth of the first cell center.
+
+        Parameters
+        ----------
+        elec : ndarray
+            coordinates of electrodes, n x 3
+        ind : ndarray of bool
+            True for coordinates to process
+
+        Returns
+        -------
+        ndarray
+            coordinates after correction
+
+        Notes
+        -----
+        Vertical axis is elevation, ie positive upwards.
+        """
+        for n, i in enumerate(ind):
+            if i is True:
+                p = elec[n, :]
+                # find tetrahedron we are in
+                for t in range(self.n_cells):
+                    if self._inside_tet(t, p):
+                        # center of tet
+                        ve = 0.25 * (self.nodes[self.simplices[t, 0]] +
+                                     self.nodes[self.simplices[t, 1]] +
+                                     self.nodes[self.simplices[t, 2]] +
+                                     self.nodes[self.simplices[t, 3]])
+                        # distance between point and center
+                        v = ve - p
+                        # add 1/3 of distance to point
+                        elec[n, :] += 0.333 * v
+
+                        break
+        return elec
+
+    def centre_voxels(self):
+        """Returns coordinates at the centres of voxels.
+
+        Returns
+        -------
+        tuple of 3 ndarray
+            coordinates X, Y, Z
+
+        """
+        return self.cell_centers[:, 0], self.cell_centers[:, 1], self.cell_centers[:, 2]
+
+    def volume_voxels(self):
+        return self._cell_volumes
 
     def build_C(self, to_faces=True):
         if to_faces:
@@ -1549,7 +2011,6 @@ class MeshFV(SimplexMesh):
 
                 self._save_edge_data(e, bary, order, triangles)
 
-
     def build_D(self):
         return self.face_divergence
 
@@ -1561,10 +2022,95 @@ class MeshFV(SimplexMesh):
         M = self.average_cell_to_face
         if harmon:
             tmp = M @ (1.0 / v)
-            tmp.data = 1.0 / tmp.data
-            return tmp
+            return sp.diags(1.0 / tmp, format='csr')
         else:
             return M @ v
+
+    def build_A(self, sigma):
+        """Build LHS matrix for DC resistivity forward modeling.
+
+        Parameters
+        ----------
+        sigma : array_like
+            conductivity model
+
+        Returns
+        -------
+        tuple of 2 matrices:
+            - A : LHS matrix
+            - M : matrix of harmonic average of sigma
+        """
+        # Build LHS matrix
+        if np.isscalar(sigma) is True:
+            M = sigma * sp.eye(self.nf, self.nf)
+        else:
+            M = self.build_M(sigma)
+        A = -self.D @ M @ self.G
+        # I, J, V = sp.find(A[0, :])
+        # for jj in J:
+        #     A[0, jj] = 0.0
+        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
+        A[0, 0] += 1.0 / self.volume_voxels()[0]
+
+        return A, M
+
+    def compute_u_homog(self, c1c2, sigma, cs):
+        x, y, z = self.centre_voxels()
+        u0 = np.empty((self.nc, c1c2.shape[0]))
+        # turn off warning b/c we get a divide by zero that we will fix later
+        np.seterr(divide='ignore')
+        if c1c2.shape[1] == 6:
+            # keep track of electrodes below the surface
+            below_surf_c1 = self.below_surface(c1c2[:, :3])
+            below_surf_c2 = self.below_surface(c1c2[:, 3:6])
+            # make sure electrodes are at least at the depth of the first cell center
+            c1c2[:, :3] = self.process_surface_elec(c1c2[:, :3], np.logical_not(below_surf_c1))
+            c1c2[:, 3:6] = self.process_surface_elec(c1c2[:, 3:6], np.logical_not(below_surf_c2))
+
+            for i in np.arange(c1c2.shape[0]):
+                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z - c1c2[i, 2]) ** 2)
+                # norm of negative current electrode and 1st potential electrode
+                nve1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (y - c1c2[i, 4]) ** 2 + (z - c1c2[i, 5]) ** 2)
+                if below_surf_c1[i] or below_surf_c2[i]:
+                    # norm of imaginary positive current electrode and 1st potential electrode
+                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z + c1c2[i, 2]) ** 2)
+                    nveimag1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (y - c1c2[i, 4]) ** 2 + (z + c1c2[i, 5]) ** 2)
+                    gf = 4.0
+                else:
+                    pveimag1 = np.inf
+                    nveimag1 = np.inf
+                    gf = 2.0
+                u0[:, i] = cs[i] / (sigma*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
+            # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
+
+        elif c1c2.shape[1] == 3:
+            # keep track of electrodes below the surface
+            below_surf_c1 = self.below_surface(c1c2)
+            # make sure electrodes are at least at the depth of the first cell center
+            c1c2 = self.process_surface_elec(c1c2, np.logical_not(below_surf_c1))
+
+            for i in np.arange(c1c2.shape[0]):
+                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z - c1c2[i, 2]) ** 2)
+                if below_surf_c1[i]:
+                    # norm of imaginary positive current electrode and 1st potential electrode
+                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z + c1c2[i, 2]) ** 2)
+                    gf = 4.0
+                else:
+                    pveimag1 = np.inf
+                    gf = 2.0
+                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
+        else:
+            raise ValueError("c1c2 must be either n x 3 or n x 6")
+        np.seterr(divide='warn')
+
+        # check for singularities due to the source being on a tet center
+        for i in range(c1c2.shape[0]):
+            ind = np.nonzero(np.isinf(u0[:, i]))
+            if ind[0].size > 0:
+                raise NotImplementedError('now is the time to raise your sleeves')
+
+        return u0
+
 
     def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
 
@@ -1676,6 +2222,1014 @@ class MeshFV(SimplexMesh):
         writer.SetInputData(mesh)
         writer.Write()
 
+    def _inside_tet(self, tet_no, p):
+        v1 = self.nodes[self.simplices[tet_no, 0]]
+        v2 = self.nodes[self.simplices[tet_no, 1]]
+        v3 = self.nodes[self.simplices[tet_no, 2]]
+        v4 = self.nodes[self.simplices[tet_no, 3]]
+
+        # if not inside_tetrahedron_box(v1, v2, v3, v4, p):
+        #     return False
+
+        M1 = tetra_coord(v1, v2, v3, v4)
+        # apply the transform to P (v1 is the origin)
+        newp = M1.dot(p-v1)
+        # perform test
+        return np.all(newp >= 0.) and np.all(newp <= 1.) and np.sum(newp) <= 1.
+
+    def _inside_tri(self, tri_no, p):
+        v1 = np.array(self.nodes[self.tri_surf[tri_no, 0]])
+        v2 = np.array(self.nodes[self.tri_surf[tri_no, 1]])
+        v3 = np.array(self.nodes[self.tri_surf[tri_no, 2]])
+
+        if not inside_triangle_box(v1, v2, v3, p):
+            return False
+
+        b = barycentric(v1, v2, v3, p)
+        return b[1] >= 0. and b[2] >= 0. and (b[1] + b[2]) <= 1.
+
+    def print_info(self, file=None):
+        print('    Mesh: {0:d} voxels, {1:d} nodes'.format(len(self.simplices), len(self.nodes)), file=file)
+        # print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
+        # print('      Y min: {0:e}\tY max: {1:e}'.format(self.y[0], self.y[-1]), file=file)
+        # print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
+
+
+# %% GridFV
+
+
+class Grid25FV(BaseFV):
+    """Class to manage rectilinear grids for 2.5D finite volume modelling.
+
+    Parameters
+    ----------
+    param: tuple
+        parameters to instantiate the finite volume grid
+        x : array_like
+            Node coordinates along x
+        z : array_like
+            Node coordinates along z
+    comm : MPI Communicator, optional
+        If None, use MPI_COMM_WORLD
+
+    Notes
+    -----
+    Voxels are sorted column major, i.e. x is the fast axis
+    (choice dictated by convention used by VTK).
+
+    """
+
+    def __init__(self, param, comm=None):
+        BaseFV.__init__(self, comm)
+        x, z = param
+        self.x = x
+        self.z = z
+        self.k = np.array([0.0217102, 0.2161121, 1.0608400, 5.0765870])
+        self.g = np.array([0.0463660, 0.2365931, 1.0382080, 5.3648010])
+        self.dim = 2.5
+        self._A = None
+
+    def ind(self, i, j, k, component=None):
+        """
+        Returns the index of a voxel.
+
+        Parameters
+        ----------
+        i : int or array_like of int
+            indice(s) along x
+        j : int or array_like of int
+            indice(s) along y (ignored)
+        k : int or array_like of int
+            indice(s) along z
+        component : str, optional
+            component considered, possible values are:
+                - None: the method returns voxel index
+                - 'ex': component x defined on an edge
+                - 'ey': component y defined on an edge
+                - 'ez': component z defined on an edge
+                - 'fx': component x defined on a face
+                - 'fy': component y defined on a face
+                - 'fz': component z defined on a face
+        Returns
+        -------
+        int or array of int
+        """
+        if component is None:
+            nx = self.nx
+            nz = self.nz
+        elif component == "ex":
+            nx = self.nx
+            nz = self.nz - 1
+        elif component == "ey":
+            nx = self.nx - 1
+            nz = self.nz - 1
+        elif component == "ez":
+            nx = self.nx - 1
+            nz = self.nz
+        elif component == "fx":
+            nx = self.nx - 1
+            nz = self.nz
+        elif component == "fy":
+            nx = self.nx
+            nz = self.nz
+        elif component == "fz":
+            nx = self.nx
+            nz = self.nz - 1
+        else:
+            raise ValueError("unknown component")
+
+        if np.size(i) > 1:
+            i = np.array(i)
+            i = i.flatten()
+        if np.size(k) > 1:
+            k = np.array(k)
+            k = k.flatten()
+        if np.any(i < 0) or np.any(i >= nx) or np.any(k < 0) or np.any(k >= nz):
+            raise IndexError("Index outside grid")
+        if np.size(i) > 1 or np.size(k) > 1:
+            ii = np.kron(np.ones((np.size(k),), dtype=np.int64), i)
+            kk = np.kron(k, np.ones((np.size(i),), dtype=np.int64))
+            return np.sort(kk * nx + ii)
+        else:
+            return k * nx + i
+
+    def revind(self, ind, component=None):
+        """
+        Returns indices i, j, k of a voxel or of a component on a face
+        or an edge.
+
+        Parameters
+        ----------
+        ind : int
+            voxel index
+        component : str, optional
+            component considered, possible values are:
+                - None: voxel index
+                - 'ex': component x defined on an edge
+                - 'ey': component y defined on an edge
+                - 'ez': component z defined on an edge
+                - 'fx': component x defined on a face
+                - 'fy': component y defined on a face
+                - 'fz': component z defined on a face
+
+        Returns
+        -------
+        tuple of int
+
+        """
+        if component is None:
+            nx = self.nx
+        elif component == "ex":
+            nx = self.nx
+        elif component == "ey":
+            nx = self.nx - 1
+        elif component == "ez":
+            nx = self.nx - 1
+        elif component == "fx":
+            nx = self.nx - 1
+        elif component == "fy":
+            nx = self.nx
+        elif component == "fz":
+            nx = self.nx
+        else:
+            raise ValueError("unknown component")
+
+        k = int(ind / nx)
+        i = ind - k * nx
+        return i, 0, k
+
+    def __update_n(self):
+        if "_x" in self.__dict__ and "_z" in self.__dict__:
+            self.nx = len(self._x) - 1   # number of voxels along x
+            self.nz = len(self._z) - 1   # number of voxels along z
+            self.nc = self.nx * self.nz  # number of voxels
+            self.nfx = (self.nx - 1) * self.nz  # number of faces with normal vector along x
+            self.nfz = self.nx * (self.nz - 1)  # number of faces with normal vector along z
+            self.nf = self.nfx + self.nfz       # total number of faces
+            self.nex = self.nx * (self.nz - 1)  # number of edges with vector along x
+            self.nez = (self.nx - 1) * self.nz  # number of edges with vector along z
+            self.ne = self.nex + self.nez       # total number of edges
+
+            # Divergence & gradient matrices are precomputed because essentially always used
+            self.D = self.build_D()
+            self.G = self.build_G()
+
+    @property
+    def x(self):
+        """Node coordinates along x."""
+        return self._x
+
+    @x.setter
+    def x(self, val):
+        tmp = np.sort(np.array(val, dtype=np.float64))
+        if tmp.ndim != 1:
+            raise ValueError("1D array needed")
+        if len(tmp) < 2:
+            raise ValueError("2 nodes or more needed")
+
+        self._x = tmp
+        self.hx = np.diff(tmp)
+        self.xc = (tmp[1:] + tmp[:-1]) / 2
+        self.dx = np.diff(self.xc)
+        self.__update_n()
+
+    @property
+    def z(self):
+        """Node coordinates along z."""
+        return self._z
+
+    @z.setter
+    def z(self, val):
+        tmp = np.sort(np.array(val, dtype=np.float64))
+        if tmp.ndim != 1:
+            raise ValueError("1D array needed")
+        if len(tmp) < 2:
+            raise ValueError("2 nodes or more needed")
+
+        self._z = tmp
+        self.hz = np.diff(tmp)
+        self.zc = (tmp[1:] + tmp[:-1]) / 2
+        self.dz = np.diff(self.zc)
+        self.__update_n()
+
+    @property
+    def A(self):
+        # We must override this property in the 2.5D case
+        return self._A
+
+    @A.setter
+    def A(self, val):
+        self._A = val   # store "base" matrix A
+        self.solver_A.A = val   # set solver
+
+    def is_inside(self, x, y, z):
+        """Check if point is inside grid.
+
+        Parameters
+        ----------
+        x : float
+            coordinate along X.
+        y : float
+            coordinate along Y (ignored).
+        z : float
+            coordinate along Z.
+
+        Returns
+        -------
+        True if point is inside grid
+
+        """
+        return self.x[0] <= x <= self.x[-1] and self.z[0] <= z <= self.z[-1]
+
+    def volume_voxels(self):
+        """Returns the volume (area actually for 2.5D) of the voxels of the grid.
+
+        Returns
+        -------
+        ndarray
+            Volumes of voxels.
+
+        """
+        return np.kron(self.hz, self.hx)
+
+    def centre_voxels(self):
+        """Returns coordinates at the centres of voxels.
+
+        Returns
+        -------
+        tuple of 3 ndarray
+            coordinates X, Y, Z
+
+        Notes
+        -----
+        Y is returned for the method to be compatible with the 3D codebase.  It is set to 0
+        """
+        x = np.kron(np.ones((self.nz,)), self.xc)
+        z = np.kron(self.zc, np.ones((self.nx,)))
+        y = np.zeros(x.shape)
+        return x, y, z
+
+    def linear_interp(self, x, y, z, component=None):
+        """Calculate interpolation matrix.
+
+        Matrix that allows interpolating a variable defined at the voxel
+        centre, on a face, or on an edge, at arbitrary coordinates.
+
+        Parameters
+        ----------
+        x : float or array of float
+            coordinate along X.
+        y : float or array of float
+            coordinate along Y (ignored in 2.5D).
+        z : float or array of float
+            coordinate along Z.
+        component : str, optional
+            component considered, possible values are:
+                - None: voxel index
+                - 'ex': component x defined on une edge
+                - 'ey': component y defined on une edge
+                - 'ez': component z defined on une edge
+                - 'fx': component x defined on une face
+                - 'fy': component y defined on une face
+                - 'fz': component z defined on une face
+
+        Returns
+        -------
+        csr_matrix, npts x nc
+
+        Notes
+        -----
+        - If any coordinate is at infinity, the corresponding matrix element
+        is set to zero.
+        """
+        if component is None:
+            nx = self.nx
+            nz = self.nz
+            xc = self.xc
+            zc = self.zc
+        elif component == "ex":
+            nx = self.nx
+            nz = self.nz - 1
+            xc = self.xc
+            zc = self.z[1:-1]
+        elif component == "ey":
+            nx = self.nx - 1
+            nz = self.nz - 1
+            xc = self.x[1:-1]
+            zc = self.z[1:-1]
+        elif component == "ez":
+            nx = self.nx - 1
+            nz = self.nz
+            xc = self.x[1:-1]
+            zc = self.zc
+        elif component == "fx":
+            nx = self.nx - 1
+            nz = self.nz
+            xc = self.x[1:-1]
+            zc = self.zc
+        elif component == "fy":
+            nx = self.nx
+            nz = self.nz
+            xc = self.xc
+            zc = self.zc
+        elif component == "fz":
+            nx = self.nx
+            nz = self.nz - 1
+            xc = self.xc
+            zc = self.z[1:-1]
+        else:
+            raise ValueError("unknown component")
+
+        nc = nx * nz
+
+        dx = [0.0, 0.0]
+        dz = [0.0, 0.0]
+        ix = [0, 0]
+        iz = [0, 0]
+
+        if np.isscalar(x) is True:
+            x = np.array([x])
+            z = np.array([z])
+
+        Q = sp.lil_matrix((len(x), nc))
+        for i in range(len(x)):
+
+            if np.any(np.array([x[i], z[i]]) == np.inf):
+                # check if point at np.inf -> set Q to 0
+                Q[i, 0] = 0.0
+                continue
+
+            im = np.argmin(np.abs(x[i] - xc))
+            if x[i] <= xc[im] and im > 0:
+                ix[0] = im - 1
+                ix[1] = im
+            else:
+                ix[0] = im
+                ix[1] = im + 1
+            dx[0] = x[i] - xc[ix[0]]
+            dx[1] = xc[ix[1]] - x[i]
+
+            im = np.argmin(np.abs(z[i] - zc))
+            if z[i] <= zc[im] and im > 0:
+                iz[0] = im - 1
+                iz[1] = im
+            else:
+                iz[0] = im
+                iz[1] = im + 1
+            dz[0] = z[i] - zc[iz[0]]
+            dz[1] = zc[iz[1]] - z[i]
+
+            Dx = xc[ix[1]] - xc[ix[0]]
+            Dz = zc[iz[1]] - zc[iz[0]]
+
+            Q[i, self.ind(ix[0], 0, iz[0], component)] = (1 - dx[0] / Dx) * (1 - dz[0] / Dz)
+            Q[i, self.ind(ix[1], 0, iz[0], component)] = (1 - dx[1] / Dx) * (1 - dz[0] / Dz)
+            Q[i, self.ind(ix[0], 0, iz[1], component)] = (1 - dx[0] / Dx) * (1 - dz[1] / Dz)
+            Q[i, self.ind(ix[1], 0, iz[1], component)] = (1 - dx[1] / Dx) * (1 - dz[1] / Dz)
+
+        return Q.tocsr()
+
+    def build_A(self, sigma):
+        """Build LHS matrix for DC resistivity forward modeling.
+
+        Parameters
+        ----------
+        sigma : array_like
+            conductivity model
+
+        Returns
+        -------
+        tuple of 2 matrices:
+            - A : LHS matrix
+            - M : matrix of harmonic average of sigma
+        """
+        # Build LHS matrix
+        if np.isscalar(sigma) is True:
+            M = sigma * sp.eye(self.nf, self.nf)
+        else:
+            M = self.build_M(sigma)
+        self._sigma = sigma
+        A = -self.D @ M @ self.G
+        # I, J, V = sp.find(A[0, :])
+        # for jj in J:
+        #     A[0, jj] = 0.0
+        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
+        A[0, 0] += 1.0 / self.volume_voxels()[0]
+
+        return A, M
+
+    def build_D(self):
+        """Construction of divergence matrix.
+
+        Returns
+        -------
+        csr_matrix
+            Divergence matrix
+
+        """
+
+        # Dx
+
+        M = self.nx
+        N = self.nx - 1
+        i = np.hstack((np.arange(N), 1 + np.arange(N)))
+        j = np.hstack((np.arange(N), np.arange(N)))
+        nval = i.size
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
+        for n in np.arange(self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.nz,))
+        Dx = sp.coo_matrix((s, (ii, jj)))
+
+        # Dz
+
+        N = self.nx * (self.nz - 1)
+        i = np.hstack((np.arange(N), self.nx + np.arange(N)))
+        j = np.hstack((np.arange(N), np.arange(N)))
+        s = np.hstack(
+            (
+                np.kron(1.0 / self.hz[:-1], np.ones((self.nx,))),
+                np.kron(-1.0 / self.hz[1:], np.ones((self.nx,))),
+            )
+        )
+        Dz = sp.coo_matrix((s, (i, j)))
+
+        # assemblage
+
+        return sp.hstack((Dx, Dz)).tocsr()
+
+    def build_M(self, v, harmon=True):
+        """Calculate harmonic or arithmetic average of a variable.
+
+        Parameters
+        ----------
+        v : ndarray or tuple of 2 ndarray
+            Variable defined at the centre of voxels
+            if v is a tuple, medium is anisotropic, with 3 arrays
+            corresponding to terms on the diagonal of the tensor
+            ie
+                |v_xx    0|
+            v = |   0 v_zz|
+
+        harmon : bool, optional
+            if True, harmonic average is computed, otherwise the
+            arithmetic mean is computed.
+
+        Returns
+        -------
+        csr_matrix
+            diagonal matrix containing the average on the faces of the voxels
+
+        """
+        if type(v) is tuple:
+            vx, vz = v
+        else:
+            vx = v
+            vz = v
+
+        # Mx
+
+        d = np.kron(np.ones((self.nz,)), 2 * self.dx)
+        hi = np.kron(np.ones((self.nz,)), self.hx[1:])
+        him1 = np.kron(np.ones((self.nz,)), self.hx[:-1])
+        tmp = np.ones((self.nx,), dtype=bool)
+        tmp[0] = 0
+        ind1 = np.kron(np.ones((self.nz,), dtype=bool), tmp)
+        tmp[0] = 1
+        tmp[-1] = 0
+        ind2 = np.kron(np.ones((self.nz,), dtype=bool), tmp)
+        if harmon:
+            Mx = d / (hi / vx[ind1] + him1 / vx[ind2])
+        else:
+            Mx = (hi * vx[ind1] + him1 * vx[ind2]) / d
+
+        # Mz
+
+        d = np.kron(2 * self.dz, np.ones((self.nx,)))
+        hi = np.kron(self.hz[1:], np.ones((self.nx,)))
+        him1 = np.kron(self.hz[:-1], np.ones((self.nx,)))
+        ind1 = np.hstack(
+            (np.zeros((self.nx,), dtype=bool), np.ones((self.nx * (self.nz - 1),), dtype=bool))
+        )
+        ind2 = np.hstack(
+            (np.ones((self.nx * (self.nz - 1),), dtype=bool), np.zeros((self.nx,), dtype=bool))
+        )
+        if harmon:
+            Mz = d / (hi / vz[ind1] + him1 / vz[ind2])
+        else:
+            Mz = (hi * vz[ind1] + him1 * vz[ind2]) / d
+
+        # assemblage
+
+        return sp.coo_matrix((np.hstack((Mx, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
+
+    def build_G(self, v=None):
+        """Construction of gradient matrix.
+
+        Parameters
+        ----------
+        v : ndarray, optional
+            if None, gradient for a scalar defined at the voxel centre,
+            otherwise, gradient of vector v defined on the edges.
+            (dVx/dx, dVz/dz).
+
+        Returns
+        -------
+        csr_matrix
+            Gradient matrix
+        """
+        if v is None:
+            # centers to faces
+            return self._gradient_centre()
+        else:
+            return self._gradient_faces(v)
+
+    def _gradient_centre(self):
+
+        # Gx
+
+        M = self.nx - 1
+        N = self.nx
+        i = np.hstack((np.arange(M), np.arange(M)))
+        j = np.hstack((np.arange(M), np.arange(1, N)))
+        nval = i.size
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
+        for n in np.arange(self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.nz,))
+        Gx = sp.coo_matrix((s, (ii, jj)))
+
+        # Gz
+
+        i = np.hstack((np.arange(self.nfz), np.arange(self.nfz)))
+        j = np.hstack((np.arange(self.nfz), self.nx + np.arange(self.nfz)))
+        s = np.hstack(
+            (
+                np.kron(-1.0 / self.dz, np.ones((self.nx,))),
+                np.kron(1.0 / self.dz, np.ones((self.nx,))),
+            )
+        )
+        Gz = sp.coo_matrix((s, (i, j)))
+
+        # assemblage
+        return sp.vstack((Gx, Gz), format="csr")
+
+    def _gradient_faces(self, v):
+
+        v_x = sp.diags(v[: self.nfx])
+        v_z = sp.diags(v[(self.nfx) :])
+
+        # Gx
+
+        dVf = 0.5 * (self.hx[1:] + self.hx[:-1])
+
+        M = self.nx - 1
+        N = self.nx
+        i = np.hstack((np.arange(M), np.arange(M)))
+        j = np.hstack((np.arange(M), np.arange(1, N)))
+        nval = i.size
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
+        for n in np.arange(self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.nz,))
+        Gx = v_x @ sp.coo_matrix((s, (ii, jj)))
+
+        # Gz
+
+        dVf = 0.5 * (self.hz[1:] + self.hz[:-1])
+
+        i = np.hstack((np.arange(self.nfz), np.arange(self.nfz)))
+        j = np.hstack((np.arange(self.nfz), self.nx + np.arange(self.nfz)))
+        s = np.hstack(
+            (
+                np.kron(0.5 * self.hz[:-1] / dVf, np.ones((self.nx,))),
+                np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx,))),
+            )
+        )
+        Gz = v_z @ sp.coo_matrix((s, (i, j)))
+
+        # assemblage
+        return sp.vstack((Gx, Gz), format="csr")
+
+    def build_G_faces(self):
+        """Construction of gradient matrix to use with vector defined on edges.
+
+        Returns
+        -------
+        csr_matrix
+            Gradient matrix
+        """
+        # Gx
+
+        dVf = 0.5 * (self.hx[1:] + self.hx[:-1])
+
+        M = self.nx - 1
+        N = self.nx
+        i = np.hstack((np.arange(M), np.arange(M)))
+        j = np.hstack((np.arange(M), np.arange(1, N)))
+        nval = i.size
+        ii = np.zeros((self.nz * nval,), dtype=np.int64)
+        jj = np.zeros((self.nz * nval,), dtype=np.int64)
+        for n in np.arange(self.nz):
+            ii[(n * nval) : ((n + 1) * nval)] = i + n * M
+            jj[(n * nval) : ((n + 1) * nval)] = j + n * N
+        s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.nz,))
+        Gx = sp.coo_matrix((s, (ii, jj)))
+
+        # Gz
+
+        dVf = 0.5 * (self.hz[1:] + self.hz[:-1])
+
+        i = np.hstack((np.arange(self.nfz), np.arange(self.nfz)))
+        j = np.hstack((np.arange(self.nfz), self.nx + np.arange(self.nfz)))
+        s = np.hstack(
+            (
+                np.kron(0.5 * self.hz[:-1] / dVf, np.ones((self.nx,))),
+                np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx,))),
+            )
+        )
+        Gz = sp.coo_matrix((s, (i, j)))
+
+        return sp.vstack((Gx, Gz), format="csr")
+
+    def below_surface(self, pts):
+        """Return indices of electrodes that are not at the surface."""
+        if pts.shape[1] == 3:
+            iz = 2
+        else:
+            iz = 1
+        return pts[:, iz] != self.z[-1]
+
+    def process_surface_elec(self, elec):
+        """Process surface Tx coordinate to make sure electrodes are at least at the depth of the first cell center.
+
+        Parameters
+        ----------
+        elec : ndarray
+            coordinates of electrodes, n x 3
+
+        Returns
+        -------
+        ndarray
+            coordinates after correction
+        Note
+        ----
+        Vertical axis is elevation, ie positive upwards.
+        """
+        if elec.shape[1] == 3:
+            iz = 2
+        else:
+            iz = 1
+        ind = elec[:, iz] > self.zc[-1]
+        elec[ind, iz] = self.zc[-1]
+        return elec
+
+    def solve(self, b):
+        x = np.zeros(b.shape)
+        s = sp.diags(self._sigma, 0, shape=(self.nc, self.nc), format='csr')
+        b = 0.5 * b   # divide by 2 -> 2.5D
+        # b = 2 * b / np.pi
+        for n in range(self.k.size):
+            L = self._A + self.k[n]**2 * s
+            self.solver_A.A = L
+            x += self.g[n] * self.solver_A.solve(b)
+
+        return x
+
+    def compute_u_homog(self, c1c2, sigma, cs):
+        x, _, z = self.centre_voxels()
+        u0 = np.empty((self.nc, c1c2.shape[0]))
+        # turn off warning b/c we get a divide by zero that we will fix later
+        np.seterr(divide='ignore')
+        if c1c2.shape[1] == 6:
+            # keep track of electrodes below the surface
+            below_surf_c1 = self.below_surface(c1c2[:, :3])
+            below_surf_c2 = self.below_surface(c1c2[:, 3:6])
+            # make sure electrodes are at least at the depth of the first cell center
+            c1c2[:, :3] = self.process_surface_elec(c1c2[:, :3])
+            c1c2[:, 3:6] = self.process_surface_elec(c1c2[:, 3:6])
+
+            for i in np.arange(c1c2.shape[0]):
+                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z - c1c2[i, 2]) ** 2)
+                # norm of negative current electrode and 1st potential electrode
+                nve1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (z - c1c2[i, 5]) ** 2)
+                if below_surf_c1[i] or below_surf_c2[i]:
+                    # norm of imaginary positive current electrode and 1st potential electrode
+                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z + c1c2[i, 2]) ** 2)
+                    nveimag1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (z + c1c2[i, 5]) ** 2)
+                    gf = 4.0
+                else:
+                    pveimag1 = np.inf
+                    nveimag1 = np.inf
+                    gf = 2.0
+                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (
+                            1. / pve1 - 1. / nve1 + 1. / pveimag1 - 1. / nveimag1).flatten()
+            # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
+
+        elif c1c2.shape[1] == 3:
+            # keep track of electrodes below the surface
+            below_surf_c1 = self.below_surface(c1c2)
+            # make sure electrodes are at least at the depth of the first cell center
+            c1c2 = self.process_surface_elec(c1c2)
+
+            for i in np.arange(c1c2.shape[0]):
+                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z - c1c2[i, 2]) ** 2)
+                if below_surf_c1[i]:
+                    # norm of imaginary positive current electrode and 1st potential electrode
+                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z + c1c2[i, 2]) ** 2)
+                    gf = 4.0
+                else:
+                    pveimag1 = np.inf
+                    gf = 2.0
+                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
+        else:
+            raise ValueError("c1c2 must be either n x 3 or n x 6")
+        np.seterr(divide='warn')
+
+        # check for singularities due to the source being on a node
+        for i in range(c1c2.shape[0]):
+            ind = np.nonzero(np.isinf(u0[:, i]))
+            if ind[0].size > 0:
+                for j in range(ind[0].size):
+                    ix, iy, iz = self.revind(ind[0][j])
+                    if iz == 0:
+                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
+                                                    u0[self.ind(ix, iy, iz + 1), i],
+                                                    u0[self.ind(ix - 1, iy, iz), i]])
+                    elif iz == self.nz-1:
+                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
+                                                    u0[self.ind(ix - 1, iy, iz), i],
+                                                    u0[self.ind(ix, iy, iz - 1), i]])
+                    else:
+                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
+                                                    u0[self.ind(ix, iy, iz + 1), i],
+                                                    u0[self.ind(ix - 1, iy, iz), i],
+                                                    u0[self.ind(ix, iy, iz - 1), i]])
+
+        return u0
+
+    def optimize_k_g(self, num):
+        def get_phi(r):
+            e = np.ones_like(r)
+
+            def phi(k):
+                # use log10 transform to enforce positivity
+                k = 10 ** k
+                A = r[:, None] * k0(r[:, None] * k)
+                v_i = A @ np.linalg.solve(A.T @ A, A.T @ e)
+                dv = (e - v_i) / len(r)
+                return np.linalg.norm(dv)
+
+            def g(k):
+                A = r[:, None] * k0(r[:, None] * k)
+                return np.linalg.solve(A.T @ A, A.T @ e)
+
+            return phi, g
+
+        # find the minimum cell spacing, and the maximum side of the mesh
+        min_r = min(np.r_[self.hx, self.hz])
+        max_r = self.x[-1] - self.x[0]
+        # generate test points log spaced between these two end members
+        rs = np.logspace(np.log10(min_r / 4), np.log10(max_r * 4), 100)
+
+        min_rinv = -np.log10(rs).max()
+        max_rinv = -np.log10(rs).min()
+        # a decent initial guess of the k_i's for the optimization = 1/rs
+        k_i = np.linspace(min_rinv, max_rinv, num)
+
+        # these functions depend on r, so grab them
+        func, g_func = get_phi(rs)
+
+        # just use scipy's minimize for ease
+        out = minimize(func, k_i)
+        if self.verbose:
+            print(f"optimized ks converged? : {out['success']}")
+            print(f"Estimated transform Error: {out['fun']}")
+        # transform the solution back to normal points
+        self.k = 10 ** out["x"]
+        # transform has a 2/pi and we want 1/pi, so divide by 2
+        self.g = g_func(self.k) / 2
+
+    def print_info(self, file=None):
+        print('    Grid: {0:d} x {1:d} voxels'.format(self.nx, self.nz), file=file)
+        print('      X min: {0:e}\tX max: {1:e}'.format(self.x[0], self.x[-1]), file=file)
+        print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
+
+    def optimize_k_g0(self, src_term, num):
+        if src_term.shape[1] == 6:
+            # we have xyz pairs, remove y values
+            src_term = src_term[:, (0, 2, 3, 5)]
+
+        # set the maximum number of iterations for the optimization routine
+        itsmax = 25
+
+        # Max number of radii to search over
+        max_num = 2000
+
+        # Number of linesearch steps
+        lsnum = 10
+        # Line Search parameters
+        #  lower bound
+        ls_low_lim = 0.01
+        #  upper bound
+        ls_up_lim = 1
+
+        # Define observation distances
+        rpos = np.array([])
+        rneg = np.array([])
+        rpos_im = np.array([])
+        rneg_im = np.array([])
+
+        # hard-wired search radius for determining k and g.
+        x_radius = np.array([0.1, 0.5, 1, 5, 10, 20, 30])
+        x_radius = np.r_[np.zeros(x_radius.shape), x_radius]
+        z_radius = x_radius[::-1]
+
+        for n in range(src_term.shape[0]):
+            xr = x_radius + src_term[n, 0]
+            zr = z_radius + src_term[n, 1]
+
+            # norm of positive current electrode and 1st potential electrode
+            rpost = np.sqrt((xr - src_term[n, 0])**2 + (zr - src_term[n, 1])**2)
+
+            # norm of negative current electrode and 1st potential electrode
+            rnegt = np.sqrt((xr - src_term[n, 2])**2 + (zr - src_term[n, 3])**2)
+
+            # norm of imaginary positive current electrode and 1st potential electrode
+            rpos_imt = np.sqrt((xr - src_term[n, 0]) ** 2 + (zr + src_term[n, 1]) ** 2)
+
+            # norm of imaginary negative current electrode and 1st potential electrode
+            rneg_imt = np.sqrt((xr - src_term[n, 2]) ** 2 + (zr + src_term[n, 3]) ** 2)
+
+            rpos = np.r_[rpos, rpost]
+            rneg = np.r_[rneg, rnegt]
+            rpos_im = np.r_[rpos_im, rpos_imt]
+            rneg_im = np.r_[rneg_im, rneg_imt]
+
+        # now we remove all non-unique radii
+        rtot = np.c_[rpos.reshape(-1, 1), rneg.reshape(-1, 1), rpos_im.reshape(-1, 1), rneg_im.reshape(-1, 1)]
+        rtot = np.unique(rtot, axis=0)
+        ind = rtot == 0.0
+        ind = np.sum(ind, axis=1) == 0
+        rtot = rtot[ind, :]
+
+        tnum = rpos.size
+        if tnum > max_num:
+            step = np.ceil(tnum / max_num)
+            rpos = rpos[::step]
+            rneg = rneg[::step]
+            rpos_im = rpos_im[::step]
+            rneg_im = rneg_im[::step]
+
+        # initialize a starting guess for k0
+        k0 = np.logspace(-2, 0.5, num)
+
+        # calculate the A matrix
+        # set up a matrix of radii
+        rinv = 1. / (1. / rtot[:, 0] - 1. / rtot[:, 1] + 1. / rtot[:, 2] - 1. / rtot[:, 3])
+        i = np.where(np.isfinite(np.sum(1. / rtot, axis=1) + rinv))[0]
+        rtot = rtot[i, :]
+        rinv = rinv[i].reshape(-1, 1)
+
+        # Form matrices for computation
+        rinv1 = rinv @ np.ones((1, num))
+        rpos1 = rtot[:, 0].reshape(-1, 1) @ np.ones((1, num))
+        rneg1 = rtot[:, 1].reshape(-1, 1) @ np.ones((1, num))
+        rpos_im1 = rtot[:, 2].reshape(-1, 1) @ np.ones((1, num))
+        rneg_im1 = rtot[:, 3].reshape(-1, 1) @ np.ones((1, num))
+
+        # identity vector
+        I = np.ones((rpos1.shape[0], 1))
+        # K values matrix
+        Km = I @ k0.reshape(1, -1)
+
+        # Calculate the A matrix
+        A = rinv1 * np.real(kv(0, rpos1*Km) - kv(0, rneg1*Km) + kv(0, rpos_im1*Km) - kv(0, rneg_im1*Km))
+
+        # Estimate g for the given K values
+        v = A @ np.linalg.solve(A.T @ A, A.T @ I)
+        # Evaluate the objective function for the initial guess
+        obj = [((1.-v).T.dot(1.-v)).item()]
+
+        # Start counter and initialize the optimization
+        its = 0  # iteration counter
+        knew = k0.copy().reshape(-1, 1)  # updated k vector
+        reduction = 1  # Variable for ensure sufficient decrease between iterations
+        #                Optimization terminates if objective function is not
+        #                reduced by at least 5% at each iteration
+
+        while obj[-1] > 1.e-5 and its < itsmax and reduction > 0.05:
+            # Create the derivative matrix
+            dvdk = np.zeros((v.size, num))
+            for i in range(num):
+                Ktemp = Km.copy()
+                Ktemp[:, i] *= 1.01  # 1.05
+                A = rinv1 * np.real(kv(0, rpos1 * Ktemp) - kv(0, rneg1 * Ktemp) + kv(0, rpos_im1 * Ktemp) -
+                                    kv(0, rneg_im1 * Ktemp))
+                L = A.T @ A
+
+                # Estimate g for the given K values
+                vT = A @ np.linalg.solve(A.T @ A, A.T @ I)
+
+                # Calculate the derivative for the appropriate column
+                dvdk[:, i] = (vT - v).flatten() / (Ktemp[:, i] - Km[:, i])
+
+            # Apply some smallness regularization
+            beta = 1.0e-9
+            h = dvdk.T @ (I-v) + beta * np.eye(knew.size) @ knew
+            dk = np.linalg.solve((dvdk.T @ dvdk + beta * np.eye(knew.size)), h)
+
+            # Perform a line-search to maximize the descent
+            ls = np.linspace(ls_low_lim, ls_up_lim, lsnum)
+            ls_res = np.empty((ls.size, 2))
+            for j in range(lsnum):
+                ktemp = knew + ls[j] * dk
+
+                Km = np.ones((rpos1.shape[0], 1)) @ ktemp.T
+
+                A = rinv1 * np.real(kv(0, rpos1 * Km) - kv(0, rneg1 * Km) + kv(0, rpos_im1 * Km) - kv(0, rneg_im1 * Km))
+                v = A @ np.linalg.solve(A.T @ A, A.T @ I)
+                objt = ((1. - v).T.dot(1. - v)).item()
+                if np.isnan(objt):
+                    objt = np.inf  # nan is picked as min below...
+                ls_res[j, :] = np.c_[objt, ls[j]]
+
+            # Find the smallest objective function from the line-search
+            c = ls_res[:, 0].argmin()
+
+            # Create a new guess for k
+            knew += ls[c] * dk
+            # eval obj funct
+            Km = np.ones((rpos1.shape[0], 1)) @ knew.T
+
+            # Calculate the A matrix
+            A = rinv1 * np.real(kv(0, rpos1 * Km) - kv(0, rneg1 * Km) + kv(0, rpos_im1 * Km) - kv(0, rneg_im1 * Km))
+            v = A @ np.linalg.solve(A.T @ A, A.T @ I)
+
+            obj.append(((1. - v).T.dot(1. - v)).item())
+            reduction = obj[its] / obj[its + 1] - 1
+            its += 1
+
+            if np.linalg.cond(A.T @ A, p=1) < 1.e-20:
+                knew -= ls[c] * dk
+                break
+
+        # RMS fit
+        err = [np.sqrt(x/rpos.size) for x in obj]
+        # final k values
+        self.k = np.abs(knew.flatten())
+        Km = np.ones((rpos1.shape[0], 1)) @ knew.T
+
+        # reform A to obtain the final g values
+        A = rinv1 * np.real(kv(0, rpos1 * Km) - kv(0, rneg1 * Km) + kv(0, rpos_im1 * Km) - kv(0, rneg_im1 * Km))
+        self.g = np.linalg.solve(A.T @ A, A.T @ I).flatten()
+        return obj, err
 
 
 # %% Solver
@@ -1720,7 +3274,7 @@ class Solver:
         if callable(solver_par[0]):
             # solveur itératif
 
-            slv = solver_par[0]
+            self.slv = solver_par[0]
             self.tol = solver_par[1]
             self.max_it = solver_par[2]
             self.precon = solver_par[3]
@@ -1743,7 +3297,7 @@ class Solver:
 
             if self.precon:
                 if self.verbose:
-                    print("  Computing preconditionning matrix ... ", end="", flush=True)
+                    print("  Computing preconditioning matrix ... ", end="", flush=True)
                 try:
                     self.Mpre = sp.linalg.spilu(self.A.tocsc())
                     self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
@@ -1756,7 +3310,7 @@ class Solver:
                 if self.verbose:
                     print("done.")
 
-            self.solver = lambda A, b: slv(A, b, x0=self.x0, tol=self.tol, max_iter=self.max_it, M=self.Mpre)
+            self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages
@@ -1765,7 +3319,7 @@ class Solver:
             if self.ctx.myid == 0:
                 self.ctx.set_centralized_sparse(A)
             if verbose:
-                print("    Factorizing matrix A ... ", end="", flush=True)
+                print("    Analyzing & factorizing matrix A ... ", end="", flush=True)
             self.ctx.run(job=4)  # Analysis & Factorization
             if verbose:
                 print("done.")
@@ -1808,6 +3362,8 @@ class Solver:
         elif solver_par[0] == "superlu":
             self.want_superlu = True
             use_solver(useUmfpack=False)
+            if A is None:
+                return
             if verbose:
                 print("    Factorizing matrix A ... ", end="", flush=True)
             solve = factorized(A.tocsc())
@@ -1835,9 +3391,9 @@ class Solver:
 
         Parameters
         ----------
-        rhs : arraylike
+        rhs : array_like
             right hand side term.
-        x0 : arraylike, optional
+        x0 : array_like, optional
             Initial solution initiale.
         verbose : bool, optional
             print info messages.
@@ -1960,6 +3516,14 @@ class Solver:
 
     @A.setter
     def A(self, val):
+        # check if we have same structure
+        same_struct = False
+        if self._A is not None:
+            i1, j1, _ = sp.find(self._A)
+            i2, j2, _ = sp.find(val)
+            if i1.shape == i2.shape and j1.shape == j2.shape:
+                if np.all(i1 == i2) and np.all(j1 == j2):
+                    same_struct = True
         self._A = val
         if self.want_pastix:
             if self.pastix_solver is not None:
@@ -1990,11 +3554,28 @@ class Solver:
             if val.shape[0] != val.shape[1]:
                 raise RuntimeError("MUMPS: matrix must be square")
             if self.ctx.myid == 0:
-                self.ctx.set_shape(val.shape[0])
-                self.ctx.set_centralized_sparse(val)
-            if self.verbose:
-                print("    Factorizing matrix A ... ", end="", flush=True)
-            self.ctx.run(job=4)  # Analysis & Factorization
+                if not same_struct:
+                    self.ctx.set_shape(val.shape[0])
+                    self.ctx.set_centralized_sparse(val)
+                else:
+                    self.ctx.set_centralized_assembled_values(val.data)
+            if same_struct:
+                if self.verbose:
+                    print("    Factorizing matrix A ... ", end="", flush=True)
+                try:
+                    self.ctx.run(job=2)  # Factorization
+                except:
+                    if self.ctx.id.infog[0] == -9:
+                        if self.verbose:
+                            print(" Exception raised!   Increasing memory space & factorizing matrix A ... ", end="", flush=True)
+                        self.ctx.id.icntl[13] += 20
+                        self.A = val
+                    else:
+                        raise RuntimeError(f"MUMPS: factorization failed with error code {self.ctx.id.infog[0]}")
+            else:
+                if self.verbose:
+                    print("    Analyzing & factorizing matrix A ... ", end="", flush=True)
+                self.ctx.run(job=4)  # Analysis & Factorization
             if self.verbose:
                 print("done.")
 
@@ -2013,7 +3594,7 @@ class Solver:
 
         if self.precon:
             if self.verbose:
-                print("  Computing preconditionning matrix ... ", end="", flush=True)
+                print("  Computing preconditioning matrix ... ", end="", flush=True)
             try:
                 self.Mpre = sp.linalg.spilu(self.A.tocsc())
                 self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
@@ -2025,6 +3606,7 @@ class Solver:
                 self.Mpre = sp.linalg.aslinearoperator(Ainv)
             if self.verbose:
                 print("done.")
+        self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
 
     def _solve_mumps(self, A, b):
         if self.ctx.myid == 0:
@@ -2046,7 +3628,7 @@ class Solver:
         elif self.ctx is not None:
             print("    Solver: MUMPS")
         else:
-            print("    Solver: " + self.solver.__name__)
+            print("    Solver: " + self.slv.__name__)
             print("      max_it: " + str(self.max_it))
             print("      tolerance: " + str(self.tol))
             if self.do_perm:
@@ -2054,9 +3636,9 @@ class Solver:
             else:
                 print("    Inverse Cuthill-McKee Permutation: not used")
             if self.precon:
-                print("    Preconditionning: used")
+                print("    Preconditioning: used")
             else:
-                print("    Preconditionning: not used")
+                print("    Preconditioning: not used")
 
 
 if __name__ == "__main__":
@@ -2081,4 +3663,3 @@ if __name__ == "__main__":
     C = mesh.build_C()
 
     mesh.toVTK(dict(), "/tmp/test_mesh")
-
