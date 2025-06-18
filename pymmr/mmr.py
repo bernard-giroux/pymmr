@@ -630,4 +630,39 @@ class GridMMR():
                 raise ValueError('Number of current source should match number of source terms')
 
 
+def normal_field(c1c2, xo, cs=1.0):
+    """Compute normal field at observation points for surface MMR without any topography.
+
+    Parameters
+    ----------
+    c1c2 : array_like
+        Coordinates of source dipoles (source first, sink second) (m).
+    xo : array_like
+        Coordinates of observation points (m).
+    cs : float
+        Current intensity (A).
+
+    Returns
+    -------
+    data : ndarray
+        components Bx & By (nT)
+
+    Notes
+    -----
+    Bz is always 0.
+
+    The horizontal field is azimuthal, ie the following equation applies
+
+    2 pi r curl B_phi = mu I
+
+    and is used to compute the horizontal components.
+
+    """
+    r1 = np.sqrt(np.sum((xo - c1c2[:, :3])**2, axis=1))
+    r2 = np.sqrt(np.sum((xo - c1c2[:, 3:])**2, axis=1))
+    theta1 = np.arctan2(xo[:, 1] - c1c2[:, 1], xo[:, 0] - c1c2[:, 0])
+    theta2 = np.arctan2(xo[:, 1] - c1c2[:, 4], xo[:, 0] - c1c2[:, 3])
+    B1 = -cs * 1.e-7 / r1 * 1.e12  # pT    source is negative because z pointing upward
+    B2 = cs * 1.e-7 / r2 * 1.e12
+    return B1 * np.sin(theta1) + B2 * np.sin(theta2), -B1 * np.cos(theta1) - B2 * np.cos(theta2)
 
