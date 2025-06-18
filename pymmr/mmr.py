@@ -666,3 +666,120 @@ def normal_field(c1c2, xo, cs=1.0):
     B2 = cs * 1.e-7 / r2 * 1.e12
     return B1 * np.sin(theta1) + B2 * np.sin(theta2), -B1 * np.cos(theta1) - B2 * np.cos(theta2)
 
+
+class VerticalDyke():
+    """
+        Compute MMR anomaly for a vertical dyke.
+
+        Reference
+        ---------
+        Edwards, Lee, Nabighian, 1978. On the theory of magnetometric resistivity (MMR) methods.
+        Geophysics, 43(6), 1176-1203.
+    """
+    def __init__(self, rho1, rho2, rho3, thickness, xd=0.0, n_max=100):
+        """
+        Parameters
+        ----------
+        rho1 : float
+            Resistivity of leftmost medium.
+        rho2 : float
+            Resistivity of the dyke.
+        rho3 :
+            Resistivity of rightmost medium.
+        thickness :
+            Thickness of the dyke.
+        xd : float
+            X coordinate of the left flank of the dyke.
+        n_max : int
+            Upper limit of summations. Default is 100.
+        """
+        self.rho1 = rho1
+        self.rho2 = rho2
+        self.rho3 = rho3
+        self.d = thickness
+        self.xd = xd
+        self.n_max = n_max
+
+        self.k12 = ( rho1 - rho2 ) / ( rho1 + rho2 )
+        self.k13 = ( rho1 - rho3 ) / ( rho1 + rho3 )
+        self.k32 = ( rho3 - rho2 ) / ( rho3 + rho2 )
+
+    @property
+    def n_max(self):
+        return self.n[-1]
+
+    @n_max.setter
+    def n_max(self, n_max):
+        self.n = np.arange(n_max+1)
+
+    def fwd_mod(self, xo, xs, cs=1.0):
+        """
+        Forward MMR solution
+
+        Parameters
+        ----------
+        xo : array_like
+            X,Y,Z coordinates of observation points (m).
+        xs : float
+            X coordinate of current electrode (m).
+        cs : float
+            Current intensity (A).
+
+        Returns
+        -------
+            Vertical B-field anomaly (nT).
+
+        Notes
+        -----
+        Solution from pages 1187-1188
+        """
+        b = xs - self.xd
+        x = xo[:, 0] - self.xd
+        y = xo[:, 1]
+        y2 = y*y
+
+        ind1 = b < 0.0
+        ind2 = np.logical_and(b >= 0.0, b <= self.d)
+        ind3 = b > self.d
+
+        mu = 12.566370614359172e-7
+
+        tmp1 = 2. * (np.tile(self.n, (x.size, 1))+1.)*self.d - b - np.tile(x.reshape(-1, 1), (1, self.n.size))
+        tmp2 = 2. * (np.tile(self.n, (x.size, 1))+1.)*self.d + b - np.tile(x.reshape(-1, 1), (1, self.n.size))
+        tmp3 = b - x
+        tmp4 = 2. * np.tile(self.n, (x.size, 1)) * self.d + b + np.tile(x.reshape(-1, 1), (1, self.n.size))
+        tmp5 = 2. * (np.tile(self.n, (x.size, 1)) + 1.)*self.d - b + np.tile(x.reshape(-1, 1), (1, self.n.size))
+
+        y2t = np.tile(y2.reshape(-1, 1), (1, self.n.size))
+
+        Bz1 = mu * cs / (4*np.pi*y) * (
+            self.k13 + (1. - self.k12) * self.k32 * (
+            np.sum((self.k12*self.k32)**self.n * tmp1 / np.sqrt(y2t + tmp1 * tmp1), axis=1) +
+            self.k12 * np.sum((self.k12*self.k32)**self.n * tmp2 / np.sqrt(y2t + tmp2 * tmp2), axis=1)
+            )
+            - self.k12 * tmp3/np.sqrt(y2 + tmp3*tmp3)
+        )
+
+        Bz2 = mu * cs / (4*np.pi*y) * (
+            self.k13 + self.k32 * (
+            np.sum((self.k13*self.k32)**self.n * tmp1 / np.sqrt(y2t + tmp1*tmp1), axis=1) +
+            self.k12 * np.sum((self.k12*self.k32)**self.n * tmp2 / np.sqrt(y2t + tmp2*tmp2), axis=1)
+        ) + self.k12 * (
+            np.sum((self.k12*self.k32)**self.n + tmp4 / np.sqrt(y2t + tmp4*tmp4), axis=1) +
+            self.k32 * np.sum((self.k12*self.k32)**self.n + tmp5 / np.sqrt(y2t + tmp5*tmp5), axis=1)
+        )
+        )
+
+        Bz3 = mu * cs / (4*np.pi*y) * (
+            self.k13 - (1. - self.k32) * self.k12 * (
+            np.sum((self.k12*self.k32)**self.n * tmp4 / np.sqrt(y2t + tmp4*tmp4), axis=1) +
+            self.k32 * np.sum((self.k12*self.k32)**self.n * tmp5 / np.sqrt(y2t + tmp5*tmp5), axis=1)
+        ) +
+           self.k32 * -tmp3 / np.sqrt(y2 + tmp3*tmp3)
+        )
+
+        Bz1[np.logical_not(ind1)] = 0.0
+        Bz2[np.logical_not(ind2)] = 0.0
+        Bz3[np.logical_not(ind3)] = 0.0
+
+        return Bz1 + Bz2 + Bz3
