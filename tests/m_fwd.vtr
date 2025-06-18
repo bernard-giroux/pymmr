@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<VTKFile type="RectilinearGrid" version="0.1" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
+  <RectilinearGrid WholeExtent="0 52 0 52 0 26">
+    <Piece Extent="0 52 0 52 0 26"                                                    >
+      <PointData>
+      </PointData>
+      <CellData>
+        <DataArray type="Float64" Name="Conductivity" format="appended" RangeMin="0.001"                RangeMax="0.1"                  offset="0"                   />
+      </CellData>
+      <Coordinates>
+        <DataArray type="Float32" Name="Array 0x361870560" format="appended" RangeMin=""                     RangeMax=""                     offset="2316"                />
+        <DataArray type="Float32" Name="Array 0x361887eb0" format="appended" RangeMin=""                     RangeMax=""                     offset="2552"                />
+        <DataArray type="Float32" Name="Array 0x34d268580" format="appended" RangeMin=""                     RangeMax=""                     offset="2788"                />
+      </Coordinates>
+    </Piece>
+  </RectilinearGrid>
+  <AppendedData encoding="base64">
+   _EgAAAACAAAAAFQAAVAAAAFQAAABUAAAAVAAAAFQAAABUAAAAVAAAAFQAAABUAAAAVAAAAFQAAABUAAAAgAAAAHIAAACAAAAAcgAAAHIAAAAtAAAAeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJztxTENADAIADBpKFiCBtzNzpzwc0wI7dO5/U5ljG3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3btm3bi/9+y2RXeJzt3DENgDAURVFpKCBBQ12BAyRgAyfdOzQ4gKkv9PzlrD+5+2tnvdeyLY0kSZIkSZIkyQk89ueu147+dzb1yVafbPXJVp9s9SFJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiT/o32xbPXJVp9s9clWn2z1IUmSJPnVDvS3Xd94nO3RMQ2AMABEUWkoaIKGumodIAEbOOnegeCAhfQS3i1vveTPY1yl7tskSZIkSZIkSZIkSZIkSZIkSZIkSZIkSZJx9vbsfO3qv39Tn2z1yVafbPXJVh+SJEmSJEmSJEmSJEmSJEmSJEmSJL/zBq6FYRt4nO3cMQ2AMBRFUWkoIEFDXYEDJGADJ907NDhgog84fznrT+7+2l7PuSxTI0mSJEmSJMmH3NbrjtuO/vdv6pOtPtnqk60+2epDkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJfkf7Ytnqk60+2eqTrT7Z6kOSJEmSfJMdx8dd33ic7dGxDYAgFEXR0ZjAhBncCjdgBNZwE3oKQ29hx4+c15z2JXfUfh9nToMkSZIkSZIkSZIkSZIkSZIkSZIkSZIk+epV5tpnV//dTX1iq09s9YmtPrHVhyRJkiRJkiRJkiRJkiRJkiRJkiRJ8p8+mA1hG3ic7dExDcAwEARBaEZgyRjCymFgCKERJum/iMIgnV/6uWbakzbWc/djtCBJkiRJkmQpz/nt+u3uv9XUJ7f65Faf3OqTW31IkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJkiRJVvcF3cphG3ic7cUxDQAwCAAwaShYggbczc6c8HPMB2mfzu13KmNs27Zt27Zte9kfBFc0dQ==AQAAAACAAADUAAAAngAAAA==eJwVzy8KAkEUgPFpC4JBgzfYZDHMCZw31TDJJmswGeYKhq3Cgmz0FAMa/fMmCrJH2GLd4AH8fPCDN2X4XtPX+Tpd591qkbeXSR5vvnqav/Ueko4+Z33tj2puBzUmokKAg0WJGQoMT2M6JLSIsBge7PhPXPKGdexokdBhQCH8hxIWDgEVotAh9AhdQp/QKfQK3Z5+zx2+6Wv/A4pVRYc=AQAAAACAAADUAAAAngAAAA==eJwVzy8KAkEUgPFpC4JBgzfYZDHMCZw31TDJJmswGeYKhq3Cgmz0FAMa/fMmCrJH2GLd4AH8fPCDN2X4XtPX+Tpd591qkbeXSR5vvnqav/Ueko4+Z33tj2puBzUmokKAg0WJGQoMT2M6JLSIsBge7PhPXPKGdexokdBhQCH8hxIWDgEVotAh9AhdQp/QKfQK3Z5+zx2+6Wv/A4pVRYc=AQAAAACAAABsAAAAYQAAAA==eJyb+Kj16A6hiKNpfgZHk7YLHuWN/3JkivaFIweDthzhej7vyNmcviMMBxqPMDAUAHEiEAcBsTMQmwCxKhCLATE7EH84zMBwCYi3APE0IC4AYhMg/nAIyAZiBgYAIHopRA==
+  </AppendedData>
+</VTKFile>
