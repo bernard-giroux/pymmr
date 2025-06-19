@@ -388,7 +388,7 @@ class GridDC:
 
         """
 
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('\nForward modelling - DC resistivity')
             self.print_info()
             if self.c1c2 is not None:
@@ -464,7 +464,7 @@ class GridDC:
             data = self._units_scaling * self._get_data()
 
         if calc_sens:
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('  Computing sensitivity ... ', end='', flush=True)
             # TODO : use formulation of Haber (book), when number of p1p2 > number of voxels
             self.u[:, c1c2.shape[0]:] = self.fv.solver_A.solve(self.q[:, c1c2.shape[0]:], verbose=False)
@@ -473,7 +473,7 @@ class GridDC:
             S = self.fv.build_M(sigma*sigma)
             Dm = sp.diags(1.0/sigma)
 
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('  Filling sensitivity matrix ... ', end='', flush=True)
 
             Gf = self.fv.build_G_faces()
@@ -487,7 +487,7 @@ class GridDC:
             #     pool.join()
 
             for n in range(self.c1c2.shape[0]):
-                if self.verbose:
+                if self.verbose and self.fv.comm.rank == 0:
                     if n == 0:
                         msg = ''
                         pre_msg = ''
@@ -503,13 +503,13 @@ class GridDC:
             if self.sort_electrodes and self.sort_back is not None:
                 sens = sens[:, self.sort_back]
 
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('done.\nEnd of modelling.')
 
             return data, sens
 
         elif calc_J:
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('  Computing current density ... ', end='', flush=True)
             J = np.empty((self.fv.nf, self.q.shape[1]))
             for ns in range(self.q.shape[1]):
@@ -518,11 +518,11 @@ class GridDC:
             # if self.sort_electrodes and self.sort_back is not None:
             #     J = J[:, self.sort_back]
 
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('done.\nEnd of modelling.')
             return data, J
         else:
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('End of modelling.')
             return data
 
@@ -674,7 +674,7 @@ class GridDC:
                 name = "∂d/∂m - P1: " + str(self.p1p2[i, 0]) + " " + str(self.p1p2[i, 1]) + " "
                 name += str(self.p1p2[i, 2]) + ", "
                 name += "P2: " + str(self.p1p2[i, 3]) + " " + str(self.p1p2[i, 4]) + " " + str(self.p1p2[i, 5])
-        
+
                 fields[name] = sens[:, i]
 
             src = "C1: " + str(self.c1c2_u[n, 0]) + " " + str(self.c1c2_u[n, 1]) + " " + str(self.c1c2_u[n, 2])
@@ -800,9 +800,9 @@ class GridDC:
 
     def _sort_electrodes(self):
 
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('  Sorting electrodes ...')
-        
+
         if self.p1p2 is not None:
             if self.c1c2.shape[0] != self.p1p2.shape[0]:
                 raise ValueError('Number of injection and measurement dipoles must be equal.')
@@ -851,8 +851,8 @@ class GridDC:
                     self.ind_c2_u[n1] = n2
 
         self.c12_u = self.c12_u[:, :3]
-    
-        if self.verbose:
+
+        if self.verbose and self.fv.comm.rank == 0:
             print('    Detected {0:d} injection dipole(s)'.format(self.n_c1c2_u))
 
         # dipoles de mesure
@@ -874,7 +874,7 @@ class GridDC:
 
             self.p12_u = self.p12_u[:, :3]
 
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('    Detected {0:d} measurement electrode(s)'.format(self.p12_u.shape[0]))
 
         self.electrodes_sorted = True
@@ -903,7 +903,7 @@ class GridDC:
             Q = self.Q
         else:
             Q = sp.vstack(self.Q)
-            
+
         for ns in range(self.c1c2_u.shape[0]):
             ind = self.ind_c1c2 == ns
             if u is None:

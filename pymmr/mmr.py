@@ -371,7 +371,7 @@ class GridMMR():
         if self.xo is None:
             raise ValueError('Measurement points undefined')
 
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('\nForward modelling - Magnetometric resistivity')
             self.dc.print_info()
             if self.fv.solver_A is not None:
@@ -390,27 +390,27 @@ class GridMMR():
         self.dc.cs12_u = self.cs_u
         self.dc.sort_electrodes = False
 
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('  Computing interpolation matrices ... ', end='', flush=True)
         Qx, Qy, Qz = self._build_Q(self.xo_all)
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('done.')
         self.Q = Qx, Qy, Qz
 
         # get current density from forward DC modeling
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('  Computing current density ... ', end='', flush=True)
         _, Jdc = self.dc.fwd_mod(sigma, calc_J=True)
         u_dc = self.dc.u.copy()
 
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('done.')
 
         Jx = Jdc[:self.dc.fv.nfx, :]
         Jy = Jdc[self.dc.fv.nfx:(self.dc.fv.nfx+self.dc.fv.nfy), :]
         Jz = Jdc[(self.dc.fv.nfx+self.dc.fv.nfy):, :]
 
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('  Solving MMR system')
 
         # create MMR source term from Jdc (J is 0 in air)
@@ -449,7 +449,7 @@ class GridMMR():
             data = self.data_to_obs(data, False)
 
         if calc_sens:
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('  Computing sensitivity')
                 print('    Computing adjoint terms ... ', end='', flush=True)
 
@@ -459,15 +459,15 @@ class GridMMR():
             t = np.max(np.abs(q_a), axis=0)
             q_a /= np.tile(t, (q_a.shape[0], 1))
 
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('    Solving DC adjoint problem ... ', end='', flush=True)
             self.dc.fwd_mod(calc_J=False, q=q_a)
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('done.')
 
             q2 = self.dc.u * np.tile(t, (self.dc.u.shape[0], 1))
 
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('    Assembling matrices ... ', end='', flush=True)
             sens = np.empty((self.dc.ind_roi.size, self.nobs_mmr*3))
             S = self.dc.fv.build_M(sigma*sigma)
@@ -477,10 +477,10 @@ class GridMMR():
             for ns in range(self.xs_u.shape[0]):
                 self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2, Gf)
 
-            if self.verbose:
+            if self.verbose and self.fv.comm.rank == 0:
                 print('done.')
 
-        if self.verbose:
+        if self.verbose and self.fv.comm.rank == 0:
             print('End of modelling.')
 
         self.dc.c1c2_u = c1c2_u_save

@@ -184,6 +184,7 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
 
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
 
     basename = "pymmr"
     job = None
@@ -293,7 +294,7 @@ if __name__ == "__main__":
     if data_mmr is None and data_ert is None and "inv" in job:
         raise RuntimeError("No input data provided")
 
-    if verbose:
+    if verbose and rank == 0:
         starttime = datetime.now()
         hostname = socket.gethostname()
         print(f'\nJob running on {hostname}\nStarted {starttime}')
@@ -319,20 +320,20 @@ if __name__ == "__main__":
         g.set_survey_mmr(c1c2, meas, cs)
         data = g.fwd_mod(sigma, calc_sens=calc_sens)
 
-        if verbose:
+        if verbose and rank == 0:
             endtime = datetime.now()
             diff = endtime - starttime
             print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
         if calc_sens:
-            if verbose:
+            if verbose and rank == 0:
                 print("Saving sensitivity ... ", end="", flush=True)
             data, sens = data
             g.save_sensitivity(sens, basename)
-            if verbose:
+            if verbose and rank == 0:
                 print("done.")
 
-        if verbose:
+        if verbose and rank == 0:
             print("Saving modelled data ... ", end="", flush=True)
         filename = basename + "_mmr.dat"
         header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz cs"
@@ -346,7 +347,7 @@ if __name__ == "__main__":
             xo = np.kron(np.ones((c1c2.shape[0], 1)), meas)
             cs = np.kron(g.cs.reshape(-1, 1), np.ones((meas.shape[0], 1)))
         np.savetxt(filename, np.c_[xs, xo, data, cs], header=header, fmt="%g")
-        if verbose:
+        if verbose and rank == 0:
             print("done.")
 
     elif "fwd" in job and ("dc" in job or "ert" in job):
@@ -354,27 +355,27 @@ if __name__ == "__main__":
         g.units = units
         data = g.fwd_mod(sigma, calc_J=calc_J, calc_sens=calc_sens)
 
-        if verbose:
+        if verbose and rank == 0:
             endtime = datetime.now()
             diff = endtime - starttime
             print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
         if calc_sens:
-            if verbose:
+            if verbose and rank == 0:
                 print("Saving sensitivity ... ", end="", flush=True)
             data, sens = data
             g.save_sensitivity(sens, basename)
-            if verbose:
+            if verbose and rank == 0:
                 print("done.")
         elif calc_J:
-            if verbose:
+            if verbose and rank == 0:
                 print("Saving current density ... ", end="", flush=True)
             data, J = data
             g.save_current_density(J, basename)
-            if verbose:
+            if verbose and rank == 0:
                 print("done.")
 
-        if verbose:
+        if verbose and rank == 0:
             print("Saving modelled voltages ... ", end="", flush=True)
         # save data
         filename = basename + "_dc.dat"
@@ -382,7 +383,7 @@ if __name__ == "__main__":
         header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V cs"
         np.savetxt(filename, data, header=header, fmt="%g")
 
-        if verbose:
+        if verbose and rank == 0:
             print("done.")
 
     elif "inv" in job:
@@ -397,7 +398,7 @@ if __name__ == "__main__":
         S_save, data_inv, rms, misfit, smy = inv.run(g, m0=m_ref, m_ref=m_ref, data_mmr=data_mmr, data_ert=data_ert,
                                                      m_active=m_active)
 
-        if verbose:
+        if verbose and rank == 0:
             endtime = datetime.now()
             diff = endtime - starttime
             print(f"\nCalculations ended {endtime} ({diff} elapsed)")

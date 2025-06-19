@@ -247,7 +247,6 @@ class BaseFV:
             comm = MPI.COMM_WORLD
         self.comm = comm
         self.dim = 0
-        self.myid = comm.rank
         self.verbose = False
         self.solver = bicgstab
         self.tol = 1e-9
@@ -349,10 +348,9 @@ class BaseFV:
         if self.want_superlu:
             name = 'superlu'
 
-        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=comm)
+        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=self.comm)
         self.precon = precon
         self.do_perm = do_perm
-        self.comm = comm
 
     def get_solver_params(self):
         """Return parameters needed to instantiate Solver."""
@@ -3048,7 +3046,7 @@ class Grid25FV(BaseFV):
 
         # just use scipy's minimize for ease
         out = minimize(func, k_i)
-        if self.verbose:
+        if self.verbose and self.comm.rank == 0:
             print(f"optimized ks converged? : {out['success']}")
             print(f"Estimated transform Error: {out['fun']}")
         # transform the solution back to normal points
@@ -3271,6 +3269,8 @@ class Solver:
         self.pastix_solver = None
         self.umfpack = None
         self.pardiso = False
+        if comm is not None:
+            self.verbose = verbose and (comm.rank == 0)
         if callable(solver_par[0]):
             # solveur itératif
 
@@ -3313,7 +3313,7 @@ class Solver:
             self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
-            self.ctx.set_icntl(4, 1)  # print only error messages
+            # self.ctx.set_icntl(4, 1)  # print only error messages
             if A is None:
                 return
             if self.ctx.myid == 0:
