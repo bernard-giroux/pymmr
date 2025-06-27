@@ -271,7 +271,7 @@ class GridMMR():
         self.nobs_mmr = np.sum(self.nobs_xs)
         self.acq_checked = True
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False):
         """Define parameters of solver to be used during forward modelling.
 
         Parameters
@@ -287,16 +287,18 @@ class GridMMR():
             Apply preconditioning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
-        comm : MPI Communicator or None
-            for mumps solver
 
         Notes
         -----
         `precon` et `do_perm` are used only with iterative solvers.
 
         """
-        self.dc.fv.set_solver(name, tol, max_it, precon, do_perm, comm)
-        self.fv.set_solver(name, tol, max_it, precon, do_perm, comm)
+        self.dc.fv.set_solver(name, tol, max_it, precon, do_perm)
+        self.fv.set_solver(name, tol, max_it, precon, do_perm)
+
+    def set_solver_print_level(self, level):
+        self.dc.fv.set_solver_print_level(level)
+        self.fv.set_solver_print_level(level)
 
     def set_roi(self, roi):
         """Define region of interest for computing sensitivity or for inversion.

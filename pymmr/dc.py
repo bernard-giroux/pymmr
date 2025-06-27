@@ -315,7 +315,7 @@ class GridDC:
 
             return self.fv.x[ind_x], self.fv.y[ind_y], self.fv.z[ind_z]
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False):
         """Define parameters of solver to be used during forward modelling.
 
         Parameters
@@ -331,15 +331,16 @@ class GridDC:
             Apply preconditioning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
-        comm : MPI Communicator or None
-            for mumps solver
 
         Notes
         -----
         `precon` et `do_perm` are used only with iterative solvers.
 
         """
-        self.fv.set_solver(name, tol, max_it, precon, do_perm, comm)
+        self.fv.set_solver(name, tol, max_it, precon, do_perm)
+
+    def set_solver_print_level(self, level):
+        self.fv.set_solver_print_level(level)
 
     def fromVTK(self, fieldname, filename):
         return self.fv.fromVTK(fieldname, filename)

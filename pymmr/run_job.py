@@ -203,6 +203,7 @@ if __name__ == "__main__":
     max_it = 1000
     precon = False
     do_perm = False
+    mumps_print_level = 1
 
     kw_pattern = re.compile("\\s?(.+)\\s?#\\s?([\\w\\s]+),")
 
@@ -282,6 +283,8 @@ if __name__ == "__main__":
                     inv.checkpointing = bool(value)
                 elif "start" in keyword.lower() and "checkpoint" in keyword.lower():
                     inv.start_from_chkpt = bool(value)
+                elif "mumps" in keyword.lower() and "print" in keyword.lower() and "level" in keyword.lower():
+                    mumps_print_level = int(value)
 
     # Done reading parameter file
 
@@ -312,6 +315,8 @@ if __name__ == "__main__":
 
     g.verbose = verbose
     g.set_solver(solver_name, tol, max_it, precon, do_perm)
+    if solver_name == 'mumps':
+        g.set_solver_print_level(mumps_print_level)
     if roi is not None:
         g.set_roi(roi)
     g.apply_bc = apply_bc
@@ -325,30 +330,31 @@ if __name__ == "__main__":
             diff = endtime - starttime
             print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
-        if calc_sens:
-            if verbose and rank == 0:
-                print("Saving sensitivity ... ", end="", flush=True)
-            data, sens = data
-            g.save_sensitivity(sens, basename)
-            if verbose and rank == 0:
-                print("done.")
+        if rank == 0:
+            if calc_sens:
+                if verbose:
+                    print("Saving sensitivity ... ", end="", flush=True)
+                data, sens = data
+                g.save_sensitivity(sens, basename)
+                if verbose:
+                    print("done.")
 
-        if verbose and rank == 0:
-            print("Saving modelled data ... ", end="", flush=True)
-        filename = basename + "_mmr.dat"
-        header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz cs"
-        if c1c2.shape[0] == meas.shape[0]:
-            xs = c1c2
-            xo = meas
-            cs = g.cs.reshape(-1, 1)
-        else:
-            # fwd modelling was done using the following combinations
-            xs = np.kron(c1c2, np.ones((meas.shape[0], 1)))
-            xo = np.kron(np.ones((c1c2.shape[0], 1)), meas)
-            cs = np.kron(g.cs.reshape(-1, 1), np.ones((meas.shape[0], 1)))
-        np.savetxt(filename, np.c_[xs, xo, data, cs], header=header, fmt="%g")
-        if verbose and rank == 0:
-            print("done.")
+            if verbose:
+                print("Saving modelled data ... ", end="", flush=True)
+            filename = basename + "_mmr.dat"
+            header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz cs"
+            if c1c2.shape[0] == meas.shape[0]:
+                xs = c1c2
+                xo = meas
+                cs = g.cs.reshape(-1, 1)
+            else:
+                # fwd modelling was done using the following combinations
+                xs = np.kron(c1c2, np.ones((meas.shape[0], 1)))
+                xo = np.kron(np.ones((c1c2.shape[0], 1)), meas)
+                cs = np.kron(g.cs.reshape(-1, 1), np.ones((meas.shape[0], 1)))
+            np.savetxt(filename, np.c_[xs, xo, data, cs], header=header, fmt="%g")
+            if verbose:
+                print("done.")
 
     elif "fwd" in job and ("dc" in job or "ert" in job):
         g.set_survey_ert(c1c2, meas, cs)
@@ -360,31 +366,32 @@ if __name__ == "__main__":
             diff = endtime - starttime
             print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
-        if calc_sens:
-            if verbose and rank == 0:
-                print("Saving sensitivity ... ", end="", flush=True)
-            data, sens = data
-            g.save_sensitivity(sens, basename)
-            if verbose and rank == 0:
-                print("done.")
-        elif calc_J:
-            if verbose and rank == 0:
-                print("Saving current density ... ", end="", flush=True)
-            data, J = data
-            g.save_current_density(J, basename)
-            if verbose and rank == 0:
-                print("done.")
+        if rank == 0:
+            if calc_sens:
+                if verbose:
+                    print("Saving sensitivity ... ", end="", flush=True)
+                data, sens = data
+                g.save_sensitivity(sens, basename)
+                if verbose:
+                    print("done.")
+            elif calc_J:
+                if verbose:
+                    print("Saving current density ... ", end="", flush=True)
+                data, J = data
+                g.save_current_density(J, basename)
+                if verbose:
+                    print("done.")
 
-        if verbose and rank == 0:
-            print("Saving modelled voltages ... ", end="", flush=True)
-        # save data
-        filename = basename + "_dc.dat"
-        data = np.c_[c1c2, meas, data, g.cs]
-        header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V cs"
-        np.savetxt(filename, data, header=header, fmt="%g")
+            if verbose:
+                print("Saving modelled voltages ... ", end="", flush=True)
+            # save data
+            filename = basename + "_dc.dat"
+            data = np.c_[c1c2, meas, data, g.cs]
+            header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V cs"
+            np.savetxt(filename, data, header=header, fmt="%g")
 
-        if verbose and rank == 0:
-            print("done.")
+            if verbose:
+                print("done.")
 
     elif "inv" in job:
 
@@ -403,49 +410,50 @@ if __name__ == "__main__":
             diff = endtime - starttime
             print(f"\nCalculations ended {endtime} ({diff} elapsed)")
 
-        x, y, z = g.get_roi_nodes()
-        g2 = GridFV((x, y, z))
+        if rank == 0:
+            x, y, z = g.get_roi_nodes()
+            g2 = GridFV((x, y, z))
 
-        fields = {}
-        for i in range(len(S_save)):
-            name = "iteration {0:d}".format(i + 1)
-            fields[name] = S_save[i]
+            fields = {}
+            for i in range(len(S_save)):
+                name = "iteration {0:d}".format(i + 1)
+                fields[name] = S_save[i]
 
-        g2.toVTK(fields, basename + "_inv")
+            g2.toVTK(fields, basename + "_inv")
 
-        if inv.show_plots or inv.save_plots:
-            fig = plt.figure()
-            plt.bar(np.arange(1, 1+len(rms)), rms)
-            plt.xlabel('Iteration')
-            plt.ylabel('Weighted RMSE')
-            plt.tight_layout()
-            if inv.save_plots:
-                filename = inv.basename + "_rms.pdf"
-                fig.savefig(filename)
-            if inv.show_plots:
-                plt.show()
+            if inv.show_plots or inv.save_plots:
+                fig = plt.figure()
+                plt.bar(np.arange(1, 1+len(rms)), rms)
+                plt.xlabel('Iteration')
+                plt.ylabel('Weighted RMSE')
+                plt.tight_layout()
+                if inv.save_plots:
+                    filename = inv.basename + "_rms.pdf"
+                    fig.savefig(filename)
+                if inv.show_plots:
+                    plt.show()
 
-            fig = plt.figure()
-            plt.bar(np.arange(1, 1+len(misfit)), misfit)
-            plt.xlabel('Iteration')
-            plt.ylabel('Misfit')
-            plt.tight_layout()
-            if inv.save_plots:
-                filename = inv.basename + "_misfit.pdf"
-                fig.savefig(filename)
-            if inv.show_plots:
-                plt.show()
+                fig = plt.figure()
+                plt.bar(np.arange(1, 1+len(misfit)), misfit)
+                plt.xlabel('Iteration')
+                plt.ylabel('Misfit')
+                plt.tight_layout()
+                if inv.save_plots:
+                    filename = inv.basename + "_misfit.pdf"
+                    fig.savefig(filename)
+                if inv.show_plots:
+                    plt.show()
 
-            fig = plt.figure()
-            plt.bar(np.arange(1, 1+len(smy)), smy)
-            plt.xlabel('Iteration')
-            plt.ylabel('Parameter variation function')
-            plt.tight_layout()
-            if inv.save_plots:
-                filename = inv.basename + "_smy.pdf"
-                fig.savefig(filename)
-            if inv.show_plots:
-                plt.show()
+                fig = plt.figure()
+                plt.bar(np.arange(1, 1+len(smy)), smy)
+                plt.xlabel('Iteration')
+                plt.ylabel('Parameter variation function')
+                plt.tight_layout()
+                if inv.save_plots:
+                    filename = inv.basename + "_smy.pdf"
+                    fig.savefig(filename)
+                if inv.show_plots:
+                    plt.show()
 
     else:
         raise ValueError("Job type not defined")

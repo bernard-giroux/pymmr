@@ -279,7 +279,7 @@ class BaseFV:
         else:
             raise RuntimeError("Solver not defined, cannot set A")
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False, comm=None):
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False):
         """Define parameters of solver to be used during forward modelling.
 
         Parameters
@@ -295,8 +295,6 @@ class BaseFV:
             Apply preconditioning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
-        comm : MPI Communicator or None
-            for mumps solver
 
         Notes
         -----
@@ -351,6 +349,9 @@ class BaseFV:
         self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=self.comm)
         self.precon = precon
         self.do_perm = do_perm
+
+    def set_solver_print_level(self, level):
+        self.solver_A.set_mumps_print_level(level)
 
     def get_solver_params(self):
         """Return parameters needed to instantiate Solver."""
@@ -3313,15 +3314,15 @@ class Solver:
             self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
-            # self.ctx.set_icntl(4, 1)  # print only error messages
+            self.ctx.set_icntl(4, 1)  # print only error messages by default
             if A is None:
                 return
             if self.ctx.myid == 0:
                 self.ctx.set_centralized_sparse(A)
-            if verbose:
+            if verbose and self.ctx.myid == 0:
                 print("    Analyzing & factorizing matrix A ... ", end="", flush=True)
             self.ctx.run(job=4)  # Analysis & Factorization
-            if verbose:
+            if verbose and self.ctx.myid == 0:
                 print("done.")
             self.solver = self._solve_mumps
         elif solver_par[0] == "pardiso":
@@ -3385,6 +3386,11 @@ class Solver:
         elif self.ctx is not None:
             self.ctx.destroy()
 
+    def set_mumps_print_level(self, level):
+        if self.ctx is None:
+            return
+        self.ctx.set_icntl(4, level)
+
     def solve(self, rhs, x0=None, verbose=None):
         """
         Solve Ax = b
@@ -3394,7 +3400,7 @@ class Solver:
         rhs : array_like
             right hand side term.
         x0 : array_like, optional
-            Initial solution initiale.
+            Initial solution.
         verbose : bool, optional
             print info messages.
 
@@ -3422,11 +3428,14 @@ class Solver:
                     # we must have a numpy array
                     x = rhs.copy(order="F")
                 self.ctx.set_rhs(x)
+            else:
+                x = np.empty(rhs.shape)
             self.ctx.run(job=3)  # Solve
             if self.ctx.myid == 0:
                 if verbose:
                     print(" done.")
-                return x
+            self.ctx.comm.Bcast(x, root=0)
+            return x
         elif self.pardiso is True and rhs.ndim == 2:
             assert self.do_perm is False
             if sp.isspmatrix(rhs):
@@ -3612,9 +3621,11 @@ class Solver:
         if self.ctx.myid == 0:
             x = b.flatten().copy()
             self.ctx.set_rhs(x)
+        else:
+            x = np.empty(b.flatten().shape)
         self.ctx.run(job=3)  # Solve
-        if self.ctx.myid == 0:
-            return x
+        self.ctx.comm.Bcast(x, root=0)
+        return x
 
     def print_info(self, file=None):
         if self.want_pardiso:
