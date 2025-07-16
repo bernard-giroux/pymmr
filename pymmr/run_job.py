@@ -121,7 +121,7 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
     filename : string
         Name of VTK file
     comm : MPI Communicator, optional
-        If None,  MPI_COMM_WORLD will be used
+        If None, MPI_COMM_WORLD will be used
     return_sigma : bool, optional
         Returns conductivity
 
@@ -232,7 +232,7 @@ if __name__ == "__main__":
                 elif "model" in keyword.lower():
                     model_file = value
                 elif 'solver' in keyword.lower() and 'name' in keyword.lower():
-                    if value in ('bicgstab', 'gmres'):
+                    if value in ('bicgstab', 'gmres', 'lgmres'):
                         mod = importlib.import_module('scipy.sparse.linalg')
                         solver_name = getattr(mod, value)
                     else:
