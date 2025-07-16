@@ -741,53 +741,89 @@ class VerticalDyke():
         -----
         Solution from pages 1187-1188
         """
-        b = xs - self.xd
-        x = xo[:, 0] - self.xd
-        y = xo[:, 1]
+        b = xs - self.xd         # electrode location relative to dyke
+        x = xo[:, 0] - self.xd   # x coord of observation pt relative to dyke
+        y = xo[:, 1]             # y coord of observation pt
         y2 = y*y
 
-        ind1 = b < 0.0
-        ind2 = np.logical_and(b >= 0.0, b <= self.d)
-        ind3 = b > self.d
+        # indices for the 3 regions
+        ind1 = x < 0.0
+        ind2 = np.logical_and(x >= 0.0, x <= self.d)
+        ind3 = x > self.d
 
         mu = 12.566370614359172e-7
 
+        tmp0 = mu * cs / (4 * np.pi * y)
+        # 2 (n+1) d - b - x
         tmp1 = 2. * (np.tile(self.n, (x.size, 1))+1.)*self.d - b - np.tile(x.reshape(-1, 1), (1, self.n.size))
+        # 2 (n+1) d + b - x
         tmp2 = 2. * (np.tile(self.n, (x.size, 1))+1.)*self.d + b - np.tile(x.reshape(-1, 1), (1, self.n.size))
         tmp3 = b - x
+        # 2 n d + b + x
         tmp4 = 2. * np.tile(self.n, (x.size, 1)) * self.d + b + np.tile(x.reshape(-1, 1), (1, self.n.size))
+        # 2 (n+1) d - b + x
         tmp5 = 2. * (np.tile(self.n, (x.size, 1)) + 1.)*self.d - b + np.tile(x.reshape(-1, 1), (1, self.n.size))
+        tmp6 = -b - x
+        # 2 (n+1) d + b + x
+        tmp7 = 2. * (np.tile(self.n, (x.size, 1)) + 1.) * self.d + b + np.tile(x.reshape(-1, 1), (1, self.n.size))
+        # 2 n d - b + x
+        tmp8 = 2. * np.tile(self.n, (x.size, 1)) * self.d - b + np.tile(x.reshape(-1, 1), (1, self.n.size))
 
         y2t = np.tile(y2.reshape(-1, 1), (1, self.n.size))
 
-        Bz1 = mu * cs / (4*np.pi*y) * (
-            self.k13 + (1. - self.k12) * self.k32 * (
-            np.sum((self.k12*self.k32)**self.n * tmp1 / np.sqrt(y2t + tmp1 * tmp1), axis=1) +
-            self.k12 * np.sum((self.k12*self.k32)**self.n * tmp2 / np.sqrt(y2t + tmp2 * tmp2), axis=1)
+        # case a: electrode within the dyke
+        if 0.0 <= b <= self.d:
+            Bz1 = tmp0 * (
+                self.k13 + (1. - self.k12) * self.k32 * (
+                    np.sum((self.k12 * self.k32) ** self.n * tmp1 / np.sqrt(y2t + tmp1 * tmp1), axis=1) +
+                    self.k12 * np.sum((self.k12 * self.k32) ** self.n * tmp2 / np.sqrt(y2t + tmp2 * tmp2), axis=1)
+                )
+                - self.k12 * tmp3 / np.sqrt(y2 + tmp3 * tmp3)
             )
-            - self.k12 * tmp3/np.sqrt(y2 + tmp3*tmp3)
-        )
 
-        Bz2 = mu * cs / (4*np.pi*y) * (
-            self.k13 + self.k32 * (
-            np.sum((self.k13*self.k32)**self.n * tmp1 / np.sqrt(y2t + tmp1*tmp1), axis=1) +
-            self.k12 * np.sum((self.k12*self.k32)**self.n * tmp2 / np.sqrt(y2t + tmp2*tmp2), axis=1)
-        ) + self.k12 * (
-            np.sum((self.k12*self.k32)**self.n + tmp4 / np.sqrt(y2t + tmp4*tmp4), axis=1) +
-            self.k32 * np.sum((self.k12*self.k32)**self.n + tmp5 / np.sqrt(y2t + tmp5*tmp5), axis=1)
-        )
-        )
+            Bz2 = tmp0 * (
+                self.k13 + self.k32 * (
+                    np.sum((self.k12 * self.k32) ** self.n * tmp1 / np.sqrt(y2t + tmp1 * tmp1), axis=1) +
+                    self.k12 * np.sum((self.k12 * self.k32) ** self.n * tmp2 / np.sqrt(y2t + tmp2 * tmp2), axis=1)
+                ) -
+                self.k12 * (
+                    np.sum((self.k12 * self.k32) ** self.n * tmp4 / np.sqrt(y2t + tmp4 * tmp4), axis=1) +
+                    self.k32 * np.sum((self.k12 * self.k32) ** self.n * tmp5 / np.sqrt(y2t + tmp5 * tmp5), axis=1)
+                )
+            )
 
-        Bz3 = mu * cs / (4*np.pi*y) * (
-            self.k13 - (1. - self.k32) * self.k12 * (
-            np.sum((self.k12*self.k32)**self.n * tmp4 / np.sqrt(y2t + tmp4*tmp4), axis=1) +
-            self.k32 * np.sum((self.k12*self.k32)**self.n * tmp5 / np.sqrt(y2t + tmp5*tmp5), axis=1)
-        ) +
-           self.k32 * -tmp3 / np.sqrt(y2 + tmp3*tmp3)
-        )
+            Bz3 = tmp0 * (
+                self.k13 - (1. - self.k32) * self.k12 * (
+                    np.sum((self.k12 * self.k32) ** self.n * tmp4 / np.sqrt(y2t + tmp4 * tmp4), axis=1) +
+                    self.k32 * np.sum((self.k12 * self.k32) ** self.n * tmp5 / np.sqrt(y2t + tmp5 * tmp5), axis=1)
+                ) +
+                self.k32 * -tmp3 / np.sqrt(y2 + tmp3 * tmp3)
+            )
+        else:   # electrode external to dyke
+            Bz1 = tmp0 * (
+                self.k13 + (1. - self.k12*self.k12) * self.k32 *
+                    np.sum((self.k12 * self.k32) ** self.n * tmp1 / np.sqrt(y2t + tmp1 * tmp1), axis=1) -
+                self.k12 * tmp6 / np.sqrt(y2 + tmp6 * tmp6)
+            )
+
+            Bz2 = tmp0 * (
+                self.k13 + (1. + self.k12) * self.k32 * (
+                    np.sum((self.k12 * self.k32) ** self.n * tmp1 / np.sqrt(y2t + tmp1 * tmp1), axis=1) -
+                    self.k12 * np.sum((self.k12 * self.k32) ** self.n * tmp5 / np.sqrt(y2t + tmp5 * tmp5), axis=1)
+                ) -
+                self.k12 * -tmp3 / np.sqrt(y2 + tmp3 * tmp3)
+            )
+
+            Bz3 = tmp0 * (
+                self.k13 - (1. - self.k32) * self.k12 * (
+                    np.sum((self.k12 * self.k32) ** self.n * tmp8 / np.sqrt(y2t + tmp8 * tmp8), axis=1) +
+                    self.k32 * np.sum((self.k12 * self.k32) ** self.n * tmp7 / np.sqrt(y2t + tmp7 * tmp7), axis=1)
+                )
+                + self.k32 * tmp6 / np.sqrt(y2 + tmp6 * tmp6)
+            )
 
         Bz1[np.logical_not(ind1)] = 0.0
         Bz2[np.logical_not(ind2)] = 0.0
         Bz3[np.logical_not(ind3)] = 0.0
 
-        return Bz1 + Bz2 + Bz3
+        return 1.e9 * (Bz1 + Bz2 + Bz3)
