@@ -3415,7 +3415,10 @@ class Solver:
             verbose = self.verbose
 
         if verbose:
-            print("      Solving system ...", end="", flush=True)
+            if self.ctx is None:
+                print("      Solving system ...", end="", flush=True)
+            elif self.ctx.myid == 0:
+                print("      Solving system ...", end="", flush=True)
 
         # direct solvers mumps & pardiso can take matrices as rhs
 

@@ -436,7 +436,7 @@ class GridMMR():
                                  self.fv.solver_A.A.indptr.nbytes + \
                                  self.fv.solver_A.A.indices.nbytes
 
-            print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576))
+            print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576), flush=True)
         self.u = self.fv.solver_A.solve(q)
 
         B = self.C_f @ self.u

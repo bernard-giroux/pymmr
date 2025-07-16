@@ -454,7 +454,7 @@ class GridDC:
                                      A.indptr.nbytes + \
                                      A.indices.nbytes
 
-                print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576))
+                print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576), flush=True)
             if self.fv.solver_A is None or keep_solver is False:
                 self.fv.solver_A = Solver(self.fv.get_solver_params(), A, self.verbose)
             else:
