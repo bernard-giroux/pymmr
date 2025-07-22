@@ -7,7 +7,7 @@ from Cython.Build import cythonize
 
 if platform.system() == 'Darwin':
   include_dirs = ['/opt/local/libexec/boost/1.81/include', np.get_include()]
-elif if platform.system() == 'Linux':
+elif platform.system() == 'Linux':
   include_dirs = ['../boost_1_88_0', np.get_include()]
 
 setup(
