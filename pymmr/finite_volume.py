@@ -262,7 +262,7 @@ class BaseFV:
             self.want_superlu = True
         self._want_mumps = False
         self.solver_A = None
-        self.precon = False
+        self.precon = '0'
         self.do_perm = False
 
     @property
@@ -279,7 +279,7 @@ class BaseFV:
         else:
             raise RuntimeError("Solver not defined, cannot set A")
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False):
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon='0', do_perm=False):
         """Define parameters of solver to be used during forward modelling.
 
         Parameters
@@ -291,8 +291,8 @@ class BaseFV:
             Tolerance for the iterative solver
         max_it : int, optional
             Max nbr of iteration for the iterative solver
-        precon : bool, optional
-            Apply preconditioning.
+        precon : string, optional
+            Apply preconditioning, possible values are 'ilu', 'diag', or '0' for no preconditionning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
 
@@ -3255,7 +3255,7 @@ class Solver:
 
     def __init__(self, solver_par, A=None, verbose=False, comm=None):
         self._A = A
-        self.precon = False
+        self.precon = '0'
         self.do_perm = False
         self.Mpre = None
         self.perm = None
@@ -3296,18 +3296,24 @@ class Solver:
                 if self.verbose:
                     print("done.")
 
-            if self.precon:
+            if self.precon != '0':
                 if self.verbose:
                     print("  Computing preconditioning matrix ... ", end="", flush=True)
-                try:
-                    self.Mpre = sp.linalg.spilu(self.A.tocsc())
-                    self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
-                except RuntimeError as err:
-                    if self.verbose:
-                        print(err)
-                        print("Switching to using diagonal of A")
+                if self.precon == 'diag':
                     Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
                     self.Mpre = sp.linalg.aslinearoperator(Ainv)
+                elif self.precon == 'ilu':
+                    try:
+                        self.Mpre = sp.linalg.spilu(self.A.tocsc())
+                        self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
+                    except RuntimeError as err:
+                        if self.verbose:
+                            print(err)
+                            print("Switching to using diagonal of A")
+                        Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                        self.Mpre = sp.linalg.aslinearoperator(Ainv)
+                else:
+                    raise ValueError("Unknown preconditioning solver")
                 if self.verbose:
                     print("done.")
 
@@ -3604,18 +3610,24 @@ class Solver:
             if self.verbose:
                 print("done.")
 
-        if self.precon:
+        if self.precon != '0':
             if self.verbose:
                 print("  Computing preconditioning matrix ... ", end="", flush=True)
-            try:
-                self.Mpre = sp.linalg.spilu(self.A.tocsc())
-                self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
-            except RuntimeError as err:
-                if self.verbose:
-                    print(err)
-                    print("Switching to using diagonal of A")
+            if self.precon == 'diag':
                 Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
                 self.Mpre = sp.linalg.aslinearoperator(Ainv)
+            elif self.precon == 'ilu':
+                try:
+                    self.Mpre = sp.linalg.spilu(self.A.tocsc())
+                    self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
+                except RuntimeError as err:
+                    if self.verbose:
+                        print(err)
+                        print("Switching to using diagonal of A")
+                    Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                    self.Mpre = sp.linalg.aslinearoperator(Ainv)
+            else:
+                raise ValueError("Unknown preconditioning solver")
             if self.verbose:
                 print("done.")
         self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
@@ -3649,8 +3661,8 @@ class Solver:
                 print("    Inverse Cuthill-McKee Permutation: used")
             else:
                 print("    Inverse Cuthill-McKee Permutation: not used")
-            if self.precon:
-                print("    Preconditioning: used")
+            if self.precon != '0':
+                print("    Preconditioning: " + self.precon)
             else:
                 print("    Preconditioning: not used")
 

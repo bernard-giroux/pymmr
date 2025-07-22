@@ -272,7 +272,7 @@ class GridMMR:
         self.nobs_mmr = np.sum(self.nobs_xs)
         self.acq_checked = True
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False):
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon='0', do_perm=False):
         """Define parameters of solver to be used during forward modelling.
 
         Parameters
@@ -284,8 +284,8 @@ class GridMMR:
             Tolerance for the iterative solver
         max_it : int, optional
             Max nbr of iteration for the iterative solver
-        precon : bool, optional
-            Apply preconditioning.
+        precon : string, optional
+            Apply preconditioning, possible values are 'ilu', 'diag', or '0' for no preconditionning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
 
@@ -676,7 +676,7 @@ def normal_field(c1c2, xo, cs=1.0):
     return B1 * np.sin(theta1) + B2 * np.sin(theta2), -B1 * np.cos(theta1) - B2 * np.cos(theta2)
 
 
-class VerticalDyke():
+class VerticalDyke:
     """
         Compute MMR anomaly for a vertical dyke.
 

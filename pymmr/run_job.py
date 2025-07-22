@@ -30,7 +30,7 @@ The keywords are :
 - **solver name** : Choice of solver
 - **solver max_it** : Maximum number of iteration for iterative solvers
 - **solver tol** : Target tolerance for iterative solvers
-- **precon** : Apply preconditioning when using iterative solvers
+- **precon** : Apply preconditioning when using iterative solvers ('ilu', 'diag', or '0' for no preconditionning)
 - **permut** : Apply inverse Cuthill-McKee permutation when using iterative solvers
 - **region of interest** : Extents of region of interest for inversion or sensitivity calculation
 - **verbose** : Display progress messages
@@ -201,7 +201,7 @@ if __name__ == "__main__":
     tol = 1.e-9
     solver_name = "mumps"
     max_it = 1000
-    precon = False
+    precon = '0'
     do_perm = False
     mumps_print_level = 1
 
@@ -242,7 +242,7 @@ if __name__ == "__main__":
                 elif 'solver' in keyword.lower() and 'tol' in keyword.lower():
                     tol = float(value)
                 elif 'precon' in keyword.lower():
-                    precon = int(value)
+                    precon = value
                 elif 'permut' in keyword.lower():
                     do_perm = int(value)
                 elif 'verbose' in keyword.lower():
@@ -287,6 +287,8 @@ if __name__ == "__main__":
                     mumps_print_level = int(value)
 
     # Done reading parameter file
+    if precon == '1':
+        precon = 'ilu'
 
     if job is None:
         raise RuntimeError("Type of job not specified")

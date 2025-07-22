@@ -315,7 +315,7 @@ class GridDC:
 
             return self.fv.x[ind_x], self.fv.y[ind_y], self.fv.z[ind_z]
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon=False, do_perm=False):
+    def set_solver(self, name, tol=1e-9, max_it=1000, precon='0', do_perm=False):
         """Define parameters of solver to be used during forward modelling.
 
         Parameters
@@ -327,8 +327,8 @@ class GridDC:
             Tolerance for the iterative solver
         max_it : int, optional
             Max nbr of iteration for the iterative solver
-        precon : bool, optional
-            Apply preconditioning.
+        precon : string, optional
+            Apply preconditioning, possible values are 'ilu', 'diag', or '0' for no preconditionning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
 
