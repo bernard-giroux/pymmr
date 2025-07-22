@@ -29,14 +29,15 @@ import copy
 
 import numpy as np
 import scipy.sparse as sp
+from scipy.special import legendre_p_all
 
 from pymmr.dc import GridDC
 from pymmr.finite_volume import calc_padding, GridFV, MeshFV, Solver
-
+from pymmr.legendre import p_prime
 
 # %% class GridMMR
 
-class GridMMR():
+class GridMMR:
     """Grid for magnetometric resistivity modelling.
 
     Parameters
@@ -739,7 +740,7 @@ class VerticalDyke():
 
         Notes
         -----
-        Solution from pages 1187-1188
+        Solution from pages 1187-1188 and thesis of Boggs
         """
         b = xs - self.xd         # electrode location relative to dyke
         x = xo[:, 0] - self.xd   # x coord of observation pt relative to dyke
@@ -814,12 +815,13 @@ class VerticalDyke():
                 self.k12 * -tmp3 / np.sqrt(y2 + tmp3 * tmp3)
             )
 
+            # TODO double check next equation
             Bz3 = tmp0 * (
                 self.k13 - (1. - self.k32) * self.k12 * (
-                    np.sum((self.k12 * self.k32) ** self.n * tmp8 / np.sqrt(y2t + tmp8 * tmp8), axis=1) +
-                    self.k32 * np.sum((self.k12 * self.k32) ** self.n * tmp7 / np.sqrt(y2t + tmp7 * tmp7), axis=1)
+                    np.sum((self.k12 * self.k32) ** self.n * tmp8 / np.sqrt(y2t + tmp8 * tmp8), axis=1) #+
+#                    self.k32 * np.sum((self.k12 * self.k32) ** self.n * tmp7 / np.sqrt(y2t + tmp7 * tmp7), axis=1)
                 )
-                + self.k32 * tmp6 / np.sqrt(y2 + tmp6 * tmp6)
+                + self.k32 * -tmp6 / np.sqrt(y2 + tmp6 * tmp6)     # sign of tmp6 changed from thesis of Boggs
             )
 
         Bz1[np.logical_not(ind1)] = 0.0
@@ -827,3 +829,144 @@ class VerticalDyke():
         Bz3[np.logical_not(ind3)] = 0.0
 
         return 1.e9 * (Bz1 + Bz2 + Bz3)
+
+
+class HemisphericalDepression:
+    """Compute MMR anomaly for a half-sphere.
+
+    Reference
+    ---------
+
+    """
+
+    def __init__(self, rho0, rho1, a, b, n_max=100):
+        """Initialize a HemisphericalDepression object.
+
+        Parameters
+        ----------
+        rho0 : float
+            Resistivity of host rock
+        rho1 : float
+            Resistivity of hemispherica depression
+        a: float
+            Radius of the hemispherical depression
+        b: float
+            Y coordinate of the hemispherical depression center
+        n_max: int
+            Upper limit of summations. Default is 100.
+
+        Notes
+        -----
+        The solution given by Edwards and Nabighian considers that X-coordonate of both the current electrode and the
+        center of the hemispherical depression are equal to zero, and that the current electrode is at (0, 0).
+        """
+        self.rho0 = rho0
+        self.rho1 = rho1
+        self.a = a
+        self.b = b
+        self.n_max = n_max
+
+    @property
+    def n_max(self):
+        return self.n[-1]
+
+    @n_max.setter
+    def n_max(self, n_max):
+        self.n = np.arange(1, n_max+1)
+
+    def fwd_mod_cond(self, xo, cs=1.0):
+        """Forward MMR solution for a conductive depression
+
+        Parameters
+        ----------
+        xo : array_like
+            X,Y,Z coordinates of observation points (m).
+        cs : float
+            Current intensity (A).
+
+        Returns
+        -------
+            Vertical B-field anomaly (nT).
+
+        Notes
+        -----
+        The current electrode is assumed to be located at (0, 0).
+        """
+        r = np.sqrt(xo[:, 0] ** 2 + (xo[:, 1] + self.b) ** 2)
+        sin_theta = xo[:, 0] / r
+        cos_theta = (xo[:, 1] + self.b) / r
+
+        mu = 12.566370614359172e-7
+
+        A = mu * cs * sin_theta / (4 * np.pi)
+
+        ind_d = r <= self.a
+
+        if self.a > np.abs(self.b):  # electrode inside depression
+            raise ValueError
+
+        # field in depression
+        tmp = r/self.b
+        Bz1 = A/self.b * (cos_theta - (cos_theta - tmp) /
+                          np.sqrt(1 - 2*tmp*cos_theta + tmp**2))
+
+        # field in host rock
+        tmp = self.a**2/(r*self.b)
+        Bz0 = A*self.a / (r*self.b) * (cos_theta - (cos_theta - tmp) /
+                                       np.sqrt(1 - 2*tmp*cos_theta + tmp**2))
+
+        Bz1[np.logical_not(ind_d)] = 0.0
+        Bz0[ind_d] = 0.0
+
+        return 1.e9 * (Bz0 + Bz1)
+
+
+    def fwd_mod(self, xo, cs=1.0):
+        """Forward MMR solution
+
+        Parameters
+        ----------
+        xo : array_like
+            X,Y,Z coordinates of observation points (m).
+        cs : float
+            Current intensity (A).
+
+        Returns
+        -------
+            Vertical B-field anomaly (nT).
+
+        Notes
+        -----
+        The current electrode is assumed to be located at (0, 0).
+        """
+        r = np.sqrt(xo[:, 0] ** 2 + (xo[:, 1] + self.b) ** 2)
+        sin_theta = xo[:, 0] / r
+        cos_theta = (xo[:, 1] + self.b) / r
+        sin_theta[r==0.0] = 0.0
+        cos_theta[r == 0.0] = 1.0
+
+        Cn = (self.rho1 - self.rho0) / ((self.n + 1) * self.rho1 + self.n * self.rho0)
+        Cn = np.tile(Cn.reshape(-1, 1), (1, r.size))
+        mu = 12.566370614359172e-7
+
+        tmp0 = mu * cs * sin_theta / ( 4 * np.pi * r)
+        tmp0[r==0] = 0.0
+        tmp1 = p_prime(self.n.astype(np.int32), cos_theta)
+
+        ind_d = r <= self.a
+
+        if self.a < np.abs(self.b):  # electrode outside depression
+            # field in depression
+            Bz1 = -tmp0 * np.sum(Cn * (np.tile(r, (self.n.size, 1))/self.b)**(np.tile(self.n.reshape(-1,1), (1, r.size)) + 1) * tmp1, axis=0)
+            # field in host rock
+            Bz0 = -tmp0 * np.sum(Cn * (self.a/np.tile(r, (self.n.size, 1)))**np.tile(self.n.reshape(-1,1), (1, r.size)) *
+                                (self.a / self.b)**(np.tile(self.n.reshape(-1,1), (1, r.size)) + 1) * tmp1, axis=0)
+        else:
+            Bz1 = -tmp0 * np.sum(Cn * (np.tile(r, (self.n.size, 1))/self.a)**(np.tile(self.n.reshape(-1,1), (1, r.size)) + 1) *
+                                 (self.b / self.a)**np.tile(self.n.reshape(-1,1), (1, r.size)) * tmp1, axis=0)
+            Bz0 = -tmp0 * np.sum(Cn * (self.b / np.tile(r, (self.n.size, 1)))**np.tile(self.n.reshape(-1,1), (1, r.size)) * tmp1, axis=0)
+
+        Bz1[np.logical_not(ind_d)] = 0.0
+        Bz0[ind_d] = 0.0
+
+        return 1.e9 * (Bz0 + Bz1)
