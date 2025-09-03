@@ -288,7 +288,7 @@ class BaseFV:
             If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
             If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
         tol : float, optional
-            Tolerance for the iterative solver
+            Absolute tolerance (atol) for the iterative solver
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : string, optional
@@ -3317,7 +3317,7 @@ class Solver:
                 if self.verbose:
                     print("done.")
 
-            self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
+            self.solver = lambda A, b: self.slv(A, b, x0=self.x0, atol=self.tol, maxiter=self.max_it, M=self.Mpre)
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages by default
@@ -3422,9 +3422,9 @@ class Solver:
 
         if verbose:
             if self.ctx is None:
-                print("      Solving system ...", end="", flush=True)
+                print("      Solving system ...", flush=True)
             elif self.ctx.myid == 0:
-                print("      Solving system ...", end="", flush=True)
+                print("      Solving system ...", flush=True)
 
         # direct solvers mumps & pardiso can take matrices as rhs
 
@@ -3457,9 +3457,6 @@ class Solver:
                 print(" done.")
             return x
 
-        if verbose > 1:
-            res = []
-
         if rhs.ndim == 1:
             rhs = np.atleast_2d(rhs).T
 
@@ -3476,7 +3473,7 @@ class Solver:
                 pre_msg = ""
                 for _ in range(nback):
                     pre_msg += "\b"
-                msg = pre_msg + "  iteration " + str(ns + 1) + "/" + str(rhs.shape[1]) + " "
+                msg = pre_msg + "        iteration " + str(ns + 1) + "/" + str(rhs.shape[1]) + " "
                 print(msg, end="", flush=True)
 
             if x0 is not None:
@@ -3499,18 +3496,20 @@ class Solver:
                 info = 0
 
             if info > 0:
+                conv = np.linalg.norm(qi - self._A @ u)
                 print(
                     "{0:}: convergence not achieved, stopped after {1:d} \
-    iterations for tol = {2:g}".format(
-                        self.solver.__name__, info, self.tol
+iterations for tol = {2:g} with residuals = {3:g}".format(
+                        self.solver.__name__, info, self.tol, conv
                     )
                 )
             elif info < 0:
                 print("{0:s}: illegal input or breakdown, switching to spsolve".format(self.solver.__name__))
                 u = spsolve(self._A, qi)
 
-            if verbose > 1:
-                res.append(np.linalg.norm(self._A @ u - np.array(qi).flatten()))
+            if verbose > 0 >= info:
+                conv = np.linalg.norm(qi - self._A @ u)
+                print(", residuals = {0:g}".format(conv), flush=True)
 
             if self.do_perm:
                 v[:, ns] = u[self.inv_perm]
@@ -3518,12 +3517,7 @@ class Solver:
                 v[:, ns] = u
 
         if verbose:
-            print("done.")
-
-        if verbose > 1:
-            print("        norm of residuals =", end="")
-            [print("   {:3.2e}".format(x), end="") for x in res]
-            print("")
+            print("      done.")
 
         return v
 
@@ -3630,7 +3624,7 @@ class Solver:
                 raise ValueError("Unknown preconditioning solver")
             if self.verbose:
                 print("done.")
-        self.solver = lambda A, b: self.slv(A, b, x0=self.x0, rtol=self.tol, maxiter=self.max_it, M=self.Mpre)
+        self.solver = lambda A, b: self.slv(A, b, x0=self.x0, atol=self.tol, maxiter=self.max_it, M=self.Mpre)
 
     def _solve_mumps(self, A, b):
         if self.ctx.myid == 0:
