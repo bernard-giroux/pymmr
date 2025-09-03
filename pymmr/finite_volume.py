@@ -249,7 +249,8 @@ class BaseFV:
         self.dim = 0
         self.verbose = False
         self.solver = bicgstab
-        self.tol = 1e-9
+        self.atol = 1e-9
+        self.rtol = 1e-5
         self.max_it = 1000
         self._want_pardiso = False
         self._want_pastix = False
@@ -279,7 +280,7 @@ class BaseFV:
         else:
             raise RuntimeError("Solver not defined, cannot set A")
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon='0', do_perm=False):
+    def set_solver(self, name, atol=1e-9, rtol=1e-5, max_it=1000, precon='0', do_perm=False):
         """Define parameters of solver to be used during forward modelling.
 
         Parameters
@@ -287,8 +288,10 @@ class BaseFV:
         name : `string` or `callable`
             If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
             If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
-        tol : float, optional
+        atol : float, optional
             Absolute tolerance (atol) for the iterative solver
+        rtol : float, optional
+            Relative tolerance (rtol) for the iterative solver
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : string, optional
@@ -302,7 +305,8 @@ class BaseFV:
         """
         if callable(name):
             self.solver = name
-            self.tol = tol
+            self.atol = atol
+            self.rtol = rtol
             self.max_it = max_it
             self.want_pardiso = False
             self.want_pastix = False
@@ -346,7 +350,7 @@ class BaseFV:
         if self.want_superlu:
             name = 'superlu'
 
-        self.solver_A = Solver((name, tol, max_it, precon, do_perm), verbose=self.verbose, comm=self.comm)
+        self.solver_A = Solver((name, atol, rtol, max_it, precon, do_perm), verbose=self.verbose, comm=self.comm)
         self.precon = precon
         self.do_perm = do_perm
 
@@ -366,7 +370,7 @@ class BaseFV:
         elif self.want_umfpack:
             return ("umfpack",)
         else:
-            return self.solver, self.tol, self.max_it, self.precon, self.do_perm
+            return self.solver, self.atol, self.rtol, self.max_it, self.precon, self.do_perm
 
     @property
     def want_pardiso(self):
@@ -3244,7 +3248,7 @@ class Solver:
         Parameters of the solver, 1st element can be str or callable
         If str: name of solver (pardiso, umfpack, or mumps)
         If callable (iterative solver of scipy.sparse.linalg, eg `bicgstab`), the remaining elements are:
-        `tol`, `max_it`, `precon`, `do_perm`
+        `atol`, `rtol`, `max_it`, `precon`, `do_perm`
     A : spmatrix, optional
         Matrix on left-hand side
     verbose : bool, optional
@@ -3276,10 +3280,11 @@ class Solver:
             # solveur itératif
 
             self.slv = solver_par[0]
-            self.tol = solver_par[1]
-            self.max_it = solver_par[2]
-            self.precon = solver_par[3]
-            self.do_perm = solver_par[4]
+            self.atol = solver_par[1]
+            self.rtol = solver_par[2]
+            self.max_it = solver_par[3]
+            self.precon = solver_par[4]
+            self.do_perm = solver_par[5]
 
             if A is None:
                 return
@@ -3317,7 +3322,8 @@ class Solver:
                 if self.verbose:
                     print("done.")
 
-            self.solver = lambda A, b: self.slv(A, b, x0=self.x0, atol=self.tol, maxiter=self.max_it, M=self.Mpre)
+            self.solver = lambda A, b: self.slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol, maxiter=self.max_it,
+                                                M=self.Mpre)
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages by default
@@ -3499,8 +3505,8 @@ class Solver:
                 conv = np.linalg.norm(qi - self._A @ u)
                 print(
                     "{0:}: convergence not achieved, stopped after {1:d} \
-iterations for tol = {2:g} with residuals = {3:g}".format(
-                        self.solver.__name__, info, self.tol, conv
+iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals = {5:g}".format(
+                        self.solver.__name__, info, self.atol, self.rtol, np.linalg.norm(qi), conv
                     )
                 )
             elif info < 0:
@@ -3624,7 +3630,8 @@ iterations for tol = {2:g} with residuals = {3:g}".format(
                 raise ValueError("Unknown preconditioning solver")
             if self.verbose:
                 print("done.")
-        self.solver = lambda A, b: self.slv(A, b, x0=self.x0, atol=self.tol, maxiter=self.max_it, M=self.Mpre)
+        self.solver = lambda A, b: self.slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol, maxiter=self.max_it,
+                                            M=self.Mpre)
 
     def _solve_mumps(self, A, b):
         if self.ctx.myid == 0:
@@ -3650,7 +3657,8 @@ iterations for tol = {2:g} with residuals = {3:g}".format(
         else:
             print("    Solver: " + self.slv.__name__)
             print("      max_it: " + str(self.max_it))
-            print("      tolerance: " + str(self.tol))
+            print("      abs tolerance: " + str(self.atol))
+            print("      rel tolerance: " + str(self.rtol))
             if self.do_perm:
                 print("    Inverse Cuthill-McKee Permutation: used")
             else:

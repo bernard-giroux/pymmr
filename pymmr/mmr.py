@@ -272,7 +272,7 @@ class GridMMR:
         self.nobs_mmr = np.sum(self.nobs_xs)
         self.acq_checked = True
 
-    def set_solver(self, name, tol=1e-9, max_it=1000, precon='0', do_perm=False):
+    def set_solver(self, name, atol=1e-9, rtol=1e-5, max_it=1000, precon='0', do_perm=False):
         """Define parameters of solver to be used during forward modelling.
 
         Parameters
@@ -280,8 +280,10 @@ class GridMMR:
         name : `string` or `callable`
             If `string`: name of solver (mumps, pardiso, umfpack, or superlu)
             If `callable`: (iterative solver from scipy.sparse.linalg, e.g. bicgstab)
-        tol : float, optional
-            Tolerance for the iterative solver
+        atol : float, optional
+            Absolute tolerance for the iterative solver
+        rtol : float, optional
+            Relative tolerance for the iterative solver
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : string, optional
@@ -294,8 +296,8 @@ class GridMMR:
         `precon` et `do_perm` are used only with iterative solvers.
 
         """
-        self.dc.fv.set_solver(name, tol, max_it, precon, do_perm)
-        self.fv.set_solver(name, tol, max_it, precon, do_perm)
+        self.dc.fv.set_solver(name, atol, rtol, max_it, precon, do_perm)
+        self.fv.set_solver(name, atol, rtol, max_it, precon, do_perm)
 
     def set_solver_print_level(self, level):
         self.dc.fv.set_solver_print_level(level)

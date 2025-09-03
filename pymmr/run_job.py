@@ -29,7 +29,8 @@ The keywords are :
 - **inv max_it** : Maximum number of inversion iterations
 - **solver name** : Choice of solver
 - **solver max_it** : Maximum number of iteration for iterative solvers
-- **solver tol** : Target tolerance for iterative solvers
+- **solver atol** : Target absolute tolerance for iterative solvers
+- **solver rtol** : Target relative tolerance for iterative solvers
 - **precon** : Apply preconditioning when using iterative solvers ('ilu', 'diag', or '0' for no preconditionning)
 - **permut** : Apply inverse Cuthill-McKee permutation when using iterative solvers
 - **region of interest** : Extents of region of interest for inversion or sensitivity calculation
@@ -198,7 +199,8 @@ if __name__ == "__main__":
     calc_J = False
     calc_sens = False
     units = "mV"
-    tol = 1.e-9
+    rtol = 1.e-5
+    atol = 1.e-9
     solver_name = "mumps"
     max_it = 1000
     precon = '0'
@@ -239,8 +241,12 @@ if __name__ == "__main__":
                         solver_name = value.lower()
                 elif 'solver' in keyword.lower() and 'max_it' in keyword.lower():
                     max_it = int(value)
-                elif 'solver' in keyword.lower() and 'tol' in keyword.lower():
-                    tol = float(value)
+                elif 'solver' in keyword.lower() and 'rtol' in keyword.lower():
+                    rtol = float(value)
+                elif 'solver' in keyword.lower() and 'atol' in keyword.lower():
+                    atol = float(value)
+                elif 'solver' in keyword.lower() and 'tol' in keyword.lower():   # left for legacy input files
+                    atol = float(value)
                 elif 'precon' in keyword.lower():
                     precon = value
                 elif 'permut' in keyword.lower():
@@ -316,7 +322,7 @@ if __name__ == "__main__":
     m_ref = sigma
 
     g.verbose = verbose
-    g.set_solver(solver_name, tol, max_it, precon, do_perm)
+    g.set_solver(solver_name, atol, rtol, max_it, precon, do_perm)
     if solver_name == 'mumps':
         g.set_solver_print_level(mumps_print_level)
     if roi is not None:
