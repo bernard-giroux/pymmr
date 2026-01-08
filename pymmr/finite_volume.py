@@ -1584,6 +1584,12 @@ class GridFV(BaseFV):
                                                     u0[self.ind(ix, iy, iz+1), i],
                                                     u0[self.ind(ix-1, iy, iz), i],
                                                     u0[self.ind(ix, iy-1, iz), i]])
+                    elif iz == self.nz-1:
+                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
+                                                    u0[self.ind(ix, iy + 1, iz), i],
+                                                    u0[self.ind(ix - 1, iy, iz), i],
+                                                    u0[self.ind(ix, iy - 1, iz), i],
+                                                    u0[self.ind(ix, iy, iz - 1), i]])
                     else:
                         u0[ind[0][j], i] = np.mean([u0[self.ind(ix+1, iy, iz), i],
                                                     u0[self.ind(ix, iy+1, iz), i],
@@ -3446,10 +3452,10 @@ class Solver:
             else:
                 x = np.empty(rhs.shape)
             self.ctx.run(job=3)  # Solve
-            if self.ctx.myid == 0:
                 if verbose:
                     print(" done.")
             self.ctx.comm.Bcast(x, root=0)
+            if self.ctx.myid == 0 and verbose:
             return x
         elif self.pardiso is True and rhs.ndim == 2:
             assert self.do_perm is False
@@ -3460,7 +3466,7 @@ class Solver:
                 x = rhs.copy(order="F")
             x = self.solver(self._A, x)
             if verbose:
-                print(" done.")
+                res = np.linalg.norm(rhs - self._A @ x, axis=0)
             return x
 
         if rhs.ndim == 1:
