@@ -3452,10 +3452,12 @@ class Solver:
             else:
                 x = np.empty(rhs.shape)
             self.ctx.run(job=3)  # Solve
-                if verbose:
-                    print(" done.")
             self.ctx.comm.Bcast(x, root=0)
             if self.ctx.myid == 0 and verbose:
+                res = np.linalg.norm(rhs - self._A @ x, axis=0)
+                print("        Residuals: ", res)
+                print("      done.")
+
             return x
         elif self.pardiso is True and rhs.ndim == 2:
             assert self.do_perm is False
@@ -3467,6 +3469,8 @@ class Solver:
             x = self.solver(self._A, x)
             if verbose:
                 res = np.linalg.norm(rhs - self._A @ x, axis=0)
+                print("        Residuals: ", res)
+                print("      done.")
             return x
 
         if rhs.ndim == 1:
