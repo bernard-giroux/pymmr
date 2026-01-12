@@ -88,8 +88,14 @@ z : elevation
 
 
 """
+try:
+    from mpi4py import MPI
+except (ImportError, RuntimeError) as e:
+    import types
 
-from mpi4py import MPI
+    MPI = types.SimpleNamespace()
+    MPI.COMM_WORLD = types.SimpleNamespace()
+    MPI.COMM_WORLD.rank = 0
 
 import importlib
 import re
@@ -185,7 +191,7 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
 
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
+    rank = comm.rank
 
     basename = "pymmr"
     job = None

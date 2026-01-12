@@ -76,11 +76,12 @@ try:
     except ImportError:
         pass
 
-except ImportError:
+except (ImportError, RuntimeError) as e:
+    print("Warning, importing mpi4py failed:", e)
     import types
     MPI = types.SimpleNamespace()
     MPI.COMM_WORLD = types.SimpleNamespace()
-    MPI.COMM_WORLD.rank = None
+    MPI.COMM_WORLD.rank = 0
 
 try:
     import pypastix
