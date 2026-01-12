@@ -153,7 +153,7 @@ class GridDC:
         self.c1c2_u = None
         self.cs12_u = None
         self.units = units
-        self._verbose = False
+        self.verbose = False
 
     @property
     def nc(self):
@@ -238,15 +238,6 @@ class GridDC:
             raise ValueError('Wrong units of voltage')
         self._units = val
         self._units_scaling = GridDC.units_scaling_factors[val]
-
-    @property
-    def verbose(self):
-        return self._verbose
-
-    @verbose.setter
-    def verbose(self, val):
-        self._verbose = val
-        self.fv.verbose = val
 
     def set_survey_ert(self, c1c2, p1p2, cs):
         """Set survey variables.

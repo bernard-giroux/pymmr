@@ -78,6 +78,7 @@ class GridMMR:
             self.fv = MeshFV(param_fv, comm=comm)
 
         self.dc = GridDC(param_fv, units='mV', comm=comm)
+        self.dc.verbose = False
         self.acq_checked = False
         self._xs = None
         self._xo = None
@@ -90,7 +91,7 @@ class GridMMR:
         self.nobs_xs = None
         self.nobs_mmr = 0
         self.units = units
-        self._verbose = False
+        self.verbose = False
 
     @property
     def apply_bc(self):
@@ -202,22 +203,6 @@ class GridMMR:
         self._units_scaling = GridMMR.units_scaling_factors[val]
 
     def set_survey_mmr(self, xs, xo, cs):
-    @property
-    @property
-    def verbose(self):
-        return self._verbose
-
-    @verbose.setter
-    def verbose(self, val):
-        self._verbose = val
-        self.fv.verbose = val
-        if val > 1:
-            self.dc.verbose = True
-        else:
-            self.dc.verbose = False
-
-
-    def set_survey_mmr(self, xs: Iterable , xo: Iterable , cs: Iterable | float, pod_e: tuple | float = None) -> None:
         """Set survey variables.
 
         Parameters
