@@ -382,7 +382,7 @@ class BaseFV:
         if val is True and has_pardiso is False:
             warnings.warn("Pardiso not available, default solver used.", RuntimeWarning, stacklevel=2)
             self._want_pardiso = False
-            self.want_umfpack = True
+            self.want_superlu = True
         else:
             self._want_pardiso = val
 
@@ -396,7 +396,7 @@ class BaseFV:
         if val is True and has_pastix is False:
             warnings.warn("Pastix not available, default solver used.", RuntimeWarning, stacklevel=2)
             self._want_pastix = False
-            self.want_umfpack = True
+            self.want_superlu = True
         else:
             self._want_pastix = val
 
@@ -424,7 +424,7 @@ class BaseFV:
         if val is True and has_mumps is False:
             warnings.warn("MUMPS not available, default solver used.", RuntimeWarning, stacklevel=2)
             self._want_mumps = False
-            self.want_umfpack = True
+            self.want_superlu = True
         else:
             self._want_mumps = val
 
