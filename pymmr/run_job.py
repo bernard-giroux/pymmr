@@ -212,6 +212,9 @@ if __name__ == "__main__":
     precon = '0'
     do_perm = False
     mumps_print_level = 1
+    pod_e_x = 0.0
+    pod_e_y = 0.0
+    pod_e_z = 0.0
 
     kw_pattern = re.compile("\\s?(.+)\\s?#\\s?([\\w\\s]+),")
 
@@ -297,6 +300,12 @@ if __name__ == "__main__":
                     inv.start_from_chkpt = bool(value)
                 elif "mumps" in keyword.lower() and "print" in keyword.lower() and "level" in keyword.lower():
                     mumps_print_level = int(value)
+                elif "pod" in keyword.lower() and "dipole" in keyword.lower() and "x" in keyword.lower():
+                    pod_e_x = float(value)
+                elif "pod" in keyword.lower() and "dipole" in keyword.lower() and "y" in keyword.lower():
+                    pod_e_y = float(value)
+                elif "pod" in keyword.lower() and "dipole" in keyword.lower() and "z" in keyword.lower():
+                    pod_e_z = float(value)
 
     # Done reading parameter file
     if precon == '1':
@@ -336,8 +345,14 @@ if __name__ == "__main__":
     g.apply_bc = apply_bc
 
     if "fwd" in job and "mmr" in job:
-        g.set_survey_mmr(c1c2, meas, cs)
+        if pod_e_x != 0.0 or pod_e_y != 0.0 or pod_e_z != 0.0:
+            pod_e = (pod_e_x, pod_e_y, pod_e_z)
+        else:
+            pod_e = None
+        g.set_survey_mmr(c1c2, meas, cs, pod_e=pod_e)
         data = g.fwd_mod(sigma, calc_sens=calc_sens)
+        if pod_e is not None:
+            data, data_pod_e = data
 
         if verbose and rank == 0:
             endtime = datetime.now()
@@ -369,6 +384,29 @@ if __name__ == "__main__":
             np.savetxt(filename, np.c_[xs, xo, data, cs], header=header, fmt="%g")
             if verbose:
                 print("done.")
+            if pod_e is not None:
+                save_data = None
+                if pod_e_x != 0.0:
+                    p2 = xo + np.tile(np.array([[pod_e_x, 0.0, 0.0]]), (xo.shape[0], 1))
+                    p1p2 = np.c_[xo, p2]
+                    save_data = np.c_[xs, p1p2, data_pod_e[:, 0], cs]
+                if pod_e_y != 0.0:
+                    p2 = xo + np.tile(np.array([[0.0, pod_e_y, 0.0]]), (xo.shape[0], 1))
+                    p1p2 = np.c_[xo, p2]
+                    if save_data is None:
+                        save_data = np.c_[xs, p1p2, data_pod_e[:, 1], cs]
+                    else:
+                        save_data = np.r_[save_data, np.c_[xs, p1p2, data_pod_e[:, 1], cs]]
+                if pod_e_z != 0.0:
+                    p2 = xo + np.tile(np.array([[0.0, 0.0, pod_e_z]]), (xo.shape[0], 1))
+                    p1p2 = np.c_[xo, p2]
+                    if save_data is None:
+                        save_data = np.c_[xs, p1p2, data_pod_e[:, 2], cs]
+                    else:
+                        save_data = np.r_[save_data, np.c_[xs, p1p2, data_pod_e[:, 2], cs]]
+                header = "c1_x c1_y c1_z c2_x c2_y c2_z p1_x p1_y p1_z p2_x p2_y p2_z V cs"
+                filename = basename + "_mmr_e.dat"
+                np.savetxt(filename, save_data, header=header, fmt="%g")
 
     elif "fwd" in job and ("dc" in job or "ert" in job):
         g.set_survey_ert(c1c2, meas, cs)

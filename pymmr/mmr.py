@@ -26,6 +26,7 @@ Main reference:
 
 """
 import copy
+from typing import Iterable
 
 import numpy as np
 import scipy.sparse as sp
@@ -91,7 +92,7 @@ class GridMMR:
         self.nobs_xs = None
         self.nobs_mmr = 0
         self.units = units
-        self.verbose = False
+        self._verbose = False
 
     @property
     def apply_bc(self):
@@ -202,7 +203,22 @@ class GridMMR:
         self._units = val
         self._units_scaling = GridMMR.units_scaling_factors[val]
 
-    def set_survey_mmr(self, xs, xo, cs):
+
+
+            self.dc.verbose = False
+        else:
+    @property
+    def verbose(self):
+        return self._verbose
+
+    @verbose.setter
+    def verbose(self, val):
+        self._verbose = val
+        self.fv.verbose = val
+        if val > 1:
+            self.dc.verbose = True
+    def set_survey_mmr(self, xs: Iterable , xo: Iterable , cs: Iterable | float, pod_e: tuple | float = None) -> None:
+
         """Set survey variables.
 
         Parameters
@@ -213,6 +229,8 @@ class GridMMR:
             Coordinates of measurement points (m).
         cs : scalar or array_like
             Intensity of current source
+        pod_e : tuple
+            length of electrical dipoles at measurement points (m).
 
         Notes
         -----
@@ -226,6 +244,7 @@ class GridMMR:
         self.xo = xo
         self.cs = cs
         self._check_cs()
+        self.pod_e = pod_e
 
     def set_survey_ert(self, c1c2, p1p2, cs):
         self.dc.set_survey_ert(c1c2, p1p2, cs)
@@ -260,6 +279,7 @@ class GridMMR:
             for n in np.arange(self.xs_u.shape[0]):
                 i = np.where(np.all(np.tile(self.xs_u[n, :], (self.xs.shape[0], 1)) == self.xs, axis=1))[0]
                 self.nobs_xs[n] = i.size
+
         else:
             # on va calculer toutes les combinaisons
             self.xs_u = self.xs.copy()
@@ -270,6 +290,23 @@ class GridMMR:
             self.mask = np.ones((self.xs.shape[0] * self.xo.shape[0],), dtype=bool)
             self.nobs_xs = self.xo.shape[0] + np.zeros((self.xs.shape[0],), dtype=int)
         self.nobs_mmr = np.sum(self.nobs_xs)
+
+        if self.pod_e is not None:
+            pod_e_dx, pod_e_dy, pod_e_dz = self.pod_e
+            p1 = self.xo_all.copy()
+            pod_p1p2 = [None, None, None]
+            if pod_e_dx != 0.0:
+                p2 = p1 + np.tile(np.array([[pod_e_dx, 0.0, 0.0]]), (p1.shape[0], 1))
+                pod_p1p2[0] = np.c_[p1, p2]
+            if pod_e_dy != 0.0:
+                p2 = p1 + np.tile(np.array([[0.0, pod_e_dy, 0.0]]), (p1.shape[0], 1))
+                pod_p1p2[1] = np.c_[p1, p2]
+            if pod_e_dz != 0.0:
+                p2 = p1 + np.tile(np.array([[0.0, 0.0, pod_e_dz]]), (p1.shape[0], 1))
+                pod_p1p2[2] = np.c_[p1, p2]
+            if pod_p1p2[0] is not None or pod_p1p2[1] is not None or pod_p1p2[2] is not None:
+                self.pod_p1p2 = pod_p1p2
+
         self.acq_checked = True
 
     def set_solver(self, name, atol=1e-9, rtol=1e-5, max_it=1000, precon='0', do_perm=False):
@@ -398,6 +435,8 @@ class GridMMR:
         if self.verbose and self.fv.comm.rank == 0:
             print('  Computing interpolation matrices ... ', end='', flush=True)
         Qx, Qy, Qz = self._build_Q(self.xo_all)
+        if self.pod_p1p2 is not None:
+            self.Q_pod_e = self._build_Q_pod_e()
         if self.verbose and self.fv.comm.rank == 0:
             print('done.')
         self.Q = Qx, Qy, Qz
@@ -429,7 +468,6 @@ class GridMMR:
             q[self.fv.nfx:(self.fv.nfx+self.dc.fv.nfy), i] = Jy[:, i]
             q[(self.fv.nfx+self.fv.nfy):(self.fv.nfx+self.fv.nfy+self.dc.fv.nfz), i] = Jz[:, i]
 
-
         if self.fv.solver_A is None or keep_solver is False:
             self.fv.solver_A = Solver(self.fv.get_solver_params(), self._build_A(), self.verbose)
         if self.fv.solver_A.A is None:
@@ -453,7 +491,15 @@ class GridMMR:
         data[:, 1] = (Qy @ By).T.flatten()
         data[:, 2] = (Qz @ Bz).T.flatten()
 
-        if self.in_inv is False:
+        if self.Q_pod_e is not None:
+            data_pod_e = np.empty((no * q.shape[1], self.xo_all.shape[1]))
+            for n in range(3):
+                data_pod_e[:, n] = (self.Q_pod_e[n] @ u_dc).T.flatten()
+            data_pod_e = 1000.0 * data_pod_e[self.ind_back, :]    # in_inv is necessarily False, units in mV
+        else:
+            data_pod_e = None
+
+        if not self.in_inv:
             data = data[self.ind_back, :]
         else:
             self.dc.sort_electrodes = True
@@ -504,7 +550,10 @@ class GridMMR:
         else:
             if self.in_inv and self.dc.c1c2 is not None:
                 data = np.r_[data, res_dc.reshape(-1, 1)]
-            return data
+            if data_pod_e is not None:
+                return data, data_pod_e
+            else:
+                return data
 
     def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
         return self.dc.calc_WtW(wt, par, m_active, WGx, WGy, WGz)
@@ -609,6 +658,22 @@ class GridMMR:
         Qy = sp.vstack(Qy)
         Qz = sp.vstack(Qz)
         return Qx, Qy, Qz
+
+    def _build_Q_pod_e(self):
+        Q = [None, None, None]
+
+        for n in range(3):
+            # make sure electrodes are at least at the depth of the first cell center
+            if self.pod_p1p2[n] is not None:
+                p1p2 = self.pod_p1p2[n]
+                p1p2[:, :3] = self.dc.fv.process_surface_elec(p1p2[:, :3])
+                p1p2[:, 3:6] = self.dc.fv.process_surface_elec(p1p2[:, 3:6])
+
+                Q[n] = self.dc.fv.linear_interp(p1p2[:, 0], p1p2[:, 1], p1p2[:, 2])
+                Q[n] -= self.dc.fv.linear_interp(p1p2[:, 3], p1p2[:, 4], p1p2[:, 5])
+            else:
+                Q[n] = sp.csr_matrix((self.xo_all.shape[0], self.dc.fv.nc))
+        return Q
 
     def _fill_jacobian(self, n, J, u_dc, Dm, S, q, q2, Gf):
         if n == 0:
