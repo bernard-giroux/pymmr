@@ -203,10 +203,6 @@ class GridMMR:
         self._units = val
         self._units_scaling = GridMMR.units_scaling_factors[val]
 
-
-
-            self.dc.verbose = False
-        else:
     @property
     def verbose(self):
         return self._verbose
@@ -217,6 +213,7 @@ class GridMMR:
         self.fv.verbose = val
         if val > 1:
             self.dc.verbose = True
+
     def set_survey_mmr(self, xs: Iterable , xo: Iterable , cs: Iterable | float, pod_e: tuple | float = None) -> None:
 
         """Set survey variables.
