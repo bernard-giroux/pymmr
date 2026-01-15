@@ -416,7 +416,7 @@ class GridMMR:
             if self.fv.solver_A is not None:
                 self.fv.solver_A.print_info()
 
-        if self.acq_checked is False:
+        if not self.acq_checked:
             self.check_acquisition()
 
         if self.in_inv and self.dc.c1c2 is not None:
@@ -492,7 +492,7 @@ class GridMMR:
             data_pod_e = np.empty((no * q.shape[1], self.xo_all.shape[1]))
             for n in range(3):
                 data_pod_e[:, n] = (self.Q_pod_e[n] @ u_dc).T.flatten()
-            data_pod_e = 1000.0 * data_pod_e[self.ind_back, :]    # in_inv is necessarily False, units in mV
+            data_pod_e = self.dc._units_scaling * data_pod_e[self.ind_back, :]
         else:
             data_pod_e = None
 

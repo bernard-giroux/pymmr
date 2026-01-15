@@ -41,6 +41,10 @@ The keywords are :
 - **compute current** : Compute and save current density (dc forward modelling)
 - **compute sensitivity** : Compute and save sensitivity (forward modelling)
 - **units** : units of voltage for forward modelling, "mV" or "V"
+- **pod dipole x** : distance of potential electrode from MMR pod, along X axis (0 by default)
+- **pod dipole y** : distance of potential electrode from MMR pod, along Y axis (0 by default)
+- **pod dipole z** : distance of potential electrode from MMR pos, along Z axis (0 by default, values must be negative
+                     for buried electrode, as z is elevation)
 
 File formats
 ------------
@@ -86,6 +90,11 @@ x : easting
 y : northing
 z : elevation
 
+*** MMR modeling ***
+It is possible to save ∆V values for predetermined dipoles, in addition to the Bx, By, and Bz values, when
+performing MMR simulations.  Dipoles are generated using the observation point as reference electrode, and
+measurement electrodes at distances equal to "pod dipole x", "pod dipole y", and "pod dipole z" _if_ these
+values are != 0.
 
 """
 try:
@@ -350,6 +359,7 @@ if __name__ == "__main__":
         else:
             pod_e = None
         g.set_survey_mmr(c1c2, meas, cs, pod_e=pod_e)
+        g.dc.units = units
         data = g.fwd_mod(sigma, calc_sens=calc_sens)
         if pod_e is not None:
             data, data_pod_e = data
