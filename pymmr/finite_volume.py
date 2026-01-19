@@ -3286,7 +3286,7 @@ class Solver:
         if callable(solver_par[0]):
             # solveur itératif
 
-            self.slv = solver_par[0]
+            self.it_slv = solver_par[0]
             self.atol = solver_par[1]
             self.rtol = solver_par[2]
             self.max_it = solver_par[3]
@@ -3329,8 +3329,8 @@ class Solver:
                 if self.verbose:
                     print("done.")
 
-            self.solver = lambda A, b: self.slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol, maxiter=self.max_it,
-                                                M=self.Mpre)
+            self.solver = lambda A, b: self.it_slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol,
+                                                   maxiter=self.max_it, M=self.Mpre)
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages by default
@@ -3481,7 +3481,69 @@ class Solver:
             rhs = rhs.toarray()
 
         v = np.empty((self._A.shape[0], rhs.shape[1]))
-        for ns in range(rhs.shape[1]):
+
+        # chunklen = (rhs.shape[1] + numthreads - 1) // numthreads
+        self._chunk_solve(0, rhs.shape[1], rhs, v, x0, True)
+
+#         for ns in range(rhs.shape[1]):
+#             if verbose:
+#                 if ns == 0:
+#                     msg = ""
+#                     pre_msg = ""
+#                 nback = len(msg) - len(pre_msg)
+#                 pre_msg = ""
+#                 for _ in range(nback):
+#                     pre_msg += "\b"
+#                 msg = pre_msg + "        iteration " + str(ns + 1) + "/" + str(rhs.shape[1]) + " "
+#                 print(msg, end="", flush=True)
+#
+#             if x0 is not None:
+#                 if self.do_perm:
+#                     self.x0 = x0[self.perm, ns]
+#                 else:
+#                     self.x0 = x0[:, ns]
+#             else:
+#                 self.x0 = None
+#
+#             if self.do_perm:
+#                 qi = rhs[self.perm, ns]
+#             else:
+#                 qi = rhs[:, ns]
+#
+#             u = self.solver(self._A, qi)
+#             if type(u) == tuple:
+#                 u, info = u
+#             else:
+#                 info = 0
+#
+#             if info > 0:
+#                 conv = np.linalg.norm(qi - self._A @ u)
+#                 print(
+#                     "{0:}: convergence not achieved, stopped after {1:d} \
+# iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals = {5:g}".format(
+#                         self.solver.__name__, info, self.atol, self.rtol, np.linalg.norm(qi), conv
+#                     )
+#                 )
+#             elif info < 0:
+#                 print("{0:s}: illegal input or breakdown, switching to spsolve".format(self.solver.__name__))
+#                 u = spsolve(self._A, qi)
+#
+#             if verbose > 0 >= info:
+#                 conv = np.linalg.norm(qi - self._A @ u)
+#                 print(": residuals = {0:g}".format(conv), flush=True)
+#
+#             if self.do_perm:
+#                 v[:, ns] = u[self.inv_perm]
+#             else:
+#                 v[:, ns] = u
+
+        if verbose:
+            print("      done.")
+
+        return v
+
+    def _chunk_solve(self, n0, n1, rhs, v, x0, verbose):
+        for ns in range(n0, n1):
             if verbose:
                 if ns == 0:
                     msg = ""
@@ -3516,7 +3578,7 @@ class Solver:
                 conv = np.linalg.norm(qi - self._A @ u)
                 print(
                     "{0:}: convergence not achieved, stopped after {1:d} \
-iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals = {5:g}".format(
+    iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals = {5:g}".format(
                         self.solver.__name__, info, self.atol, self.rtol, np.linalg.norm(qi), conv
                     )
                 )
@@ -3532,11 +3594,6 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 v[:, ns] = u[self.inv_perm]
             else:
                 v[:, ns] = u
-
-        if verbose:
-            print("      done.")
-
-        return v
 
     @property
     def A(self):
@@ -3641,8 +3698,8 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 raise ValueError("Unknown preconditioning solver")
             if self.verbose:
                 print("done.")
-        self.solver = lambda A, b: self.slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol, maxiter=self.max_it,
-                                            M=self.Mpre)
+        self.solver = lambda A, b: self.it_slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol, maxiter=self.max_it,
+                                               M=self.Mpre)
 
     def _solve_mumps(self, A, b):
         if self.ctx.myid == 0:
@@ -3666,7 +3723,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
         elif self.ctx is not None:
             print("    Solver: MUMPS")
         else:
-            print("    Solver: " + self.slv.__name__)
+            print("    Solver: " + self.it_slv.__name__)
             print("      max_it: " + str(self.max_it))
             print("      abs tolerance: " + str(self.atol))
             print("      rel tolerance: " + str(self.rtol))

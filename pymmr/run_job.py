@@ -462,8 +462,8 @@ if __name__ == "__main__":
         if roi is not None:
             m_active = g.ind_roi
 
-        g.verbose = False
-        g.fv.solver_A.verbose = False
+        g.verbose = True
+        g.fv.solver_A.verbose = True
         S_save, data_inv, rms, misfit, smy = inv.run(g, m0=m_ref, m_ref=m_ref, data_mmr=data_mmr, data_ert=data_ert,
                                                      m_active=m_active)
 
