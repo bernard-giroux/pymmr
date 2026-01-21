@@ -24,7 +24,7 @@ x = np.r_[x[0] - pad[::-1], x, x[-1] + pad]
 y = np.r_[y[0] - pad[::-1], y, y[-1] + pad]
 z = np.r_[z[0] - pad[::-1], z]
 
-g = GridDC((x, y, z))
+g = GridDC((x, y, z), n_threads=8)
 g.set_roi([-400, 400, -400, 400, -960, 0])
 g.fv.set_solver(bicgstab, 1.e-9, 1.e-5, 1000, 'diag', False)
 
