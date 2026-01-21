@@ -974,7 +974,7 @@ class GridDC:
         Gc = v @ Gf
         # Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
-        tmp = -self._units_scaling * A @ self.fv.G @ u_r
+        tmp = self._units_scaling * A @ self.fv.G @ u_r
         return tmp[self.ind_roi], n
 
     def _check_cs(self):
