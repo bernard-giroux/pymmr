@@ -59,6 +59,7 @@ class GridMMR:
         B-field units
     comm : MPI Communicator, optional
         If None, MPI_COMM_WORLD will be used
+    n_threads : int, optional
 
     Notes
     -----
@@ -69,17 +70,17 @@ class GridMMR:
 
     units_scaling_factors = {'pT': 1.e12, 'nT': 1.e9}
 
-    def __init__(self, param_fv, units='pT', comm=None):
+    def __init__(self, param_fv, units='pT', comm=None, n_threads=1):
         if len(param_fv) != 3:
             raise ValueError('GridDC: param_fv must have 3 elements')
 
         if param_fv[0].ndim == 1:
-            self.fv = GridFV(param_fv, comm=comm)
+            self.fv = GridFV(param_fv, comm=comm, n_threads=n_threads)
         else:
-            self.fv = MeshFV(param_fv, comm=comm)
+            self.fv = MeshFV(param_fv, comm=comm, n_threads=n_threads)
 
-        self.dc = GridDC(param_fv, units='mV', comm=comm)
-        self.dc.verbose = False
+        self.dc = GridDC(param_fv, units='mV', comm=comm, n_threads=n_threads)
+        self.dc.verbose = 0
         self.acq_checked = False
         self._xs = None
         self._xo = None
@@ -92,7 +93,9 @@ class GridMMR:
         self.nobs_xs = None
         self.nobs_mmr = 0
         self.units = units
-        self._verbose = False
+        self._verbose = 0
+        self.pod_p1p2 = None
+        self.Q_pod_e = None
 
     @property
     def apply_bc(self):
@@ -211,7 +214,7 @@ class GridMMR:
     def verbose(self, val):
         self._verbose = val
         self.fv.verbose = val
-        if val > 1:
+        if val > 2:
             self.dc.verbose = True
 
     def set_survey_mmr(self, xs: Iterable , xo: Iterable , cs: Iterable | float, pod_e: tuple | float = None) -> None:
@@ -466,7 +469,7 @@ class GridMMR:
             q[(self.fv.nfx+self.fv.nfy):(self.fv.nfx+self.fv.nfy+self.dc.fv.nfz), i] = Jz[:, i]
 
         if self.fv.solver_A is None or keep_solver is False:
-            self.fv.solver_A = Solver(self.fv.get_solver_params(), self._build_A(), self.verbose)
+            self.fv.solver_A = Solver(self.fv.get_solver_params(), self._build_A(), verbose=(self.verbose>1))
         if self.fv.solver_A.A is None:
             self.fv.solver_A.A = self._build_A()
         if self.verbose and self.fv.comm.rank == 0:

@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 examples/*sens*vtr
+free-threading.env
 
 # C extensions
 *.so

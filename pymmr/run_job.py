@@ -35,6 +35,8 @@ The keywords are :
 - **permut** : Apply inverse Cuthill-McKee permutation when using iterative solvers
 - **region of interest** : Extents of region of interest for inversion or sensitivity calculation
 - **verbose** : Display progress messages
+                if 1, basic messages are displayed
+                if 2, solver messages are displayed
 - **show plots** : Show plots during inversion
 - **save plots** : Save plots produced during inversion
 - **boundary correction** : Apply correction described in Pidlisecky et al. 2007
@@ -45,6 +47,10 @@ The keywords are :
 - **pod dipole y** : distance of potential electrode from MMR pod, along Y axis (0 by default)
 - **pod dipole z** : distance of potential electrode from MMR pos, along Z axis (0 by default, values must be negative
                      for buried electrode, as z is elevation)
+- **number of threads** : Number of threads for parallelizing iterative solvers (1 by default)
+                          if the interpreter is running without the GIL ()free-threading), `threading` is used,
+                          otherwise `multiprocessing` is used
+
 
 File formats
 ------------
@@ -125,7 +131,7 @@ from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, df_to_data
 
 
-def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
+def build_from_vtk(grid_class, filename, comm=None, return_sigma=False, n_threads=1):
     """Create grid from VTK file.
 
     The file must contain a rectilinear grid
@@ -161,9 +167,9 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
         z = vtk_to_numpy(reader.GetOutput().GetZCoordinates())
         if return_sigma:
             sigma = vtk_to_numpy(reader.GetOutput().GetCellData().GetArray("Conductivity"))
-            return grid_class((x, y, z), comm=comm), sigma
+            return grid_class((x, y, z), comm=comm, n_threads=n_threads), sigma
         else:
-            return grid_class((x, y, z), comm=comm)
+            return grid_class((x, y, z), comm=comm, n_threads=n_threads)
     elif extension == "vtu":
         #  unstructured grid
         reader = vtk.vtkXMLUnstructuredGridReader()
@@ -193,9 +199,9 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False):
 
         if return_sigma:
             sigma = np.array(sigma)
-            return grid_class((pts, tet, surface), comm=comm), sigma
+            return grid_class((pts, tet, surface), comm=comm, n_threads=n_threads), sigma
         else:
-            return grid_class((pts, tet, surface), comm=comm)
+            return grid_class((pts, tet, surface), comm=comm, n_threads=n_threads)
 
 
 if __name__ == "__main__":
@@ -208,7 +214,7 @@ if __name__ == "__main__":
     data_mmr = None
     data_ert = None
     model_file = None
-    verbose = True
+    verbose = 1
     roi = None
     apply_bc = True
     calc_J = False
@@ -224,6 +230,7 @@ if __name__ == "__main__":
     pod_e_x = 0.0
     pod_e_y = 0.0
     pod_e_z = 0.0
+    n_threads = 1
 
     kw_pattern = re.compile("\\s?(.+)\\s?#\\s?([\\w\\s]+),")
 
@@ -315,6 +322,8 @@ if __name__ == "__main__":
                     pod_e_y = float(value)
                 elif "pod" in keyword.lower() and "dipole" in keyword.lower() and "z" in keyword.lower():
                     pod_e_z = float(value)
+                elif "number" in keyword.lower() and "thread" in keyword.lower():
+                    n_threads = int(value)
 
     # Done reading parameter file
     if precon == '1':
@@ -342,7 +351,7 @@ if __name__ == "__main__":
         # we have ERT data only
         grid_type = GridDC
 
-    g, sigma = build_from_vtk(grid_type, model_file, comm=comm, return_sigma=True)
+    g, sigma = build_from_vtk(grid_type, model_file, comm=comm, return_sigma=True, n_threads=n_threads)
     m_ref = sigma
 
     g.verbose = verbose
@@ -462,8 +471,8 @@ if __name__ == "__main__":
         if roi is not None:
             m_active = g.ind_roi
 
-        g.verbose = False
-        g.fv.solver_A.verbose = False
+        # g.verbose = True
+        # g.fv.solver_A.verbose = True
         S_save, data_inv, rms, misfit, smy = inv.run(g, m0=m_ref, m_ref=m_ref, data_mmr=data_mmr, data_ert=data_ert,
                                                      m_active=m_active)
 

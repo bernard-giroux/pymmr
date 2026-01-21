@@ -21,27 +21,9 @@ Main reference
 """
 import warnings
 
-# from multiprocessing import Pool
-
 import numpy as np
 import scipy.sparse as sp
 from scipy.stats.mstats import gmean
-
-try:
-    from numba import jit
-except ImportError:
-    warnings.warn('Numba could not be imported, @jit decorator without effect', stacklevel=2)
-    # numba est souvent en retard sur la version de numpy
-    # on redéfini le décorateur pour ne rien faire de spécial
-    import functools
-
-    def jit(in1, nopython):
-        def decorator_jit(func):
-            @functools.wraps(func)
-            def wrapper_jit(*args, **kwargs):
-                return func(*args, **kwargs)
-            return wrapper_jit
-        return decorator_jit
 
 from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver, GridFVNodal
 
@@ -50,10 +32,8 @@ from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver, GridFVNodal
 
 # %% Some functions
 
-@jit("boolean(boolean[:])", nopython=True)
-def all(a: np.ndarray):
+def all(a: np.ndarray) -> bool:
     return a.sum() == a.size
-
 
 def sortrows(a: np.ndarray, sort_back=False):
     """
@@ -113,23 +93,24 @@ class GridDC:
         Units of voltage at output
     comm : MPI Communicator, optional
         If None, MPI_COMM_WORLD will be used
+    n_threads : int, optional
     """
 
     units_scaling_factors = {'mV': 1.e3, 'V': 1.0}
 
-    def __init__(self, param_fv, units='mV', comm=None):
+    def __init__(self, param_fv, units='mV', comm=None, n_threads=1):
         if len(param_fv) not in (2, 3):
             raise ValueError('GridDC: param_fv must have 2 or 3 elements')
 
         if len(param_fv) == 3:
             if param_fv[0].ndim == 1:
-                self.fv = GridFV(param_fv, comm)
+                self.fv = GridFV(param_fv, comm, n_threads)
             else:
-                self.fv = MeshFV(param_fv, comm)
+                self.fv = MeshFV(param_fv, comm, n_threads)
         else:
             # we have 2
             if param_fv[0].ndim == 1:
-                self.fv = Grid25FV(param_fv, comm)
+                self.fv = Grid25FV(param_fv, comm, n_threads)
             else:
                 raise ValueError('2.5D not yet implemented for triangular meshes')
 
@@ -153,7 +134,7 @@ class GridDC:
         self.c1c2_u = None
         self.cs12_u = None
         self.units = units
-        self.verbose = False
+        self.verbose = 0
 
     @property
     def nc(self):
@@ -458,7 +439,7 @@ class GridDC:
 
                 print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576), flush=True)
             if self.fv.solver_A is None or keep_solver is False:
-                self.fv.solver_A = Solver(self.fv.get_solver_params(), A, self.verbose)
+                self.fv.solver_A = Solver(self.fv.get_solver_params(), A, verbose=(self.verbose>1))
             else:
                 self.fv.A = A
         elif self.fv.solver_A is None:
@@ -974,7 +955,7 @@ class GridDC:
         Gc = v @ Gf
         # Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
-        tmp = -self._units_scaling * A @ self.fv.G @ u_r
+        tmp = self._units_scaling * A @ self.fv.G @ u_r
         return tmp[self.ind_roi], n
 
     def _check_cs(self):
