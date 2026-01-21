@@ -35,7 +35,9 @@ References
 
 """
 import copy
+import sys
 import warnings
+from threading import Thread
 
 import numpy as np
 import scipy.sparse as sp
@@ -43,8 +45,6 @@ from scipy.sparse.linalg import bicgstab, spsolve, use_solver, factorized
 from scipy.sparse.csgraph import reverse_cuthill_mckee
 from scipy.special import kv, k0
 from scipy.optimize import minimize
-
-import numba
 
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
@@ -91,6 +91,13 @@ except (ImportError, OSError):
 
 
 # %% Some functions
+
+
+def is_free_threading():
+    if sys.version_info.minor < 13:
+        return False
+    else:
+        return not sys._is_gil_enabled()
 
 
 def calc_padding(dx, n_cells=15, factor=1.3):
@@ -157,7 +164,6 @@ def _get_umf_family(A):
     return family, A_new
 
 
-@numba.jit(numba.f8[:,:](numba.f8[:], numba.f8[:], numba.f8[:], numba.f8[:]), nopython=True)
 def tetra_coord(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray):
     # Almost the same as Hugues' function,
     # except it does not involve the homogeneous coordinates.
@@ -173,12 +179,10 @@ def tetra_coord(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray):
     return np.linalg.inv(mat)
 
 
-@numba.jit(numba.f8(numba.f8, numba.f8, numba.f8, numba.f8, numba.f8, numba.f8), nopython=True)
 def triangle_area_2D(x1, y1, x2, y2, x3, y3):
     return (x1 - x2) * (y2 - y3) - (x2 - x3) * (y1 - y2)
 
 
-@numba.jit(numba.f8[:](numba.f8[:],numba.f8[:],numba.f8[:],numba.f8[:]), nopython=True)
 def barycentric(a: np.ndarray, b: np.ndarray, c: np.ndarray, p: np.ndarray):
     ab = b - a
     ac = c - a
@@ -243,9 +247,10 @@ class BaseFV:
             If None, use MPI_COMM_WORLD
     """
 
-    def __init__(self, comm=None):
+    def __init__(self, comm=None, n_threads=1):
         if comm is None:
             comm = MPI.COMM_WORLD
+        self.n_threads = n_threads
         self.comm = comm
         self.dim = 0
         self.verbose = False
@@ -351,7 +356,8 @@ class BaseFV:
         if self.want_superlu:
             name = 'superlu'
 
-        self.solver_A = Solver((name, atol, rtol, max_it, precon, do_perm), verbose=self.verbose, comm=self.comm)
+        self.solver_A = Solver((name, atol, rtol, max_it, precon, do_perm), verbose=(self.verbose>1),
+                               comm=self.comm, n_threads=self.n_threads)
         self.precon = precon
         self.do_perm = do_perm
 
@@ -456,8 +462,8 @@ class GridFV(BaseFV):
 
     """
 
-    def __init__(self, param, comm=None):
-        BaseFV.__init__(self, comm)
+    def __init__(self, param, comm=None, n_threads=1):
+        BaseFV.__init__(self, comm, n_threads)
         x, y, z = param
         self.x = x
         self.y = y
@@ -1742,8 +1748,8 @@ class GridFV(BaseFV):
 
 class GridFVNodal(BaseFV, TensorMesh):
 
-    def __init__(self, param, comm=None):
-        BaseFV.__init__(self, comm)
+    def __init__(self, param, comm=None, n_threads=1):
+        BaseFV.__init__(self, comm, n_threads)
         x, y, z = param
         self.dim = 3
         TensorMesh.__init__(self, (np.diff(x), np.diff(y), np.diff(z)), origin=(x[0], y[0], z[0]))
@@ -1817,8 +1823,8 @@ class MeshFV(BaseFV, SimplexMesh):
             Indices of the nodes forming the triangulated surface of the ground
     """
 
-    def __init__(self, param, comm=None):
-        BaseFV.__init__(self, comm)
+    def __init__(self, param, comm=None, n_threads=1):
+        BaseFV.__init__(self, comm, n_threads)
         pts, tet, tri_surf = param
         SimplexMesh.__init__(self, pts, tet)
         self.tri_surf = np.array(tri_surf)
@@ -2289,8 +2295,8 @@ class Grid25FV(BaseFV):
 
     """
 
-    def __init__(self, param, comm=None):
-        BaseFV.__init__(self, comm)
+    def __init__(self, param, comm=None, n_threads=1):
+        BaseFV.__init__(self, comm, n_threads)
         x, z = param
         self.x = x
         self.z = z
@@ -3260,11 +3266,11 @@ class Solver:
         Matrix on left-hand side
     verbose : bool, optional
         Display progress messages
-        comm : MPI Communicator or None
-            for mumps solver
+    comm : MPI Communicator or None
+        for mumps solver
     """
 
-    def __init__(self, solver_par, A=None, verbose=False, comm=None):
+    def __init__(self, solver_par, A=None, verbose=False, comm=None, n_threads=1):
         self._A = A
         self.precon = '0'
         self.do_perm = False
@@ -3283,6 +3289,7 @@ class Solver:
         self.pardiso = False
         if comm is not None:
             self.verbose = verbose and (comm.rank == 0)
+        self.n_threads = n_threads
         if callable(solver_par[0]):
             # solveur itératif
 
@@ -3480,62 +3487,17 @@ class Solver:
         if sp.isspmatrix(rhs):
             rhs = rhs.toarray()
 
-        v = np.empty((self._A.shape[0], rhs.shape[1]))
-
-        # chunklen = (rhs.shape[1] + numthreads - 1) // numthreads
-        self._chunk_solve(0, rhs.shape[1], rhs, v, x0, True)
-
-#         for ns in range(rhs.shape[1]):
-#             if verbose:
-#                 if ns == 0:
-#                     msg = ""
-#                     pre_msg = ""
-#                 nback = len(msg) - len(pre_msg)
-#                 pre_msg = ""
-#                 for _ in range(nback):
-#                     pre_msg += "\b"
-#                 msg = pre_msg + "        iteration " + str(ns + 1) + "/" + str(rhs.shape[1]) + " "
-#                 print(msg, end="", flush=True)
-#
-#             if x0 is not None:
-#                 if self.do_perm:
-#                     self.x0 = x0[self.perm, ns]
-#                 else:
-#                     self.x0 = x0[:, ns]
-#             else:
-#                 self.x0 = None
-#
-#             if self.do_perm:
-#                 qi = rhs[self.perm, ns]
-#             else:
-#                 qi = rhs[:, ns]
-#
-#             u = self.solver(self._A, qi)
-#             if type(u) == tuple:
-#                 u, info = u
-#             else:
-#                 info = 0
-#
-#             if info > 0:
-#                 conv = np.linalg.norm(qi - self._A @ u)
-#                 print(
-#                     "{0:}: convergence not achieved, stopped after {1:d} \
-# iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals = {5:g}".format(
-#                         self.solver.__name__, info, self.atol, self.rtol, np.linalg.norm(qi), conv
-#                     )
-#                 )
-#             elif info < 0:
-#                 print("{0:s}: illegal input or breakdown, switching to spsolve".format(self.solver.__name__))
-#                 u = spsolve(self._A, qi)
-#
-#             if verbose > 0 >= info:
-#                 conv = np.linalg.norm(qi - self._A @ u)
-#                 print(": residuals = {0:g}".format(conv), flush=True)
-#
-#             if self.do_perm:
-#                 v[:, ns] = u[self.inv_perm]
-#             else:
-#                 v[:, ns] = u
+        sz = rhs.shape[1]
+        v = np.empty((self._A.shape[0], sz))
+        if is_free_threading():
+            chunklen = (sz + self.n_threads - 1) // self.n_threads
+            threads = [Thread(target=Solver._chunk_solve, args=(self, x, x + chunklen if x + chunklen < sz else sz, rhs, v, x0, verbose)) for x in range(0, sz, chunklen)]
+            for i in threads:
+                i.start()
+            for i in threads:
+                i.join()
+        else:
+            Solver._chunk_solve(self, 0, sz, rhs, v, x0, verbose)
 
         if verbose:
             print("      done.")
@@ -3545,7 +3507,7 @@ class Solver:
     def _chunk_solve(self, n0, n1, rhs, v, x0, verbose):
         for ns in range(n0, n1):
             if verbose:
-                if ns == 0:
+                if ns == n0:
                     msg = ""
                     pre_msg = ""
                 nback = len(msg) - len(pre_msg)
@@ -3578,7 +3540,7 @@ class Solver:
                 conv = np.linalg.norm(qi - self._A @ u)
                 print(
                     "{0:}: convergence not achieved, stopped after {1:d} \
-    iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals = {5:g}".format(
+iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals = {5:g}".format(
                         self.solver.__name__, info, self.atol, self.rtol, np.linalg.norm(qi), conv
                     )
                 )
@@ -3735,6 +3697,8 @@ class Solver:
                 print("    Preconditioning: " + self.precon)
             else:
                 print("    Preconditioning: not used")
+            if is_free_threading() and self.n_threads > 1:
+                print("    Number of threads: " + str(self.n_threads))
 
 
 if __name__ == "__main__":
