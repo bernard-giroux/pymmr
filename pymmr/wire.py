@@ -24,7 +24,7 @@ class Wire:
         :param current: electrical current in Ampere used for field calculations
         :param path: geometry of the wire specified as path of n 3D (x,y,z) points in a numpy array with dimension n x 3
                      length unit is meter
-        :param discretization_length: lenght of dL after discretization
+        :param discretization_length: length of dL after discretization
         """
         self.current = current
         self.path = path
@@ -34,9 +34,9 @@ class Wire:
     def discretized_path(self):
         """
         calculate end points of segments of discretized path
-        approximate discretization lenghth is given by self.discretization_length
+        approximate discretization length is given by self.discretization_length
         elements will never be combined
-        elements longer that self.dicretization_length will be divided into pieces
+        elements longer that self.discretization_length will be divided into pieces
         :return: discretized path as m x 3 numpy array
         """
 
@@ -82,11 +82,11 @@ class Wire:
         if ax is None:
             fig = plt.figure(None)
             ax = ax3d.Axes3D(fig)
-            
+
         if discretized:
             p = self.discretized_path
         else:
-            p = self.path    
+            p = self.path
 
         ax.plot(p[:, 0], p[:, 1], p[:, 2], plt_style)
         ax.set_xlabel('X')
@@ -181,4 +181,3 @@ class Wire:
     def EllipticalSolenoidPath(rx=0.1, ry=0.2, pitch=0.01, turns=30, pts_per_turn=20):
         t = np.linspace(0, 2 * np.pi * turns, pts_per_turn * turns)
         return np.array([rx * np.sin(t), ry * np.cos(t), t / (2 * np.pi) * pitch]).T
-

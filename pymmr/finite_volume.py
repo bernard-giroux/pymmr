@@ -1965,7 +1965,7 @@ class MeshFV(BaseFV, SimplexMesh):
             # process edge not on boundary
             if e.tolist() not in be:
 
-                # find tetraherda holding the edge
+                # find tetrahedra holding the edge
                 tet = []
                 tet_no = []
                 for n, t in enumerate(self.simplices):
