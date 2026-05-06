@@ -542,24 +542,33 @@ class GridDC:
             cy = Gy @ (xc-xref)
             cz = Gz @ (xc-xref)
 
-            wtx = np.sum(cx*cx, axis=0) / (np.sum(np.abs(cx), axis=0) *
-                                           np.abs(cx))
-            wty = np.sum(cy*cy, axis=0) / (np.sum(np.abs(cy), axis=0) *
-                                           np.abs(cy))
-            wtz = np.sum(cz*cz, axis=0) / (np.sum(np.abs(cz), axis=0) *
-                                           np.abs(cz))
+            izx = cx==0.0
+            izy = cy==0.0
+            izz = cz==0.0
 
-            bloc_cutoff = 1.e-6
-            wtx[wtx > 10] = 10
-            wtx[wtx < bloc_cutoff] = bloc_cutoff
-            wty[wty > 10] = 10
-            wty[wty < bloc_cutoff] = bloc_cutoff
-            wtz[wtz > 10] = 10
-            wtz[wtz < bloc_cutoff] = bloc_cutoff
+            with np.errstate(divide='ignore'):
+                wtx = np.sum(cx*cx, axis=0) / (np.sum(np.abs(cx), axis=0) *
+                                               np.abs(cx))
+                wty = np.sum(cy*cy, axis=0) / (np.sum(np.abs(cy), axis=0) *
+                                               np.abs(cy))
+                wtz = np.sum(cz*cz, axis=0) / (np.sum(np.abs(cz), axis=0) *
+                                               np.abs(cz))
 
-            WGx = WGx_save * wtx
-            WGy = WGy_save * wty
-            WGz = WGz_save * wtz
+                wtx[izx] = 0.0
+                wty[izy] = 0.0
+                wtz[izz] = 0.0
+
+                bloc_cutoff = 1.e-6
+                wtx[wtx > 10] = 10
+                wtx[wtx < bloc_cutoff] = bloc_cutoff
+                wty[wty > 10] = 10
+                wty[wty < bloc_cutoff] = bloc_cutoff
+                wtz[wtz > 10] = 10
+                wtz[wtz < bloc_cutoff] = bloc_cutoff
+
+                WGx = WGx_save * wtx.reshape(-1, 1)
+                WGy = WGy_save * wty.reshape(-1, 1)
+                WGz = WGz_save * wtz.reshape(-1, 1)
 
         elif par.smooth_type == 'ekblom':
             ci = xc-xref

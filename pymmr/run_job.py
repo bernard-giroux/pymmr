@@ -308,6 +308,10 @@ if __name__ == "__main__":
                     inv.beta = float(value)
                 elif "inv" in keyword.lower() and "max_it" in keyword.lower():
                     inv.max_it = int(value)
+                elif "smooth" in keyword.lower() and "type" in keyword.lower():
+                    if value not in ('smooth', 'blocky', 'ekblom', 'min. support'):
+                        raise ValueError('value must be one of smooth, blocky, ekblom, min. support')
+                    inv.smooth_type = value
                 elif "data" in keyword.lower() and "weight" in keyword.lower():
                     inv.data_weighting = value
                 elif "checkpointing" in keyword.lower():
