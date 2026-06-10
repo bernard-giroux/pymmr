@@ -535,7 +535,7 @@ class Inversion:
                     npar = m_active.size
                 print("    Number of parameters to estimate: {0:d}".format(npar))
             else:
-                print("    Number of parameters to estimate: {0:d}".format(g.nc))
+                print("    Number of parameters to estimate: {0:d}".format(g.fv.nc))
             if nobs_mmr > 0:
                 print("    Number of MMR data: {0:d}".format(nobs_mmr))
             if data_ert is not None:

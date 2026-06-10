@@ -25,7 +25,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.stats.mstats import gmean
 
-from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver, GridFVNodal
+from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver
 
 # TODO: généraliser ROI pour voxels arbitraires
 
@@ -311,7 +311,7 @@ class GridDC:
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : string, optional
-            Apply preconditioning, possible values are 'ilu', 'diag', or '0' for no preconditionning.
+            Apply preconditioning, possible values are 'ilu', 'diag', or '0' for no preconditioning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
 

@@ -1743,70 +1743,7 @@ class GridFV(BaseFV):
         print('      Z min: {0:e}\tZ max: {1:e}'.format(self.z[0], self.z[-1]), file=file)
 
 
-# %% GridFVnodal
-
-
-class GridFVNodal(BaseFV, TensorMesh):
-
-    def __init__(self, param, comm=None, n_threads=1):
-        BaseFV.__init__(self, comm, n_threads)
-        x, y, z = param
-        self.dim = 3
-        TensorMesh.__init__(self, (np.diff(x), np.diff(y), np.diff(z)), origin=(x[0], y[0], z[0]))
-
-    @property
-    def nc(self):
-        return self.n_cells
-
-    @property
-    def dim(self):
-        return self._dim
-
-    @dim.setter
-    def dim(self, dim):
-        self._dim = dim
-
-    @property
-    def xc(self):
-        return self.cell_centers_x
-
-    @property
-    def yc(self):
-        return self.cell_centers_y
-
-    @property
-    def zc(self):
-        return self.cell_centers_z
-
-
-    def build_A(self, sigma):
-        """Build LHS matrix for DC resistivity forward modeling.
-
-        Parameters
-        ----------
-        sigma : array_like
-            conductivity model
-
-        Returns
-        -------
-        tuple of 2 matrices:
-            - A : LHS matrix
-            - M : matrix of harmonic average of sigma
-        """
-        # Build LHS matrix
-        if np.isscalar(sigma) is True:
-            M = sigma * sp.eye(self.n_edges, self.n_edges)
-        else:
-            M = self.get_edge_inner_product(sigma)
-        Grad = self.nodal_gradient
-        A = Grad.T.tocsr() @ M @ Grad
-
-        A[0, 0] += 1.0 / self.volume_voxels()[0]
-        return A, M
-
-
 # %% MeshFV
-
 
 class MeshFV(BaseFV, SimplexMesh):
     """Class to manage tetrahedral meshes for finite volume modelling.
@@ -3697,6 +3634,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 print("    Preconditioning: " + self.precon)
             else:
                 print("    Preconditioning: not used")
+
             if is_free_threading() and self.n_threads > 1:
                 print("    Number of threads: " + str(self.n_threads))
 
@@ -3708,7 +3646,7 @@ if __name__ == "__main__":
             [0.05, 0.0, -0.8],
             [0.0, 0.05, 0.75],
             [-0.5, 0.0, 0.1],
-            [0.0, 0.9, 0.05],
+            [0.0, 0.7, 0.05],
             [0.5, 0.5, -0.2],
             [0.45, -0.65, 0.0],
             [-0.35, -0.55, 0.03],
@@ -3716,10 +3654,11 @@ if __name__ == "__main__":
     )
 
     tet = np.array([[0, 1, 2, 3], [0, 1, 3, 4], [0, 1, 4, 5], [0, 1, 5, 6], [0, 1, 6, 2]], dtype=np.int64)
+    sigma = np.array([1., 2., 3., 4., 5.])
 
-    mesh = MeshFV(pts, tet)
+    mesh = MeshFV((pts, tet, np.array([])))
 
     G = mesh.build_G()
-    C = mesh.build_C()
+    # C = mesh.build_C()
 
-    mesh.toVTK(dict(), "/tmp/test_mesh")
+    mesh.toVTK({'sigma': sigma}, "/tmp/test_mesh")

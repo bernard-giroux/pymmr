@@ -315,9 +315,9 @@ if __name__ == "__main__":
                 elif "data" in keyword.lower() and "weight" in keyword.lower():
                     inv.data_weighting = value
                 elif "checkpointing" in keyword.lower():
-                    inv.checkpointing = bool(value)
+                    inv.checkpointing = bool(int(value))
                 elif "start" in keyword.lower() and "checkpoint" in keyword.lower():
-                    inv.start_from_chkpt = bool(value)
+                    inv.start_from_chkpt = bool(int(value))
                 elif "mumps" in keyword.lower() and "print" in keyword.lower() and "level" in keyword.lower():
                     mumps_print_level = int(value)
                 elif "pod" in keyword.lower() and "dipole" in keyword.lower() and "x" in keyword.lower():
