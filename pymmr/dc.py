@@ -55,18 +55,16 @@ def sortrows(a: np.ndarray, sort_back=False):
         array of indices (if sort_back is True)
 
     """
-    tmp, cnt = np.unique(a, axis=0, return_counts=True)
     if sort_back:
+        # the inverse mapping returned by np.unique gives, for each row of a,
+        # the index of the matching (unique, sorted) row in tmp -- which is
+        # exactly ind_back when all rows are distinct.
+        tmp, inv = np.unique(a, axis=0, return_inverse=True)
         if tmp.shape != a.shape:
             raise ValueError('All rows must be different when sort_back is True')
-        ind_back = np.empty((a.shape[0],), dtype=int)
-        for n1 in np.arange(a.shape[0]):
-            for n2 in np.arange(tmp.shape[0]):
-                if all(a[n1, :] == tmp[n2, :]):
-                    ind_back[n1] = n2
-                    break
-        return tmp, ind_back
+        return tmp, inv.ravel().astype(int)
     else:
+        tmp, cnt = np.unique(a, axis=0, return_counts=True)
         return np.repeat(tmp, cnt, axis=0)
 
 
@@ -826,28 +824,26 @@ class GridDC:
         self.n_c1c2_u = self.c1c2_u.shape[0]
         self.cs12_u = self.cs[ind]
 
+        nc1c2 = self.c1c2.shape[0]
         c12 = np.vstack((self.c1c2[:, :3], self.c1c2[:, 3:]))
-        self.c12_u = np.unique(c12, axis=0)
-        self.ind_c1 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
-        self.ind_c2 = np.empty((self.c1c2.shape[0],), dtype=int)  # indices dans c1c2
-        self.cs_u = np.empty((self.c12_u.shape[0],))
-        for n1 in range(self.c1c2.shape[0]):
-            for n2 in range(self.c12_u.shape[0]):
-                if all(self.c12_u[n2, :3] == self.c1c2[n1, :3]):
-                    self.ind_c1[n1] = n2
-                    self.cs_u[n2] = self.cs[n1]
-                if all(self.c12_u[n2, :3] == self.c1c2[n1, 3:]):
-                    self.ind_c2[n1] = n2
-                    self.cs_u[n2] = self.cs[n1]
+        self.c12_u, inv = np.unique(c12, axis=0, return_inverse=True)
+        inv = inv.ravel()
+        # c12 stacks c1 (first nc1c2 rows) over c2, so the inverse indices into
+        # c12_u split directly into the c1 and c2 electrode indices.
+        self.ind_c1 = inv[:nc1c2]  # indices dans c12_u
+        self.ind_c2 = inv[nc1c2:]  # indices dans c12_u
 
-        self.ind_c1_u = np.empty((self.c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
-        self.ind_c2_u = np.empty((self.c1c2_u.shape[0],), dtype=int)  # indices dans c1c2_u
-        for n1 in range(self.c1c2_u.shape[0]):
-            for n2 in range(self.c12_u.shape[0]):
-                if all(self.c12_u[n2, :] == self.c1c2_u[n1, :3]):
-                    self.ind_c1_u[n1] = n2
-                if all(self.c12_u[n2, :] == self.c1c2_u[n1, 3:]):
-                    self.ind_c2_u[n1] = n2
+        # cs_u: as in the original loop, the last write wins in dipole order
+        # (and c1 before c2 within a dipole).
+        self.cs_u = np.empty((self.c12_u.shape[0],))
+        order = np.argsort(np.concatenate((np.arange(nc1c2), np.arange(nc1c2))),
+                           kind='stable')
+        self.cs_u[np.concatenate((self.ind_c1, self.ind_c2))[order]] = \
+            np.concatenate((self.cs, self.cs))[order]
+
+        # ind: representative original row of each unique injection dipole
+        self.ind_c1_u = self.ind_c1[ind]  # indices dans c12_u
+        self.ind_c2_u = self.ind_c2[ind]  # indices dans c12_u
 
         self.c12_u = self.c12_u[:, :3]
 
@@ -856,20 +852,18 @@ class GridDC:
 
         # dipoles de mesure
         if self.p1p2 is not None:
+            np1p2 = self.p1p2.shape[0]
             p12 = np.vstack((self.p1p2[:, :3], self.p1p2[:, 3:]))
-            self.p12_u = np.unique(p12, axis=0)
+            self.p12_u, invp = np.unique(p12, axis=0, return_inverse=True)
+            invp = invp.ravel()
+            self.ind_p1 = invp[:np1p2]
+            self.ind_p2 = invp[np1p2:]
 
-            self.ind_p1 = np.empty((self.p1p2.shape[0],), dtype=int)
-            self.ind_p2 = np.empty((self.p1p2.shape[0],), dtype=int)
             self.cp_u = np.empty((self.p12_u.shape[0],))
-            for n1 in range(self.p1p2.shape[0]):
-                for n2 in range(self.p12_u.shape[0]):
-                    if all(self.p12_u[n2, :3] == self.p1p2[n1, :3]):
-                        self.ind_p1[n1] = n2
-                        self.cp_u[n2] = self.cs[n1]
-                    if all(self.p12_u[n2, :3] == self.p1p2[n1, 3:]):
-                        self.ind_p2[n1] = n2
-                        self.cp_u[n2] = self.cs[n1]
+            order = np.argsort(np.concatenate((np.arange(np1p2), np.arange(np1p2))),
+                               kind='stable')
+            self.cp_u[np.concatenate((self.ind_p1, self.ind_p2))[order]] = \
+                np.concatenate((self.cs, self.cs))[order]
 
             self.p12_u = self.p12_u[:, :3]
 
