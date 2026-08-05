@@ -3516,6 +3516,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             else:
                 self.pastix_solver = pypastix.solver(val)
                 self.solver = lambda A, b: self.pastix_solver.solve(b.flatten(), refine=False)
+            return
         elif self.want_umfpack:
             umf_family, A = _get_umf_family(val.tocsc().sorted_indices())
             self.umfpack = um.UmfpackContext(umf_family)
@@ -3531,9 +3532,11 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 return result
 
             self.solver = slv
+            return
         elif self.want_superlu:
             solve = factorized(val.tocsc())
             self.solver = lambda A, b: solve(b.flatten())
+            return
         elif self.ctx is not None:
             # we are using MUMPS
             if val.shape[0] != val.shape[1]:
@@ -3563,6 +3566,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 self.ctx.run(job=4)  # Analysis & Factorization
             if self.verbose:
                 print("done.")
+            return
 
         # solveur itératif
         if self.do_perm:
