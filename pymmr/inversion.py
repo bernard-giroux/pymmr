@@ -251,7 +251,7 @@ def calc_WdW(wt, dobs, par):
     # data with % error larger than cutoff have no weight
     dtw[wt.flatten() > par.max_err] = 0.0
 
-    return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
+    return sp.csr_array((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
 
 
 def df_to_data(df):
@@ -623,7 +623,7 @@ class Inversion:
         if "variance" in self.data_weighting:
             D = calc_WdW(wt, dobs, self)
         elif "*" in self.data_weighting:
-            D = sp.eye(dobs.size)
+            D = sp.eye_array(dobs.size)
         else:
             D = 0.0
 
@@ -718,9 +718,9 @@ class Inversion:
                         tmp2 = np.median(D2[nobs_mmr:])
                         D2[nobs_mmr:] *= tmp1 / tmp2
                     if "*" in self.data_weighting:
-                        D = D @ sp.diags(D2, 0)
+                        D = D @ sp.diags_array(D2)
                     else:
-                        D = D + sp.diags(D2, 0)
+                        D = D + sp.diags_array(D2)
 
                 if self.model_weighting == "jacobian":
                     m_weight = 1 / np.sqrt(np.sum(J * J, axis=0))

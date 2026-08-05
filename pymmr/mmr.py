@@ -528,7 +528,7 @@ class GridMMR:
                 print('    Assembling matrices ... ', end='', flush=True)
             sens = np.empty((self.dc.ind_roi.size, self.nobs_mmr*3))
             S = self.dc.fv.build_M(sigma*sigma)
-            Dm = sp.diags(1.0/sigma)
+            Dm = sp.diags_array(1.0/sigma)
 
             Gf = self.dc.fv.build_G_faces()
             for ns in range(self.xs_u.shape[0]):
@@ -672,7 +672,7 @@ class GridMMR:
                 Q[n] = self.dc.fv.linear_interp(p1p2[:, 0], p1p2[:, 1], p1p2[:, 2])
                 Q[n] -= self.dc.fv.linear_interp(p1p2[:, 3], p1p2[:, 4], p1p2[:, 5])
             else:
-                Q[n] = sp.csr_matrix((self.xo_all.shape[0], self.dc.fv.nc))
+                Q[n] = sp.csr_array((self.xo_all.shape[0], self.dc.fv.nc))
         return Q
 
     def _fill_jacobian(self, n, J, u_dc, Dm, S, q, q2, Gf):
@@ -682,7 +682,7 @@ class GridMMR:
             i0 = np.sum(self.nobs_xs[:n]*3)
         i1 = i0 + self.nobs_xs[n]*3
 
-        v = sp.diags(self.dc.fv.G @ u_dc[:, n])
+        v = sp.diags_array(self.dc.fv.G @ u_dc[:, n])
         Gc = v @ Gf
         # Gc = self.dc.build_G(self.dc.G @ u_dc[:, n])
         A = -Dm @ Gc.T @ S

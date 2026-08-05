@@ -421,7 +421,7 @@ class GridDC:
             c1c2 = self.c12_u
 
         if q is not None:
-            self.q = sp.csr_matrix(q)
+            self.q = sp.csr_array(q)
             self.u0 = None
         elif self.apply_bc:
             self._boundary_correction(sigma)
@@ -459,7 +459,7 @@ class GridDC:
 
             sens = np.empty((self.ind_roi.size, self.c1c2.shape[0]))
             S = self.fv.build_M(sigma*sigma)
-            Dm = sp.diags(1.0/sigma)
+            Dm = sp.diags_array(1.0/sigma)
 
             if self.verbose and self.fv.comm.rank == 0:
                 print('  Filling sensitivity matrix ... ', end='', flush=True)
@@ -628,15 +628,15 @@ class GridDC:
         Gx, Gy, Gz = self.fv.extract_Gxyz()
 
         if WGx is not None:
-            Gx = sp.diags(WGx.diagonal(), shape=(self.fv.nfx, self.fv.nfx), format='csr') @ Gx
+            Gx = sp.diags_array(WGx.diagonal(), shape=(self.fv.nfx, self.fv.nfx), format='csr') @ Gx
         if WGy is not None:
-            Gy = sp.diags(WGy.diagonal(), shape=(self.fv.nfy, self.fv.nfy), format='csr') @ Gy
+            Gy = sp.diags_array(WGy.diagonal(), shape=(self.fv.nfy, self.fv.nfy), format='csr') @ Gy
         if WGz is not None:
-            Gz = sp.diags(WGz.diagonal(), shape=(self.fv.nfz, self.fv.nfz), format='csr') @ Gz
+            Gz = sp.diags_array(WGz.diagonal(), shape=(self.fv.nfz, self.fv.nfz), format='csr') @ Gz
 
         Gs = sp.vstack((par.alx*Gx, par.aly*Gy, par.alz*Gz), format='csr')
-        V = sp.diags(np.ones((self.fv.nc,)), format='csr')
-        Wt = sp.diags(wt, shape=(self.fv.nc, self.fv.nc), format='csr')
+        V = sp.diags_array(np.ones((self.fv.nc,)), format='csr')
+        Wt = sp.diags_array(wt, shape=(self.fv.nc, self.fv.nc), format='csr')
 
         WtW = Wt.T @ (Gs.T @ Gs + par.als * V) @ Wt
         WtW = WtW[m_active, :]
@@ -738,7 +738,7 @@ class GridDC:
 
         # volume des voxels
         iv = 1.0 / self.fv.volume_voxels()
-        q = sp.lil_matrix((self.fv.nc, c1c2.shape[0]))
+        q = sp.lil_array((self.fv.nc, c1c2.shape[0]))
         for i in range(c1c2.shape[0]):
             Q = self.fv.linear_interp(c1c2[i, 0], c1c2[i, 1], c1c2[i, 2])
             if c1c2.shape[1] == 6:
@@ -767,16 +767,16 @@ class GridDC:
 
         if self.fv.dim == 3:
             A, _ = self.fv.build_A(avg_cond)
-            self.q = sp.csr_matrix(A @ self.u0)
+            self.q = sp.csr_array(A @ self.u0)
         else:
             # 2.5 D
             A0, _ = self.fv.build_A(avg_cond)
             A0 = A0.tocsc()
-            sigma_diag = avg_cond * sp.diags(np.ones((self.fv.nc,)), 0,
-                                             shape=(self.fv.nc, self.fv.nc), format='csc')
-            # A = sp.csr_matrix(A0.shape)
+            sigma_diag = avg_cond * sp.diags_array(np.ones((self.fv.nc,)),
+                                                   shape=(self.fv.nc, self.fv.nc), format='csc')
+            # A = sp.csr_array(A0.shape)
             A = np.zeros(A0.shape)
-            I = sp.eye(A.shape[0], A.shape[1])
+            I = sp.eye_array(A.shape[0], A.shape[1])
             for i in range(self.fv.k.size):
                 L = A0 + self.fv.k[i] ** 2 * sigma_diag
                 # A += self.fv.g[i] * sp.linalg.inv(L)
@@ -790,7 +790,7 @@ class GridDC:
 
             # self.q = sp.linalg.spsolve(A, self.u0)
             # t0 = time.time()
-            # self.fv.solver_A.A = sp.coo_matrix(A)
+            # self.fv.solver_A.A = sp.coo_array(A)
             # self.q = self.fv.solver_A.solve(self.u0)
             # t2 = time.time() - t0
             # print('numpy:', t1, 'mumps', t2)
@@ -903,7 +903,7 @@ class GridDC:
                 u = Q[ind, :].T @ d[ind]
             else:
                 u = np.c_[u, Q[ind, :].T @ d[ind]]
-        return sp.csr_matrix(u)
+        return sp.csr_array(u)
 
     def _calc_Gv(self, m, m_ref, m_active, u, v):
 
@@ -913,7 +913,7 @@ class GridDC:
 
         S = self.fv.build_M(np.exp(mp)).power(2)
 
-        Dm = sp.csr_matrix((np.exp(-m), (np.arange(m.size), np.arange(m.size))))
+        Dm = sp.csr_array((np.exp(-m), (np.arange(m.size), np.arange(m.size))))
 
         gu = np.empty((self.fv.nc, u.shape[1]))
 
@@ -931,7 +931,7 @@ class GridDC:
 
                 gui = self.fv.D @ (S @ (Gc @ (Dm @ v)))
                 gu[:, i] = gui.flatten()
-        return sp.csr_matrix(gu)
+        return sp.csr_array(gu)
 
     def _calc_Gvt(self, m, m_ref, m_active, u, v):
 
@@ -940,7 +940,7 @@ class GridDC:
 
         S = self.fv.build_M(np.exp(mp)).power(2)
 
-        Dm = sp.csr_matrix((np.exp(-m), (np.arange(m.size), np.arange(m.size))))
+        Dm = sp.csr_array((np.exp(-m), (np.arange(m.size), np.arange(m.size))))
 
         gu = np.empty((m.size, u.shape[1]))
         for i in range(u.shape[1]):
@@ -954,7 +954,7 @@ class GridDC:
     def _fill_jacobian(self, n, c1c2, Dm, S, Gf):
         u = self.u[:, self.ind_c1[n]] - self.u[:, self.ind_c2[n]]
         u_r = self.u[:, c1c2.shape[0] + self.ind_p1[n]] - self.u[:, c1c2.shape[0] + self.ind_p2[n]]
-        v = sp.diags(self.fv.G @ u)
+        v = sp.diags_array(self.fv.G @ u)
         Gc = v @ Gf
         # Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S

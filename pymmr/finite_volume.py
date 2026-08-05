@@ -850,7 +850,7 @@ class GridFV(BaseFV):
             y = np.array([y])
             z = np.array([z])
 
-        Q = sp.lil_matrix((len(x), nc))
+        Q = sp.lil_array((len(x), nc))
         for i in range(len(x)):
 
             if np.any(np.array([x[i], y[i], z[i]]) == np.inf):
@@ -919,7 +919,7 @@ class GridFV(BaseFV):
         """
         # Build LHS matrix
         if np.isscalar(sigma) is True:
-            M = sigma * sp.eye(self.nf, self.nf)
+            M = sigma * sp.eye_array(self.nf, self.nf)
         else:
             M = self.build_M(sigma)
         A = -self.D @ M @ self.G
@@ -955,7 +955,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.ny * self.nz,))
-        Dx = sp.coo_matrix((s, (ii, jj)))
+        Dx = sp.coo_array((s, (ii, jj)))
 
         # Dy
 
@@ -973,7 +973,7 @@ class GridFV(BaseFV):
             (np.kron(1.0 / self.hy[:-1], np.ones((self.nx,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx,))))
         )
         s = np.tile(s, (self.nz,))
-        Dy = sp.coo_matrix((s, (ii, jj)))
+        Dy = sp.coo_array((s, (ii, jj)))
 
         # Dz
 
@@ -986,7 +986,7 @@ class GridFV(BaseFV):
                 np.kron(-1.0 / self.hz[1:], np.ones((self.nx * self.ny,))),
             )
         )
-        Dz = sp.coo_matrix((s, (i, j)))
+        Dz = sp.coo_array((s, (i, j)))
 
         # assemblage
 
@@ -1074,7 +1074,7 @@ class GridFV(BaseFV):
 
         # assemblage
 
-        return sp.coo_matrix((np.hstack((Mx, My, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
+        return sp.coo_array((np.hstack((Mx, My, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
 
     def build_G(self, v=None):
         """Construction of gradient matrix.
@@ -1112,7 +1112,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.ny * self.nz,))
-        Gx = sp.coo_matrix((s, (ii, jj)))
+        Gx = sp.coo_array((s, (ii, jj)))
 
         # Gy
 
@@ -1128,7 +1128,7 @@ class GridFV(BaseFV):
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.hstack((np.kron(-1.0 / self.dy, np.ones((self.nx,))), np.kron(1.0 / self.dy, np.ones((self.nx,)))))
         s = np.tile(s, (self.nz,))
-        Gy = sp.coo_matrix((s, (ii, jj)))
+        Gy = sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -1140,16 +1140,16 @@ class GridFV(BaseFV):
                 np.kron(1.0 / self.dz, np.ones((self.nx * self.ny,))),
             )
         )
-        Gz = sp.coo_matrix((s, (i, j)))
+        Gz = sp.coo_array((s, (i, j)))
 
         # assemblage
         return sp.vstack((Gx, Gy, Gz), format="csr")
 
     def _gradient_faces(self, v):
 
-        v_x = sp.diags(v[: self.nfx])
-        v_y = sp.diags(v[self.nfx : (self.nfx + self.nfy)])
-        v_z = sp.diags(v[(self.nfx + self.nfy) :])
+        v_x = sp.diags_array(v[: self.nfx])
+        v_y = sp.diags_array(v[self.nfx : (self.nfx + self.nfy)])
+        v_z = sp.diags_array(v[(self.nfx + self.nfy) :])
 
         # Gx
 
@@ -1166,7 +1166,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.ny * self.nz,))
-        Gx = v_x @ sp.coo_matrix((s, (ii, jj)))
+        Gx = v_x @ sp.coo_array((s, (ii, jj)))
 
         # Gy
 
@@ -1189,7 +1189,7 @@ class GridFV(BaseFV):
             )
         )
         s = np.tile(s, (self.nz,))
-        Gy = v_y @ sp.coo_matrix((s, (ii, jj)))
+        Gy = v_y @ sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -1203,7 +1203,7 @@ class GridFV(BaseFV):
                 np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx * self.ny,))),
             )
         )
-        Gz = v_z @ sp.coo_matrix((s, (i, j)))
+        Gz = v_z @ sp.coo_array((s, (i, j)))
 
         # assemblage
         return sp.vstack((Gx, Gy, Gz), format="csr")
@@ -1231,7 +1231,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.ny * self.nz,))
-        Gx = sp.coo_matrix((s, (ii, jj)))
+        Gx = sp.coo_array((s, (ii, jj)))
 
         # Gy
 
@@ -1254,7 +1254,7 @@ class GridFV(BaseFV):
             )
         )
         s = np.tile(s, (self.nz,))
-        Gy = sp.coo_matrix((s, (ii, jj)))
+        Gy = sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -1268,7 +1268,7 @@ class GridFV(BaseFV):
                 np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx * self.ny,))),
             )
         )
-        Gz = sp.coo_matrix((s, (i, j)))
+        Gz = sp.coo_array((s, (i, j)))
 
         return sp.vstack((Gx, Gy, Gz), format="csr")
 
@@ -1309,7 +1309,7 @@ class GridFV(BaseFV):
             (np.kron(1.0 / self.hy[:-1], np.ones((self.nx - 1,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx - 1,))))
         )
         s = np.tile(s, (self.nz,))
-        Dzy = sp.coo_matrix((s, (ii, jj)))
+        Dzy = sp.coo_array((s, (ii, jj)))
 
         # dHy / dz
         N = (self.nx - 1) * self.ny * (self.nz - 1)
@@ -1321,7 +1321,7 @@ class GridFV(BaseFV):
                 np.kron(-1.0 / self.hz[1:], np.ones(((self.nx - 1) * self.ny,))),
             )
         )
-        Dyz = sp.coo_matrix((s, (i, j)))
+        Dyz = sp.coo_array((s, (i, j)))
 
         # dHx / dz
         N = self.nx * (self.ny - 1) * (self.nz - 1)
@@ -1333,7 +1333,7 @@ class GridFV(BaseFV):
                 np.kron(-1.0 / self.hz[1:], np.ones((self.nx * (self.ny - 1),))),
             )
         )
-        Dxz = sp.coo_matrix((s, (i, j)))
+        Dxz = sp.coo_array((s, (i, j)))
 
         # dHz / dx
         M = self.nx
@@ -1347,7 +1347,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), ((self.ny - 1) * self.nz,))
-        Dzx = sp.coo_matrix((s, (ii, jj)))
+        Dzx = sp.coo_array((s, (ii, jj)))
 
         # dHy / dx
         M = self.nx
@@ -1361,7 +1361,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.ny * (self.nz - 1),))
-        Dyx = sp.coo_matrix((s, (ii, jj)))
+        Dyx = sp.coo_array((s, (ii, jj)))
 
         # dHx / dy
         M = self.nx * self.ny
@@ -1378,13 +1378,13 @@ class GridFV(BaseFV):
             (np.kron(1.0 / self.hy[:-1], np.ones((self.nx,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx,))))
         )
         s = np.tile(s, (self.nz - 1,))
-        Dxy = sp.coo_matrix((s, (ii, jj)))
+        Dxy = sp.coo_array((s, (ii, jj)))
 
         return sp.vstack(
             (
-                sp.hstack((sp.csr_matrix((self.nfx, self.nex)), -Dyz, Dzy), format="csr"),
-                sp.hstack((Dxz, sp.csr_matrix((self.nfy, self.ney)), -Dzx), format="csr"),
-                sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nfz, self.nez))), format="csr"),
+                sp.hstack((sp.csr_array((self.nfx, self.nex)), -Dyz, Dzy), format="csr"),
+                sp.hstack((Dxz, sp.csr_array((self.nfy, self.ney)), -Dzx), format="csr"),
+                sp.hstack((-Dxy, Dyx, sp.csr_array((self.nfz, self.nez))), format="csr"),
             )
         )
 
@@ -1403,7 +1403,7 @@ class GridFV(BaseFV):
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.hstack((np.kron(-1.0 / self.dy, np.ones((self.nx,))), np.kron(1.0 / self.dy, np.ones((self.nx,)))))
         s = np.tile(s, (self.nz - 1,))
-        Dzy = sp.coo_matrix((s, (ii, jj)))
+        Dzy = sp.coo_array((s, (ii, jj)))
 
         # dAy / dz
         N = self.nx * (self.ny - 1) * (self.nz - 1)
@@ -1415,7 +1415,7 @@ class GridFV(BaseFV):
                 np.kron(1.0 / self.dz, np.ones((self.nx * (self.ny - 1),))),
             )
         )
-        Dyz = sp.coo_matrix((s, (i, j)))
+        Dyz = sp.coo_array((s, (i, j)))
 
         # dAx / dz
         N = (self.nx - 1) * self.ny * (self.nz - 1)
@@ -1427,7 +1427,7 @@ class GridFV(BaseFV):
                 np.kron(1.0 / self.dz, np.ones(((self.nx - 1) * self.ny,))),
             )
         )
-        Dxz = sp.coo_matrix((s, (i, j)))
+        Dxz = sp.coo_array((s, (i, j)))
 
         # dAz / dx
         M = self.nx - 1
@@ -1441,7 +1441,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.ny * (self.nz - 1),))
-        Dzx = sp.coo_matrix((s, (ii, jj)))
+        Dzx = sp.coo_array((s, (ii, jj)))
 
         # dAy / dx
         M = self.nx - 1
@@ -1455,7 +1455,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), ((self.ny - 1) * self.nz,))
-        Dyx = sp.coo_matrix((s, (ii, jj)))
+        Dyx = sp.coo_array((s, (ii, jj)))
 
         # dAx / dy
         M = (self.nx - 1) * (self.ny - 1)
@@ -1472,13 +1472,13 @@ class GridFV(BaseFV):
             (np.kron(-1.0 / self.dy, np.ones((self.nx - 1,))), np.kron(1.0 / self.dy, np.ones((self.nx - 1,))))
         )
         s = np.tile(s, (self.nz,))
-        Dxy = sp.coo_matrix((s, (ii, jj)))
+        Dxy = sp.coo_array((s, (ii, jj)))
 
         return sp.vstack(
             (
-                sp.hstack((sp.csr_matrix((self.nex, self.nfx)), -Dyz, Dzy), format="csr"),
-                sp.hstack((Dxz, sp.csr_matrix((self.ney, self.nfy)), -Dzx), format="csr"),
-                sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nez, self.nfz))), format="csr"),
+                sp.hstack((sp.csr_array((self.nex, self.nfx)), -Dyz, Dzy), format="csr"),
+                sp.hstack((Dxz, sp.csr_array((self.ney, self.nfy)), -Dzx), format="csr"),
+                sp.hstack((-Dxy, Dyx, sp.csr_array((self.nez, self.nfz))), format="csr"),
             )
         )
 
@@ -1975,7 +1975,7 @@ class MeshFV(BaseFV, SimplexMesh):
         M = self.average_cell_to_face
         if harmon:
             tmp = M @ (1.0 / v)
-            return sp.diags(1.0 / tmp, format='csr')
+            return sp.diags_array(1.0 / tmp, format='csr')
         else:
             return M @ v
 
@@ -1995,7 +1995,7 @@ class MeshFV(BaseFV, SimplexMesh):
         """
         # Build LHS matrix
         if np.isscalar(sigma) is True:
-            M = sigma * sp.eye(self.nf, self.nf)
+            M = sigma * sp.eye_array(self.nf, self.nf)
         else:
             M = self.build_M(sigma)
         A = -self.D @ M @ self.G
@@ -2544,7 +2544,7 @@ class Grid25FV(BaseFV):
             x = np.array([x])
             z = np.array([z])
 
-        Q = sp.lil_matrix((len(x), nc))
+        Q = sp.lil_array((len(x), nc))
         for i in range(len(x)):
 
             if np.any(np.array([x[i], z[i]]) == np.inf):
@@ -2598,7 +2598,7 @@ class Grid25FV(BaseFV):
         """
         # Build LHS matrix
         if np.isscalar(sigma) is True:
-            M = sigma * sp.eye(self.nf, self.nf)
+            M = sigma * sp.eye_array(self.nf, self.nf)
         else:
             M = self.build_M(sigma)
         self._sigma = sigma
@@ -2634,7 +2634,7 @@ class Grid25FV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.nz,))
-        Dx = sp.coo_matrix((s, (ii, jj)))
+        Dx = sp.coo_array((s, (ii, jj)))
 
         # Dz
 
@@ -2647,7 +2647,7 @@ class Grid25FV(BaseFV):
                 np.kron(-1.0 / self.hz[1:], np.ones((self.nx,))),
             )
         )
-        Dz = sp.coo_matrix((s, (i, j)))
+        Dz = sp.coo_array((s, (i, j)))
 
         # assemblage
 
@@ -2716,7 +2716,7 @@ class Grid25FV(BaseFV):
 
         # assemblage
 
-        return sp.coo_matrix((np.hstack((Mx, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
+        return sp.coo_array((np.hstack((Mx, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
 
     def build_G(self, v=None):
         """Construction of gradient matrix.
@@ -2754,7 +2754,7 @@ class Grid25FV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.nz,))
-        Gx = sp.coo_matrix((s, (ii, jj)))
+        Gx = sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -2766,15 +2766,15 @@ class Grid25FV(BaseFV):
                 np.kron(1.0 / self.dz, np.ones((self.nx,))),
             )
         )
-        Gz = sp.coo_matrix((s, (i, j)))
+        Gz = sp.coo_array((s, (i, j)))
 
         # assemblage
         return sp.vstack((Gx, Gz), format="csr")
 
     def _gradient_faces(self, v):
 
-        v_x = sp.diags(v[: self.nfx])
-        v_z = sp.diags(v[(self.nfx) :])
+        v_x = sp.diags_array(v[: self.nfx])
+        v_z = sp.diags_array(v[(self.nfx) :])
 
         # Gx
 
@@ -2791,7 +2791,7 @@ class Grid25FV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.nz,))
-        Gx = v_x @ sp.coo_matrix((s, (ii, jj)))
+        Gx = v_x @ sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -2805,7 +2805,7 @@ class Grid25FV(BaseFV):
                 np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx,))),
             )
         )
-        Gz = v_z @ sp.coo_matrix((s, (i, j)))
+        Gz = v_z @ sp.coo_array((s, (i, j)))
 
         # assemblage
         return sp.vstack((Gx, Gz), format="csr")
@@ -2833,7 +2833,7 @@ class Grid25FV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.nz,))
-        Gx = sp.coo_matrix((s, (ii, jj)))
+        Gx = sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -2847,7 +2847,7 @@ class Grid25FV(BaseFV):
                 np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx,))),
             )
         )
-        Gz = sp.coo_matrix((s, (i, j)))
+        Gz = sp.coo_array((s, (i, j)))
 
         return sp.vstack((Gx, Gz), format="csr")
 
@@ -2885,7 +2885,7 @@ class Grid25FV(BaseFV):
 
     def solve(self, b):
         x = np.zeros(b.shape)
-        s = sp.diags(self._sigma, 0, shape=(self.nc, self.nc), format='csr')
+        s = sp.diags_array(self._sigma, shape=(self.nc, self.nc), format='csr')
         b = 0.5 * b   # divide by 2 -> 2.5D
         # b = 2 * b / np.pi
         for n in range(self.k.size):
@@ -3246,7 +3246,7 @@ class Solver:
                 self.perm = reverse_cuthill_mckee(A)
                 self.inv_perm = np.argsort(self.perm)
 
-                permut = sp.csr_matrix((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
+                permut = sp.csr_array((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
                 A = A @ permut
                 self._A = (A.T @ permut).T
                 if self.verbose:
@@ -3256,7 +3256,7 @@ class Solver:
                 if self.verbose:
                     print("  Computing preconditioning matrix ... ", end="", flush=True)
                 if self.precon == 'diag':
-                    Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                    Ainv = sp.diags_array(1.0 / self.A.diagonal())
                     self.Mpre = sp.linalg.aslinearoperator(Ainv)
                 elif self.precon == 'ilu':
                     try:
@@ -3266,7 +3266,7 @@ class Solver:
                         if self.verbose:
                             print(err)
                             print("Switching to using diagonal of A")
-                        Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                        Ainv = sp.diags_array(1.0 / self.A.diagonal())
                         self.Mpre = sp.linalg.aslinearoperator(Ainv)
                 else:
                     raise ValueError("Unknown preconditioning solver")
@@ -3388,7 +3388,7 @@ class Solver:
         if self.ctx is not None and rhs.ndim == 2:
             assert self.do_perm is False
             if self.ctx.myid == 0:
-                if sp.isspmatrix(rhs):
+                if sp.issparse(rhs):
                     x = rhs.toarray(order="F")
                 else:
                     # we must have a numpy array
@@ -3406,7 +3406,7 @@ class Solver:
             return x
         elif self.pardiso is True and rhs.ndim == 2:
             assert self.do_perm is False
-            if sp.isspmatrix(rhs):
+            if sp.issparse(rhs):
                 x = rhs.toarray(order="F")
             else:
                 # we must have a numpy array
@@ -3421,7 +3421,7 @@ class Solver:
         if rhs.ndim == 1:
             rhs = np.atleast_2d(rhs).T
 
-        if sp.isspmatrix(rhs):
+        if sp.issparse(rhs):
             rhs = rhs.toarray()
 
         sz = rhs.shape[1]
@@ -3575,7 +3575,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             self.perm = reverse_cuthill_mckee(val)
             self.inv_perm = np.argsort(self.perm)
 
-            I = sp.csr_matrix((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
+            I = sp.csr_array((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
             val = val @ I
             self._A = (val.T @ I).T
             if self.verbose:
@@ -3585,7 +3585,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             if self.verbose:
                 print("  Computing preconditioning matrix ... ", end="", flush=True)
             if self.precon == 'diag':
-                Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                Ainv = sp.diags_array(1.0 / self.A.diagonal())
                 self.Mpre = sp.linalg.aslinearoperator(Ainv)
             elif self.precon == 'ilu':
                 try:
@@ -3595,7 +3595,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                     if self.verbose:
                         print(err)
                         print("Switching to using diagonal of A")
-                    Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                    Ainv = sp.diags_array(1.0 / self.A.diagonal())
                     self.Mpre = sp.linalg.aslinearoperator(Ainv)
             else:
                 raise ValueError("Unknown preconditioning solver")
