@@ -6,9 +6,13 @@ Run with:  python3 tests/test_regularization.py   (or pytest)
 """
 import os
 import sys
+import tempfile
 import unittest
 import warnings
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np
 import scipy.sparse as sp
 
@@ -266,6 +270,28 @@ class TestInversionRun(unittest.TestCase):
                 models[st] = sigma_inv[-1]
         for st in SMOOTH_TYPES[1:]:
             self.assertFalse(np.allclose(models[st], models['smooth']), st)
+
+        # run does not change the matplotlib backend nor close the caller's figures; figures that are
+        # only saved are closed
+        backend = matplotlib.get_backend()
+        fig_user = plt.figure()
+        n_open = len(plt.get_fignums())
+        with tempfile.TemporaryDirectory() as tmp:
+            g = GridDC((x, y, z))
+            g.set_solver('superlu')
+            inv = Inversion()
+            inv.max_it = 2
+            inv.verbose = False
+            inv.save_plots = True
+            inv.basename = os.path.join(tmp, 'inv')
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                inv.run(g, m0=0.01 * np.ones(g.fv.nc), m_ref=0.01 * np.ones(g.fv.nc), data_ert=data)
+            self.assertTrue(os.path.isfile(inv.basename + '_it01.pdf'))
+        self.assertEqual(matplotlib.get_backend(), backend)
+        self.assertTrue(plt.fignum_exists(fig_user.number))
+        self.assertEqual(len(plt.get_fignums()), n_open)
+        plt.close(fig_user)
 
         # with reg_var 'model', the IRLS weights are computed relative to the reference model
         g = GridDC((x, y, z))
