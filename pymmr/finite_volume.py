@@ -12,9 +12,12 @@ x : easting
 y : northing
 z : elevation
 
-This coordinate system (elevation -> z positive upward) has implications on the
-definition of the sign of current source in DC resistivity modeling, which is
-opposite of the case where the z axis is depth (positive downward).
+Sign convention: physical.  A current +I injected at the first electrode of a
+dipole (source) produces a positive potential around it, and current flows
+down into the ground beneath it.  With z positive upward, this current is along
+-z below the source, so the azimuthal magnetic field around it is negative
+(right-hand rule).  The potential, being a scalar, does not depend on the
+orientation of the z axis; only vector components (J, B) do.
 
 References
 ----------
@@ -703,6 +706,26 @@ class GridFV(BaseFV):
 
         """
         return np.kron(self.hz, np.kron(self.hy, self.hx))
+
+    def volume_faces(self):
+        """Returns the dual volume associated with the (interior) faces of the grid.
+
+        Returns
+        -------
+        ndarray
+            face area times distance between the centres of the two adjacent voxels,
+            ordered as the faces (x, then y, then z).
+
+        Notes
+        -----
+        With Vc = volume_voxels() and Vf = volume_faces(), D = -Vc^-1 G^T Vf, so that
+        diag(Vc) @ A (A = -D M G) and diag(Vf) @ (C_e C_f - G D) are symmetric.
+        This is used to apply A^-T with the factorization of A in the adjoint computations.
+        """
+        vx = np.kron(self.hz, np.kron(self.hy, self.dx))
+        vy = np.kron(self.hz, np.kron(self.dy, self.hx))
+        vz = np.kron(self.dz, np.kron(self.hy, self.hx))
+        return np.r_[vx, vy, vz]
 
     def centre_voxels(self):
         """Returns coordinates at the centres of voxels.
@@ -1528,8 +1551,7 @@ class GridFV(BaseFV):
 
         Note
         ----
-        Current intensity is multiplied by -1 because we are working with elevation (z positive upward) and first
-        electrode is the source (current "going down in the ground") and second is the sink (current "coming back")
+        First electrode is the source (+I) and second is the sink; the potential is positive around the source.
         """
         x, y, z = self.centre_voxels()
         u0 = np.empty((self.nc, c1c2.shape[0]))
@@ -1556,7 +1578,7 @@ class GridFV(BaseFV):
                     pveimag1 = np.inf
                     nveimag1 = np.inf
                     gf = 2.0
-                u0[:, i] = -cs[i] / (sigma*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
+                u0[:, i] = cs[i] / (sigma*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
             # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
 
         elif c1c2.shape[1] == 3:
@@ -1574,7 +1596,7 @@ class GridFV(BaseFV):
                 else:
                     pveimag1 = np.inf
                     gf = 2.0
-                u0[:, i] = -cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
+                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
         else:
             raise ValueError("c1c2 must be either n x 3 or n x 6")
         np.seterr(divide='warn')

@@ -390,6 +390,9 @@ class GridDC:
             self._check_cs()
 
         if calc_sens is True:
+            if not isinstance(self.fv, GridFV):
+                # 2.5D needs the fields of each wavenumber; tetrahedral meshes lack the face operators
+                raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
             if np.any(self.cs != self.cs[0]):
                 raise ValueError('Sensitivity computation implemented only for I equal at all dipoles.')
 
@@ -443,8 +446,12 @@ class GridDC:
         elif self.fv.solver_A is None:
             raise RuntimeError('Variable sigma should be given as input.')
 
-        self.u = np.empty((self.fv.nc, self.q.shape[1]))
-        self.u[:, :c1c2.shape[0]] = self.fv.solve(self.q[:, :c1c2.shape[0]])
+        if q is not None:
+            # user-supplied source terms (e.g. MMR adjoint): solve for all columns
+            self.u = self.fv.solve(self.q)
+        else:
+            self.u = np.empty((self.fv.nc, self.q.shape[1]))
+            self.u[:, :c1c2.shape[0]] = self.fv.solve(self.q[:, :c1c2.shape[0]])
 
         if self.p1p2 is None:
             data = None
@@ -458,7 +465,9 @@ class GridDC:
             self.u[:, c1c2.shape[0]:] = self.fv.solver_A.solve(self.q[:, c1c2.shape[0]:], verbose=False)
 
             sens = np.empty((self.ind_roi.size, self.c1c2.shape[0]))
-            S = self.fv.build_M(sigma*sigma)
+            # d(m_f)/d(ln sigma_i) = m_f^2 w_fi / sigma_i  (m_f: harmonic mean on face f, w_fi: weights in Gf),
+            # and A^-T = Vc A^-1 Vc^-1, D^T = -Vf G Vc^-1  ->  face volumes Vf enter the adjoint product
+            S = sp.diags_array(M.diagonal()**2 * self.fv.volume_faces())
             Dm = sp.diags_array(1.0/sigma)
 
             if self.verbose and self.fv.comm.rank == 0:
@@ -743,8 +752,9 @@ class GridDC:
             Q = self.fv.linear_interp(c1c2[i, 0], c1c2[i, 1], c1c2[i, 2])
             if c1c2.shape[1] == 6:
                 Q -= self.fv.linear_interp(c1c2[i, 3], c1c2[i, 4], c1c2[i, 5])
-            q[:, i] = -cs[i] * Q.toarray() * iv     # Note: -1 because we are working with elevation (z positive upward) and first
-            # electrode is the source (current "going down in the ground") and second is the sink (current "coming back")
+            # A = -div(sigma grad), so +I at the first electrode (source) gives a positive potential around it;
+            # the second electrode is the sink.  The orientation of the z axis plays no role (potential is a scalar).
+            q[:, i] = cs[i] * Q.toarray() * iv
         self.q = q.tocsr()
         self.u0 = None
 
@@ -758,8 +768,10 @@ class GridDC:
                 self.cs = np.ones((c1c2.shape[0],))
             cs = self.cs12_u
         else:
-            c1c2 = np.vstack((self.c12_u, self.p12_u))
-            cs = np.r_[self.cs_u, self.cp_u]
+            # sensitivity: correction applies to the injection poles only; the adjoint sources at the
+            # measurement electrodes must be the plain discrete point sources (adjoint of d = Q u)
+            c1c2 = self.c12_u.copy()
+            cs = self.cs_u
 
         avg_cond = gmean(ref_model.flatten())
 
@@ -794,6 +806,15 @@ class GridDC:
             # self.q = self.fv.solver_A.solve(self.u0)
             # t2 = time.time() - t0
             # print('numpy:', t1, 'mumps', t2)
+
+        if not self.keep_c1c2:
+            # append unit point sources at measurement electrodes (adjoint fields)
+            p12 = self.fv.process_surface_elec(self.p12_u.copy())
+            iv = 1.0 / self.fv.volume_voxels()
+            q_r = sp.lil_array((self.fv.nc, p12.shape[0]))
+            for i in range(p12.shape[0]):
+                q_r[:, i] = self.cp_u[i] * self.fv.linear_interp(p12[i, 0], p12[i, 1], p12[i, 2]).toarray() * iv
+            self.q = sp.hstack((sp.csr_array(self.q), q_r.tocsr())).tocsr()
 
     def _sort_electrodes(self):
 
@@ -859,11 +880,9 @@ class GridDC:
             self.ind_p1 = invp[:np1p2]
             self.ind_p2 = invp[np1p2:]
 
-            self.cp_u = np.empty((self.p12_u.shape[0],))
-            order = np.argsort(np.concatenate((np.arange(np1p2), np.arange(np1p2))),
-                               kind='stable')
-            self.cp_u[np.concatenate((self.ind_p1, self.ind_p2))[order]] = \
-                np.concatenate((self.cs, self.cs))[order]
+            # adjoint sources at the measurement electrodes have unit intensity
+            # (sensitivity must scale linearly with the injected current)
+            self.cp_u = np.ones((self.p12_u.shape[0],))
 
             self.p12_u = self.p12_u[:, :3]
 
@@ -958,7 +977,9 @@ class GridDC:
         Gc = v @ Gf
         # Gc = self.build_G(self.G @ u)
         A = Dm @ Gc.T @ S
-        tmp = self._units_scaling * A @ self.fv.G @ u_r
+        # adjoint: d(data)/d(ln sigma) = -Dm Gf^T diag(G u) diag(m^2 Vf) G u_r,
+        # with u_r the field of unit sources at the receivers (S holds m^2 Vf)
+        tmp = -self._units_scaling * A @ self.fv.G @ u_r
         return tmp[self.ind_roi], n
 
     def _check_cs(self):

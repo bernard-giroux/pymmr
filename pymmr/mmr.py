@@ -419,6 +419,10 @@ class GridMMR:
             if self.fv.solver_A is not None:
                 self.fv.solver_A.print_info()
 
+        if calc_sens and not isinstance(self.dc.fv, GridFV):
+            # tetrahedral meshes lack the face operators used for the sensitivity
+            raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
+
         if not self.acq_checked:
             self.check_acquisition()
 
@@ -527,7 +531,8 @@ class GridMMR:
             if self.verbose and self.fv.comm.rank == 0:
                 print('    Assembling matrices ... ', end='', flush=True)
             sens = np.empty((self.dc.ind_roi.size, self.nobs_mmr*3))
-            S = self.dc.fv.build_M(sigma*sigma)
+            # d(m_f)/d(ln sigma_i) = m_f^2 w_fi / sigma_i, times face volumes from the adjoint (see _adj)
+            S = sp.diags_array(M.diagonal()**2 * self.dc.fv.volume_faces())
             Dm = sp.diags_array(1.0/sigma)
 
             Gf = self.dc.fv.build_G_faces()
@@ -622,12 +627,15 @@ class GridMMR:
 
         J = sp.hstack((Jx.T, Jy.T, Jz.T))
 
-        ind_earth = np.r_[self.fv.ind(np.arange(self.fv.nx-1), np.arange(self.fv.ny),
-                                      np.where(self.fv.zc < self.dc.fv.z[-1]), 'fx'),
-                          self.fv.nfx+self.fv.ind(np.arange(self.fv.nx), np.arange(self.fv.ny-1),
-                                                  np.where(self.fv.zc < self.dc.fv.z[-1]), 'fy'),
-                          self.fv.nfx+self.fv.nfy+self.fv.ind(np.arange(self.fv.nx), np.arange(self.fv.ny),
-                                                              np.where(self.fv.z[1:-1] < self.dc.fv.z[-1]), 'fz')]
+        # Adjoint of B = C_f A^-1 P Jdc.  A is not symmetric on non-uniform grids, but diag(Vf) A is,
+        # so A^-T = Vf A^-1 Vf^-1.  The left factor Vf (restricted to earth faces) is applied in
+        # _fill_jacobian through S.
+        J = sp.diags_array(1.0 / self.fv.volume_faces()) @ J
+
+        # earth faces, same mapping as used to build the MMR source term in fwd_mod
+        ind_earth = np.r_[np.arange(self.dc.fv.nfx),
+                          self.fv.nfx + np.arange(self.dc.fv.nfy),
+                          self.fv.nfx + self.fv.nfy + np.arange(self.dc.fv.nfz)]
 
         q = self.fv.solver_A.solve(J)
         q = q[ind_earth, :]
@@ -686,7 +694,9 @@ class GridMMR:
         Gc = v @ Gf
         # Gc = self.dc.build_G(self.dc.G @ u_dc[:, n])
         A = -Dm @ Gc.T @ S
-        tmp = A @ q - A @ self.dc.fv.G @ q2
+        # dB/d(ln sigma) = -R A^-1 P [I + M G A_dc^-1 D] d(M G u)/d(ln sigma); transposed with
+        # A_dc^-T = Vc A_dc^-1 Vc^-1 and D^T = -Vf G Vc^-1, the second term is + G A_dc^-1 D M q = + G q2
+        tmp = A @ q + A @ self.dc.fv.G @ q2
 
         mask_xs = self.mask[n*self.xo_all.shape[0]:(n+1)*self.xo_all.shape[0]]
         mask_xs = np.r_[mask_xs, mask_xs, mask_xs]
@@ -738,8 +748,10 @@ def normal_field(c1c2, xo, cs=1.0):
     r2 = np.sqrt(np.sum((xo - c1c2[:, 3:])**2, axis=1))
     theta1 = np.arctan2(xo[:, 1] - c1c2[:, 1], xo[:, 0] - c1c2[:, 0])
     theta2 = np.arctan2(xo[:, 1] - c1c2[:, 4], xo[:, 0] - c1c2[:, 3])
-    B1 = -cs * 1.e-7 / r1 * 1.e12  # pT    source is negative because z pointing upward
-    B2 = cs * 1.e-7 / r2 * 1.e12
+    # pT.  Returned field is -(B1 phi_1 + B2 phi_2), phi = azimuthal unit vector around each electrode.
+    # Current flows along -z below the source (B_phi < 0) and along +z below the sink (B_phi > 0).
+    B1 = cs * 1.e-7 / r1 * 1.e12
+    B2 = -cs * 1.e-7 / r2 * 1.e12
     return B1 * np.sin(theta1) + B2 * np.sin(theta2), -B1 * np.cos(theta1) - B2 * np.cos(theta2)
 
 
