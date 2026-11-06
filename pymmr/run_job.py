@@ -21,7 +21,8 @@ The keywords are :
 - **basename** : each output file will start with this basename
 - **data mmr** : Input file holding MMR data (see format below)
 - **data dc** : Input file holding DC resistivity data (see format below)
-- **model** : Conductivity model in VTK format (RectilinearGrid).  Conductivity should be in S/m
+- **model** : Conductivity model in VTK format (RectilinearGrid).  Conductivity should be in S/m.
+              A rectilinear grid with a single cell along y defines a 2.5D model (DC resistivity only)
 - **source file** : Coordinates in injection dipoles, for forward modelling
 - **measurement file** : Coordinates of measurement dipoles or B-field sensor, for forward modelling
 - **source current** : Intensity of source current in A (file or scalar)
@@ -34,6 +35,7 @@ The keywords are :
 - **precon** : Apply preconditioning when using iterative solvers ('ilu', 'diag', or '0' for no preconditionning)
 - **permut** : Apply inverse Cuthill-McKee permutation when using iterative solvers
 - **region of interest** : Extents of region of interest for inversion or sensitivity calculation
+                           (xmin xmax ymin ymax zmin zmax, or xmin xmax zmin zmax in 2.5D)
 - **verbose** : Display progress messages
                 if 1, basic messages are displayed
                 if 2, solver messages are displayed
@@ -96,6 +98,12 @@ x : easting
 y : northing
 z : elevation
 
+*** 2.5D DC resistivity modeling ***
+If the model file holds a rectilinear grid with a single cell along y, 2.5D modelling is performed: the
+conductivity is invariant along y and the profile lies in the plane y = 0 (y coordinates of electrodes are
+ignored).  Such files are produced by `GridDC.fv.toVTK` for a 2.5D grid.  Sensitivity and inversion are not
+yet available in 2.5D.
+
 *** MMR modeling ***
 It is possible to save ∆V values for predetermined dipoles, in addition to the Bx, By, and Bz values, when
 performing MMR simulations.  Dipoles are generated using the observation point as reference electrode, and
@@ -125,7 +133,7 @@ import pandas as pd
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy  # pyright: ignore[reportMissingImports]
 
-from pymmr.finite_volume import GridFV
+from pymmr.finite_volume import GridFV, Grid25FV
 from pymmr.dc import GridDC
 from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, df_to_data
@@ -165,11 +173,18 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False, n_thread
         x = vtk_to_numpy(reader.GetOutput().GetXCoordinates())
         y = vtk_to_numpy(reader.GetOutput().GetYCoordinates())
         z = vtk_to_numpy(reader.GetOutput().GetZCoordinates())
+        if y.size == 2 and grid_class is not GridFV:
+            # a single cell along y: 2.5D model (voxel ordering is the same, x being the fast axis)
+            if grid_class is GridMMR:
+                raise ValueError("2.5D modelling (model with a single cell along y) not available for MMR")
+            param = (x, z)
+        else:
+            param = (x, y, z)
         if return_sigma:
             sigma = vtk_to_numpy(reader.GetOutput().GetCellData().GetArray("Conductivity"))
-            return grid_class((x, y, z), comm=comm, n_threads=n_threads), sigma
+            return grid_class(param, comm=comm, n_threads=n_threads), sigma
         else:
-            return grid_class((x, y, z), comm=comm, n_threads=n_threads)
+            return grid_class(param, comm=comm, n_threads=n_threads)
     elif extension == "vtu":
         #  unstructured grid
         reader = vtk.vtkXMLUnstructuredGridReader()
@@ -280,8 +295,9 @@ if __name__ == "__main__":
                     verbose = int(value)
                 elif 'region' in keyword.lower() and 'interest' in keyword.lower():
                     tmp = value.split()
-                    if len(tmp) != 6:
-                        raise ValueError('6 values needed to define ROI (xmin xmax ymin ymax zmin zmax')
+                    if len(tmp) not in (4, 6):
+                        raise ValueError('6 values needed to define ROI (xmin xmax ymin ymax zmin zmax), '
+                                         'or 4 values in 2.5D (xmin xmax zmin zmax)')
                     roi = [float(x) for x in tmp]
                 elif 'boundary' in keyword.lower() and 'correction' in keyword.lower():
                     apply_bc = int(value)
@@ -487,7 +503,10 @@ if __name__ == "__main__":
 
         if rank == 0:
             x, y, z = g.get_roi_nodes()
-            g2 = GridFV((x, y, z))
+            if g.fv.dim == 2.5:
+                g2 = Grid25FV((x, z))   # written as a grid one cell thick along y
+            else:
+                g2 = GridFV((x, y, z))
 
             fields = {}
             for i in range(len(S_save)):

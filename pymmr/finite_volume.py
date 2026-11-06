@@ -1669,9 +1669,10 @@ class GridFV(BaseFV):
         if not isinstance(fields, dict):
             raise ValueError("'fields' must be a dict[str, ndarray]")
 
-        xCoords = vtk.vtkFloatArray()
-        yCoords = vtk.vtkFloatArray()
-        zCoords = vtk.vtkFloatArray()
+        # double precision, so that grids read back from the file are identical
+        xCoords = vtk.vtkDoubleArray()
+        yCoords = vtk.vtkDoubleArray()
+        zCoords = vtk.vtkDoubleArray()
 
         if component == "s":
             x = self.x
@@ -1723,7 +1724,7 @@ class GridFV(BaseFV):
         rgrid.SetZCoordinates(zCoords)
 
         for fn in fields:
-            field = fields[fn]
+            field = np.asarray(fields[fn]).ravel()   # fields may be column vectors (e.g. extract_xyz_faces)
             data = vtk.vtkDoubleArray()
             for i in field:
                 data.InsertNextValue(i)
@@ -2479,6 +2480,97 @@ class Grid25FV(BaseFV):
                                      comm=self.comm, n_threads=self.n_threads)
         else:
             self.solver_A.update(A, self._sigma)
+
+    # The 2.5D grid is seen as a 3D grid one cell thick along y, centred on y = 0, for input/output
+    # (VTK files) and for the code shared with 3D (region of interest, regularization).
+    ny = 1
+    nfy = 0
+    y = np.array([-0.5, 0.5])
+    yc = np.array([0.0])
+    hy = np.array([1.0])
+
+    def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
+        """Save fields in a VTK file (rectilinear grid one cell thick along y, see GridFV.toVTK).
+
+        Parameters
+        ----------
+        fields : dict[str, ndarray]
+            dict holding the name to assign to the data (key) and the data array (value)
+        filename : string
+            name of file without extension
+        component : string, optional
+            - 's' : field is a scalar (defined at centre of voxels)
+            - 'x' : X component of a field defined on faces
+            - 'z' : Z component of a field defined on faces
+        on_face : bool, optional
+            must be True (fields on edges are not defined in 2.5D)
+        metadata : dict[str, str], optional
+            metadata to store in field data
+
+        Notes
+        -----
+        Files written for 2.5D models can be used as model files in run_job.py (2.5D is selected when
+        the grid has a single cell along y).
+        """
+        if component == "y":
+            raise ValueError("no Y component on faces in 2.5D")
+        if not on_face:
+            raise NotImplementedError("fields defined on edges not available in 2.5D")
+        # GridFV.toVTK only uses the coordinates (x, y, z and centres), defined for the 2.5D grid
+        GridFV.toVTK(self, fields, filename, component=component, on_face=on_face, metadata=metadata)
+
+    def fromVTK(self, fieldname, filename):
+        """Extract scalar field from a VTK file (rectilinear grid one cell thick along y).
+
+        Returns
+        -------
+        ndarray (or None if field not in file)
+        """
+        # GridFV.fromVTK only uses the grid dimensions (nx, ny, nz), defined for the 2.5D grid
+        return GridFV.fromVTK(self, fieldname, filename)
+
+    def extract_Gxyz(self):
+        """Extract Gx, Gy & Gz from G (Gy is empty in 2.5D)."""
+        Gx = self.G[:self.nfx, :]
+        Gy = sp.csr_array((0, self.nc))
+        Gz = self.G[self.nfx:, :]
+        return Gx, Gy, Gz
+
+    def extract_xyz_faces(self, v):
+        """Split a field defined on faces in its X, Y (empty in 2.5D) and Z components."""
+        if v.ndim == 1:
+            v = v.reshape(-1, 1)
+        return v[:self.nfx, :], v[:0, :], v[self.nfx:, :]
+
+    def distance_weighting(self, xo, beta):
+        """Calculate distance weighting.
+
+        Parameters
+        ----------
+        xo : array_like
+            coordinates of observation points (y is ignored).
+        beta : float
+            Determines weighting intensity.
+
+        Returns
+        -------
+        ndarray (nc,)
+            Weights.
+
+        Notes
+        -----
+        Eq 19 of Li & Oldenburg 2000 Geophysics, vol 65, no 2, pp. 540-552, as in GridFV, with distances
+        in the x-z plane and the cell areas.
+        """
+        xo = np.atleast_2d(xo)
+        dA = self.volume_voxels()
+        xc, _, zc = self.centre_voxels()
+        R0 = 0.5 * np.sqrt(dA.min())
+        Q = np.zeros((self.nc,))
+        for i in np.arange(xo.shape[0]):
+            R = np.sqrt((xc - xo[i, 0])**2 + (zc - xo[i, -1])**2)
+            Q += (dA / (R + R0)**3)**2
+        return Q ** (0.25 * beta)
 
     def is_inside(self, x, y, z):
         """Check if point is inside grid.
