@@ -25,7 +25,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.stats.mstats import gmean
 
-from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver
+from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver, KSource
 
 # TODO: généraliser ROI pour voxels arbitraires
 
@@ -426,9 +426,11 @@ class GridDC:
             self._check_cs()
 
         if calc_sens is True:
-            if not isinstance(self.fv, GridFV):
-                # 2.5D needs the fields of each wavenumber; tetrahedral meshes lack the face operators
-                raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
+            if not isinstance(self.fv, (GridFV, Grid25FV)):
+                # tetrahedral meshes lack the face operators
+                raise NotImplementedError('Sensitivity computation implemented only for rectilinear grids')
+            if self.fv.dim == 2.5 and self.apply_bc and self.correct_quadrature:
+                raise NotImplementedError('Sensitivity not implemented in 2.5D with correct_quadrature')
             if np.any(self.cs != self.cs[0]):
                 raise ValueError('Sensitivity computation implemented only for I equal at all dipoles.')
 
@@ -485,6 +487,9 @@ class GridDC:
         if q is not None:
             # user-supplied source terms (e.g. MMR adjoint): solve for all columns
             self.u = self.fv.solve(self.q)
+        elif calc_sens and self.fv.dim == 2.5:
+            # fields of the sources and of the adjoint sources (measurement electrodes), for each wavenumber
+            self.u, self.U_k = self.fv.solve(self.q, return_k=True)
         else:
             self.u = np.empty((self.fv.nc, self.q.shape[1]))
             self.u[:, :c1c2.shape[0]] = self.fv.solve(self.q[:, :c1c2.shape[0]])
@@ -494,7 +499,18 @@ class GridDC:
         else:
             data = self._units_scaling * self._get_data()
 
-        if calc_sens:
+        if calc_sens and self.fv.dim == 2.5:
+            if self.verbose and self.fv.comm.rank == 0:
+                print('  Computing sensitivity ... ', end='', flush=True)
+            sens = self._sens25(sigma, M, c1c2.shape[0])
+            self.U_k = None   # free memory
+            if self.sort_electrodes and self.sort_back is not None:
+                sens = sens[:, self.sort_back]
+            if self.verbose and self.fv.comm.rank == 0:
+                print('done.\nEnd of modelling.')
+            return data, sens
+
+        elif calc_sens:
             if self.verbose and self.fv.comm.rank == 0:
                 print('  Computing sensitivity ... ', end='', flush=True)
             # TODO : use formulation of Haber (book), when number of p1p2 > number of voxels
@@ -821,6 +837,7 @@ class GridDC:
 
         avg_cond = gmean(ref_model.flatten())
         self._sigma0 = avg_cond
+        self._sigma0_w = None
 
         if self.fv.dim == 3:
             self.u0 = self.fv.compute_u_homog(c1c2, avg_cond, cs)
@@ -830,7 +847,7 @@ class GridDC:
             # 2.5 D: correction applied for each wavenumber, q_k = L_k(sigma0) U0_k
             if self.local_sigma0:
                 # reference fields with the conductivity at each current electrode (see boundary_source)
-                self._sigma0 = self._electrode_sigma(c1c2, ref_model)
+                self._sigma0, self._sigma0_w = self._electrode_sigma(c1c2, ref_model, return_weights=True)
             self.q, self.u0 = self.fv.boundary_source(c1c2, self._sigma0, cs,
                                                       correct_quadrature=self.correct_quadrature)
 
@@ -841,16 +858,31 @@ class GridDC:
             q_r = sp.lil_array((self.fv.nc, p12.shape[0]))
             for i in range(p12.shape[0]):
                 q_r[:, i] = self.cp_u[i] * self.fv.linear_interp(p12[i, 0], p12[i, 1], p12[i, 2]).toarray() * iv
-            self.q = sp.hstack((sp.csr_array(self.q), q_r.tocsr())).tocsr()
+            if isinstance(self.q, KSource):
+                # same source term for all wavenumbers, no reference fields
+                n_k = self.q.q.shape[0]
+                q_r = np.broadcast_to(q_r.toarray(), (n_k, self.fv.nc, p12.shape[0]))
+                zeros = np.zeros(q_r.shape)
+                self.q = KSource(np.concatenate((self.q.q, q_r), axis=2),
+                                 None if self.q.U0 is None else np.concatenate((self.q.U0, zeros), axis=2),
+                                 None if self.q.u0 is None else np.concatenate((self.q.u0, zeros[0]), axis=1))
+            else:
+                self.q = sp.hstack((sp.csr_array(self.q), q_r.tocsr())).tocsr()
 
-    def _electrode_sigma(self, c1c2, sigma):
-        """Conductivity interpolated at the current electrodes (n x 2 for dipoles, n for poles)."""
+    def _electrode_sigma(self, c1c2, sigma, return_weights=False):
+        """Conductivity interpolated at the current electrodes (n x 2 for dipoles, n for poles).
+
+        If return_weights is True, also returns the interpolation matrices (one n x nc matrix per
+        electrode of the dipoles), used for the sensitivity.
+        """
         sigma = np.asarray(sigma, dtype=float).ravel()
         n_e = 2 if c1c2.shape[1] == 6 else 1
         s = np.ones((c1c2.shape[0], n_e))
+        W = []
         for j in range(n_e):
             e = self.fv.process_surface_elec(c1c2[:, 3*j:3*j+3].copy())
             ok = np.all(np.isfinite(e), axis=1)   # electrodes at infinity: value irrelevant
+            Wj = sp.csr_array((c1c2.shape[0], self.fv.nc))
             if np.any(ok):
                 if sigma.size == 1:
                     s[ok, j] = sigma[0]
@@ -858,8 +890,17 @@ class GridDC:
                     # sample within the cell centres (no extrapolation of sigma near the grid edges)
                     xe = np.clip(e[ok, 0], self.fv.xc[0], self.fv.xc[-1])
                     ze = np.clip(e[ok, 2], self.fv.zc[0], self.fv.zc[-1])
-                    s[ok, j] = self.fv.linear_interp(xe, e[ok, 1], ze) @ sigma
-        return s if n_e == 2 else s[:, 0]
+                    Wok = self.fv.linear_interp(xe, e[ok, 1], ze)
+                    s[ok, j] = Wok @ sigma
+                    i_ok = np.where(ok)[0]
+                    sel = sp.csr_array((np.ones(i_ok.size), (i_ok, np.arange(i_ok.size))),
+                                       shape=(c1c2.shape[0], i_ok.size))
+                    Wj = (sel @ Wok).tocsr()
+            W.append(Wj)
+        s = s if n_e == 2 else s[:, 0]
+        if return_weights:
+            return s, W
+        return s
 
     def _survey_distances(self):
         """Smallest distance between current and potential electrodes, and largest distance between electrodes."""
@@ -986,7 +1027,7 @@ class GridDC:
             self._build_Q()
         # 2.5D with boundary correction: the analytic primary field is known exactly at the measurement
         # electrodes, interpolate only the (smooth) secondary field
-        exact_primary = (u is None and self.fv.dim == 2.5 and self.keep_c1c2 and self.exact_primary and
+        exact_primary = (u is None and self.fv.dim == 2.5 and self.exact_primary and
                          self.u0 is not None and self._sigma0 is not None)
         if u is None:
             u = self.u
@@ -1011,10 +1052,105 @@ class GridDC:
             # we must combine u fields from c1 and c2
             for ns in range(self.n_c1c2_u):
                 uu = u[:, self.ind_c1_u[ns]] - u[:, self.ind_c2_u[ns]]
-                data = np.r_[data, self.Q[ns] @ uu]
+                d = self.Q[ns] @ uu
+                if exact_primary:
+                    R1, R2 = self._reference_terms(ns)
+                    d = d + R1 + R2
+                data = np.r_[data, d]
         if self.sort_electrodes and self.sort_back is not None:
             data = data[self.sort_back]
         return data
+
+    def _reference_terms(self, ns):
+        """Terms of the data depending on the reference fields, for the current electrodes of dipole ns.
+
+        In sensitivity mode (fields computed for each pole), the data of injection dipole ns are
+        d = Q (u_c1 - u_c2) + R1 + R2, with R_e = +/-(P_e - Q u0_e), P_e the analytic primary field of
+        electrode e at the measurement electrodes and u0_e its reference field (2.5D, exact_primary).
+        R_e is proportional to 1/sigma0_e.
+
+        Returns
+        -------
+        tuple of 2 ndarray
+            R1, R2 for the data of dipole ns (rows where ind_c1c2 == ns)
+        """
+        ind = self.ind_c1c2 == ns
+        p1p2 = self.p1p2[ind, :]
+        terms = []
+        for sign, ip in ((1.0, self.ind_c1_u[ns]), (-1.0, self.ind_c2_u[ns])):
+            c = np.tile(self.c12_u[ip, :], (p1p2.shape[0], 1))
+            s0 = self._sigma0 if np.isscalar(self._sigma0) else self._sigma0[ip]
+            cs = self.cs_u[ip]
+            P = self.fv.u_homog_at(c, p1p2[:, :3], s0, cs)
+            if p1p2.shape[1] == 6:
+                P = P - self.fv.u_homog_at(c, p1p2[:, 3:6], s0, cs)
+            terms.append(sign * (P - self.Q[ns] @ self.u0[:, ip]))
+        return terms
+
+    def _sens25(self, sigma, M, n_poles):
+        """Sensitivity d(data)/d(ln sigma) in 2.5D.
+
+        Parameters
+        ----------
+        sigma : ndarray
+            Conductivity model.
+        M : sparse array
+            Harmonic average of sigma on the faces.
+        n_poles : int
+            Number of current electrodes (fields of the measurement electrodes follow in U_k).
+
+        Notes
+        -----
+        With L_k = -D M G + k^2 sigma (one system per wavenumber), U_k and W_k the fields of the current
+        electrodes and of unit sources at the measurement electrodes, and u = 1/2 sum_k g_k U_k:
+
+            d(data)/d(ln sigma) = -1/2 sum_k g_k [ Dm Gf^T (G U_k * m^2 Vf * G W_k) + k^2 sigma Vc U_k W_k ]
+
+        (L_k^-T = Vc L_k^-1 Vc^-1 and D^T = -Vf G Vc^-1).  With exact_primary, the reference fields
+        depend on sigma through the conductivity at the current electrodes, which adds
+        -R_e d(ln sigma0_e)/d(ln sigma) (see _reference_terms).
+        """
+        fv = self.fv
+        Gf = fv.build_G_faces()
+        S = M.diagonal()**2 * fv.volume_faces()
+        dm = 1.0 / sigma
+        mass = sigma * fv.volume_voxels()
+        U = self.U_k
+        k, g = fv.solver_A.k, fv.solver_A.g
+        GU = np.stack([fv.G @ U[i] for i in range(k.size)])
+
+        n_data = self.c1c2.shape[0]
+        sens = np.empty((self.ind_roi.size, n_data))
+
+        # terms from the reference fields (exact primary field at the measurement electrodes)
+        ref = self.apply_bc and self.exact_primary and self.u0 is not None and self._sigma0 is not None
+        if ref:
+            R = np.zeros((n_data, 2))
+            for ns in range(self.n_c1c2_u):
+                ind = np.where(self.ind_c1c2 == ns)[0]
+                R[ind, 0], R[ind, 1] = self._reference_terms(ns)
+
+        for n in range(n_data):
+            i1, i2 = self.ind_c1[n], self.ind_c2[n]
+            r1, r2 = n_poles + self.ind_p1[n], n_poles + self.ind_p2[n]
+            tmp = np.zeros((fv.nc,))
+            for i in range(k.size):
+                Uk = U[i][:, i1] - U[i][:, i2]
+                Wk = U[i][:, r1] - U[i][:, r2]
+                GUk = GU[i][:, i1] - GU[i][:, i2]
+                GWk = GU[i][:, r1] - GU[i][:, r2]
+                tmp += g[i] * (dm * (Gf.T @ (GUk * S * GWk)) + k[i]**2 * mass * Uk * Wk)
+            tmp *= -0.5
+            if ref:
+                for e, ip in ((0, i1), (1, i2)):
+                    if self._sigma0_w is None:
+                        # sigma0: geometric mean of the model
+                        tmp -= R[n, e] / fv.nc
+                    else:
+                        w = self._sigma0_w[0][[ip], :].toarray().ravel()
+                        tmp -= R[n, e] * w * sigma / self._sigma0[ip]
+            sens[:, n] = self._units_scaling * tmp[self.ind_roi]
+        return sens
 
     def _get_u(self, d):
         u = None

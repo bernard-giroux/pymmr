@@ -195,8 +195,46 @@ class TestForward(unittest.TestCase):
         v2 = g2.fwd_mod(s)
         np.testing.assert_allclose(v1, v2, rtol=1e-10)
 
-    def test_sensitivity_not_implemented(self):
+    def test_sensitivity(self):
+        """d(data)/d(ln sigma) vs centred finite differences, in core, electrode and padding cells."""
+        x = np.arange(-10., 10.01)
+        z = np.arange(-6., 0.01)
+        pad = np.cumsum(calc_padding(1.0, 10))
+        x = np.r_[x[0] - pad[::-1], x, x[-1] + pad]
+        z = np.r_[z[0] - pad[::-1], z]
+        # electrodes at nodes and at cell centres (x = -1.5, -0.5), unsorted, repeated dipole
+        c1c2 = np.array([[2., 0, 0, 3, 0, 0], [-6., 0, 0, -4, 0, 0], [-1.5, 0, 0, -0.5, 0, 0], [-6., 0, 0, -4, 0, 0]])
+        p1p2 = np.array([[5., 0, 0, 6, 0, 0], [0., 0, 0, 2, 0, 0], [1., 0, 0, 3.5, 0, 0], [4., 0, 0, 6, 0, 0]])
+        rng = np.random.default_rng(7)
+
+        def grid(opts):
+            g = GridDC((x, z))
+            g.set_solver('superlu')
+            g.set_survey_ert(c1c2, p1p2, cs=2.5)
+            for key, val in opts.items():
+                setattr(g, key, val)
+            return g
+
+        sig = 10**rng.uniform(-2.5, -1.5, grid({}).fv.nc)
+        xc, _, zc = grid({}).fv.centre_voxels()
+        cells = [int(np.argmin((xc - a)**2 + (zc - b)**2))
+                 for a, b in ((0.5, -0.5), (3.5, -2.5), (-1.5, -0.5), (2.5, -0.5), (15., -3.), (0.5, -15.))]
+        for opts in ({}, {'local_sigma0': False}, {'apply_bc': False}):
+            with self.subTest(**opts):
+                d0 = grid(opts).fwd_mod(sig)
+                d1, S = grid(opts).fwd_mod(sig, calc_sens=True)
+                np.testing.assert_allclose(d1, d0, rtol=1e-10)
+                for c in cells:
+                    h = 1e-5 * sig[c]
+                    s2, s3 = sig.copy(), sig.copy()
+                    s2[c] += h
+                    s3[c] -= h
+                    fd = (grid(opts).fwd_mod(s2) - grid(opts).fwd_mod(s3)) / (2 * h) * sig[c]
+                    self.assertLess(np.max(np.abs(S[c] - fd)) / np.max(np.abs(fd)), 1e-4)
+
+    def test_sensitivity_correct_quadrature(self):
         g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        g.correct_quadrature = True
         with self.assertRaises(NotImplementedError):
             g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO1, 1 / RHO1), calc_sens=True)
 
