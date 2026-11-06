@@ -419,6 +419,10 @@ class GridMMR:
             if self.fv.solver_A is not None:
                 self.fv.solver_A.print_info()
 
+        if calc_sens and not isinstance(self.dc.fv, GridFV):
+            # tetrahedral meshes lack the face operators used for the sensitivity
+            raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
+
         if not self.acq_checked:
             self.check_acquisition()
 
