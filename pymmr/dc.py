@@ -120,6 +120,13 @@ class GridDC:
         self.q = None
         self.Q = None
         self.apply_bc = True
+        # 2.5D with apply_bc: apply the error of the inverse Fourier transform to the secondary field only.
+        # Exact for homogeneous models, but less accurate when the secondary field is large (e.g. conductive
+        # basement at long offsets), hence False by default
+        self.correct_quadrature = False
+        self.exact_primary = True        # 2.5D with apply_bc: analytic primary field at measurement electrodes
+        self.local_sigma0 = True         # 2.5D with apply_bc: reference fields use conductivity at electrodes
+        self._sigma0 = None              # conductivity of reference model used for boundary correction
         self.keep_c1c2 = True  # keep dipoles for forming RHS term of equation
                                # system, this will be false when computing
                                # sensitivity
@@ -423,6 +430,9 @@ class GridDC:
         else:
             c1c2 = self.c12_u
 
+        if self.fv.dim == 2.5 and self.fv.auto_kg and q is None:
+            self._update_k_g()
+
         if q is not None:
             self.q = sp.csr_array(q)
             self.u0 = None
@@ -439,10 +449,7 @@ class GridDC:
                                      A.indices.nbytes
 
                 print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576), flush=True)
-            if self.fv.solver_A is None or keep_solver is False:
-                self.fv.solver_A = Solver(self.fv.get_solver_params(), A, verbose=(self.verbose>1))
-            else:
-                self.fv.A = A
+            self.fv.set_system(A, keep_solver, verbose=(self.verbose > 1))
         elif self.fv.solver_A is None:
             raise RuntimeError('Variable sigma should be given as input.')
 
@@ -774,38 +781,19 @@ class GridDC:
             cs = self.cs_u
 
         avg_cond = gmean(ref_model.flatten())
-
-        self.u0 = self.fv.compute_u_homog(c1c2, avg_cond, cs)
+        self._sigma0 = avg_cond
 
         if self.fv.dim == 3:
+            self.u0 = self.fv.compute_u_homog(c1c2, avg_cond, cs)
             A, _ = self.fv.build_A(avg_cond)
             self.q = sp.csr_array(A @ self.u0)
         else:
-            # 2.5 D
-            A0, _ = self.fv.build_A(avg_cond)
-            A0 = A0.tocsc()
-            sigma_diag = avg_cond * sp.diags_array(np.ones((self.fv.nc,)),
-                                                   shape=(self.fv.nc, self.fv.nc), format='csc')
-            # A = sp.csr_array(A0.shape)
-            A = np.zeros(A0.shape)
-            I = sp.eye_array(A.shape[0], A.shape[1])
-            for i in range(self.fv.k.size):
-                L = A0 + self.fv.k[i] ** 2 * sigma_diag
-                # A += self.fv.g[i] * sp.linalg.inv(L)
-                self.fv.solver_A.A = L
-                A += self.fv.g[i] * self.fv.solver_A.solve(I)
-
-            # import time
-            # t0 = time.time()
-            self.q = np.linalg.solve(A, self.u0)
-            # t1 = time.time() - t0
-
-            # self.q = sp.linalg.spsolve(A, self.u0)
-            # t0 = time.time()
-            # self.fv.solver_A.A = sp.coo_array(A)
-            # self.q = self.fv.solver_A.solve(self.u0)
-            # t2 = time.time() - t0
-            # print('numpy:', t1, 'mumps', t2)
+            # 2.5 D: correction applied for each wavenumber, q_k = L_k(sigma0) U0_k
+            if self.local_sigma0:
+                # reference fields with the conductivity at each current electrode (see boundary_source)
+                self._sigma0 = self._electrode_sigma(c1c2, ref_model)
+            self.q, self.u0 = self.fv.boundary_source(c1c2, self._sigma0, cs,
+                                                      correct_quadrature=self.correct_quadrature)
 
         if not self.keep_c1c2:
             # append unit point sources at measurement electrodes (adjoint fields)
@@ -815,6 +803,69 @@ class GridDC:
             for i in range(p12.shape[0]):
                 q_r[:, i] = self.cp_u[i] * self.fv.linear_interp(p12[i, 0], p12[i, 1], p12[i, 2]).toarray() * iv
             self.q = sp.hstack((sp.csr_array(self.q), q_r.tocsr())).tocsr()
+
+    def _electrode_sigma(self, c1c2, sigma):
+        """Conductivity interpolated at the current electrodes (n x 2 for dipoles, n for poles)."""
+        sigma = np.asarray(sigma, dtype=float).ravel()
+        n_e = 2 if c1c2.shape[1] == 6 else 1
+        s = np.ones((c1c2.shape[0], n_e))
+        for j in range(n_e):
+            e = self.fv.process_surface_elec(c1c2[:, 3*j:3*j+3].copy())
+            ok = np.all(np.isfinite(e), axis=1)   # electrodes at infinity: value irrelevant
+            if np.any(ok):
+                if sigma.size == 1:
+                    s[ok, j] = sigma[0]
+                else:
+                    # sample within the cell centres (no extrapolation of sigma near the grid edges)
+                    xe = np.clip(e[ok, 0], self.fv.xc[0], self.fv.xc[-1])
+                    ze = np.clip(e[ok, 2], self.fv.zc[0], self.fv.zc[-1])
+                    s[ok, j] = self.fv.linear_interp(xe, e[ok, 1], ze) @ sigma
+        return s if n_e == 2 else s[:, 0]
+
+    def _survey_distances(self):
+        """Smallest distance between current and potential electrodes, and largest distance between electrodes."""
+        c1c2 = self.c1c2 if self.c1c2 is not None else self.c1c2_u
+        c = [c1c2[:, :3]] + ([c1c2[:, 3:6]] if c1c2.shape[1] == 6 else [])
+        if self.p1p2 is None:
+            raise ValueError('Measurement points undefined')
+        p = [self.p1p2[:, :3]] + ([self.p1p2[:, 3:6]] if self.p1p2.shape[1] == 6 else [])
+        r = []
+        with np.errstate(invalid='ignore'):
+            for ci in c:
+                for pi in p:
+                    r.append(np.sqrt((ci[:, 0] - pi[:, 0])**2 + (ci[:, 2] - pi[:, 2])**2))
+        r = np.concatenate(r)
+        r = r[np.isfinite(r) & (r > 0)]
+        if r.size == 0:
+            raise ValueError('Cannot compute electrode distances')
+        e = np.vstack(c + p)
+        e = e[np.all(np.isfinite(e), axis=1), :]
+        extent = np.hypot(np.ptp(e[:, 0]), np.ptp(e[:, 2]))
+        return r.min(), max(r.max(), extent)
+
+    def _update_k_g(self):
+        """Optimize wavenumbers for the distances spanned by the survey (2.5D).
+
+        The transform must be accurate for the source-receiver distances, but also for the longer paths
+        of the secondary field: the range spans from half the smallest source-receiver distance to
+        4 times the largest distance between electrodes, and at least 2 decades (with 11 wavenumbers,
+        the error of the transform is then about 1e-4 or less).
+
+        Without measurement electrodes (e.g. current density only), the range is based on the grid:
+        half the smallest cell size to the grid length.
+        """
+        if self.p1p2 is None:
+            r_min = min(np.r_[self.fv.hx, self.fv.hz]) / 2
+            r_max = max(self.fv.x[-1] - self.fv.x[0], 100 * r_min)
+        else:
+            r_min, r_max = self._survey_distances()
+            r_min = r_min / 2
+            r_max = max(4 * r_max, 100 * r_min)
+        r_range = (self.fv.n_k, r_min, r_max)
+        if self.fv._kg_range is None or not np.allclose(r_range, self.fv._kg_range):
+            if self.verbose and self.fv.comm.rank == 0:
+                print('  Optimizing {0:d} wavenumbers for r in [{1:g}, {2:g}] m'.format(*r_range))
+            self.fv._optimize_k_g(*r_range)
 
     def _sort_electrodes(self):
 
@@ -894,12 +945,29 @@ class GridDC:
     def _get_data(self, u=None):
         if self.Q is None:
             self._build_Q()
+        # 2.5D with boundary correction: the analytic primary field is known exactly at the measurement
+        # electrodes, interpolate only the (smooth) secondary field
+        exact_primary = (u is None and self.fv.dim == 2.5 and self.keep_c1c2 and self.exact_primary and
+                         self.u0 is not None and self._sigma0 is not None)
         if u is None:
             u = self.u
         data = np.array([])
         if self.keep_c1c2:
             for ns in range(self.c1c2_u.shape[0]):
-                data = np.r_[data, self.Q[ns] @ u[:, ns]]
+                if exact_primary:
+                    ind = self.ind_c1c2 == ns
+                    p1p2 = self.p1p2[ind, :]
+                    c1c2 = np.tile(self.c1c2_u[ns, :], (p1p2.shape[0], 1))
+                    if np.isscalar(self._sigma0):
+                        s0 = self._sigma0
+                    else:
+                        s0 = np.tile(self._sigma0[ns], (p1p2.shape[0], 1))
+                    prim = self.fv.u_homog_at(c1c2, p1p2[:, :3], s0, self.cs12_u[ns])
+                    if p1p2.shape[1] == 6:
+                        prim -= self.fv.u_homog_at(c1c2, p1p2[:, 3:6], s0, self.cs12_u[ns])
+                    data = np.r_[data, self.Q[ns] @ (u[:, ns] - self.u0[:, ns]) + prim]
+                else:
+                    data = np.r_[data, self.Q[ns] @ u[:, ns]]
         else:
             # we must combine u fields from c1 and c2
             for ns in range(self.n_c1c2_u):
