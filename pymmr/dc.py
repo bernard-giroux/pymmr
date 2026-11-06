@@ -816,7 +816,10 @@ class GridDC:
                 if sigma.size == 1:
                     s[ok, j] = sigma[0]
                 else:
-                    s[ok, j] = self.fv.linear_interp(e[ok, 0], e[ok, 1], e[ok, 2]) @ sigma
+                    # sample within the cell centres (no extrapolation of sigma near the grid edges)
+                    xe = np.clip(e[ok, 0], self.fv.xc[0], self.fv.xc[-1])
+                    ze = np.clip(e[ok, 2], self.fv.zc[0], self.fv.zc[-1])
+                    s[ok, j] = self.fv.linear_interp(xe, e[ok, 1], ze) @ sigma
         return s if n_e == 2 else s[:, 0]
 
     def _survey_distances(self):
@@ -847,10 +850,17 @@ class GridDC:
         of the secondary field: the range spans from half the smallest source-receiver distance to
         4 times the largest distance between electrodes, and at least 2 decades (with 11 wavenumbers,
         the error of the transform is then about 1e-4 or less).
+
+        Without measurement electrodes (e.g. current density only), the range is based on the grid:
+        half the smallest cell size to the grid length.
         """
-        r_min, r_max = self._survey_distances()
-        r_min = r_min / 2
-        r_max = max(4 * r_max, 100 * r_min)
+        if self.p1p2 is None:
+            r_min = min(np.r_[self.fv.hx, self.fv.hz]) / 2
+            r_max = max(self.fv.x[-1] - self.fv.x[0], 100 * r_min)
+        else:
+            r_min, r_max = self._survey_distances()
+            r_min = r_min / 2
+            r_max = max(4 * r_max, 100 * r_min)
         r_range = (self.fv.n_k, r_min, r_max)
         if self.fv._kg_range is None or not np.allclose(r_range, self.fv._kg_range):
             if self.verbose and self.fv.comm.rank == 0:

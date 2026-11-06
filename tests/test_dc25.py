@@ -147,6 +147,51 @@ class TestForward(unittest.TestCase):
         d = 1e-3 * g.fwd_mod(s)
         np.testing.assert_allclose(d, d_exact, rtol=5e-3)
 
+    def test_pole_pole(self):
+        """Remote electrodes at infinity (exact primary field must not give inf - inf)."""
+        c = np.array([[-2., 0, 0, np.inf, np.inf, np.inf], [0., 0, 0, np.inf, np.inf, np.inf]])
+        p = np.array([[3., 0, 0, np.inf, np.inf, np.inf], [8., 0, 0, np.inf, np.inf, np.inf]])
+        g = make_grid(self.xg, self.z, c, p)
+        v = 1e-3 * g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO1, 1 / RHO1))
+        np.testing.assert_allclose(v, RHO1 / (2 * np.pi * np.array([5., 8.])), rtol=1e-3)
+
+    def test_electrode_at_grid_edge(self):
+        c = np.array([[self.xg[-1], 0, 0, -1, 0, 0]])
+        p = np.array([[1., 0, 0, 2, 0, 0]])
+        for bc in (True, False):
+            g = make_grid(self.xg, self.z, c, p)
+            g.apply_bc = bc
+            v = g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3))
+            self.assertTrue(np.all(np.isfinite(v)))
+
+    def test_current_density_only(self):
+        """calc_J without measurement electrodes (wavenumbers from the grid)."""
+        g = GridDC((self.xg, self.z))
+        g.set_solver('superlu')
+        g.c1c2 = self.c1c2[:2]
+        g.cs = 1.0
+        d, J = g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3), calc_J=True)
+        self.assertIsNone(d)
+        self.assertEqual(J.shape, (g.fv.nf, 2))
+        self.assertTrue(np.all(np.isfinite(J)))
+
+    def test_new_survey_without_model(self):
+        """Solvers are rebuilt when the wavenumbers change while the model is reused."""
+        g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        g.apply_bc = False
+        s = dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3)
+        g.fwd_mod(s)
+        c = np.array([[-20., 0, 0, -10, 0, 0]])
+        p = np.array([[10., 0, 0, 20, 0, 0]])
+        g.set_survey_ert(c, p, cs=1.0)
+        g.electrodes_sorted = False
+        g.Q = None
+        v1 = g.fwd_mod()
+        g2 = make_grid(self.xg, self.z, c, p)
+        g2.apply_bc = False
+        v2 = g2.fwd_mod(s)
+        np.testing.assert_allclose(v1, v2, rtol=1e-10)
+
     def test_sensitivity_not_implemented(self):
         g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
         with self.assertRaises(NotImplementedError):

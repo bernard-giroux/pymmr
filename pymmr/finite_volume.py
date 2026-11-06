@@ -2617,8 +2617,9 @@ class Grid25FV(BaseFV):
                 Q[i, 0] = 0.0
                 continue
 
+            # points beyond the first or last node are extrapolated linearly from the two nearest nodes
             im = np.argmin(np.abs(x[i] - xc))
-            if x[i] <= xc[im] and im > 0:
+            if (x[i] <= xc[im] and im > 0) or im == len(xc) - 1:
                 ix[0] = im - 1
                 ix[1] = im
             else:
@@ -2628,7 +2629,7 @@ class Grid25FV(BaseFV):
             dx[1] = xc[ix[1]] - x[i]
 
             im = np.argmin(np.abs(z[i] - zc))
-            if z[i] <= zc[im] and im > 0:
+            if (z[i] <= zc[im] and im > 0) or im == len(zc) - 1:
                 iz[0] = im - 1
                 iz[1] = im
             else:
@@ -2967,6 +2968,9 @@ class Grid25FV(BaseFV):
         b : array_like or KSource
             Source term, the same for all wavenumbers (array) or one per wavenumber (KSource)
         """
+        if not self.solver_A.same_kg(self.k, self.g):
+            # wavenumbers changed since the solvers were built (e.g. new survey with no new model)
+            self.set_system(self.solver_A.A, keep_solver=False, verbose=self.solver_A.verbose)
         return self.solver_A.solve(b)
 
     def compute_u_homog(self, c1c2, sigma, cs):
@@ -3076,7 +3080,15 @@ class Grid25FV(BaseFV):
             with np.errstate(divide='ignore', invalid='ignore'):
                 r = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] - c[:, 2])**2)
                 ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] + c[:, 2])**2)
-                return below, 1. / (s * r), 1. / (s * ri)
+                u, ui = 1. / (s * r), 1. / (s * ri)
+            # electrode or point at infinity (e.g. pole-pole): no contribution (avoids inf - inf)
+            remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),
+                                                   np.all(np.isfinite(pts), axis=1)))
+            u[remote] = 0.0
+            ui[remote] = 0.0
+            # an electrode at infinity must not trigger the images of the other electrode
+            below = np.logical_and(below, np.all(np.isfinite(c), axis=1))
+            return below, u, ui
 
         # as in _u_homog: images (and gf = 4) for both electrodes if any of them is below the surface
         below, u, ui = pot(c1c2[:, :3], s1)
