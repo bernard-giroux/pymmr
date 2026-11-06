@@ -448,7 +448,21 @@ class GridMMR:
         # get current density from forward DC modeling
         if self.verbose and self.fv.comm.rank == 0:
             print('  Computing current density ... ', end='', flush=True)
-        _, Jdc = self.dc.fwd_mod(sigma, calc_J=True)
+        # The image of surface electrodes (moved to the first cell centre) improves DC data, but the MMR
+        # field computed from the current density is less accurate with it: not used here (DC data of a
+        # joint inversion, computed above, still use it)
+        # (the voltages returned by this call are not used: no analytic primary field either)
+        images = getattr(self.dc.fv, 'surface_images', None)
+        exact_primary = self.dc.exact_primary
+        if images is not None:
+            self.dc.fv.surface_images = False
+        self.dc.exact_primary = False
+        try:
+            _, Jdc = self.dc.fwd_mod(sigma, calc_J=True)
+        finally:
+            if images is not None:
+                self.dc.fv.surface_images = images
+            self.dc.exact_primary = exact_primary
         u_dc = self.dc.u.copy()
 
         if self.verbose and self.fv.comm.rank == 0:

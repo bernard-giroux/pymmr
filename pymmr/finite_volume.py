@@ -487,6 +487,7 @@ class GridFV(BaseFV):
         self.y = y
         self.z = z
         self.dim = 3
+        self.surface_images = True   # see compute_u_homog
 
     def ind(self, i, j, k, component=None):
         """
@@ -1562,87 +1563,113 @@ class GridFV(BaseFV):
         return self.solver_A.solve(b)
 
     def compute_u_homog(self, c1c2, sigma, cs):
-        """Compute the potential at the center of the voxels for a given set of electrodes.
+        """Potential of a homogeneous half-space at the centre of the voxels.
 
-        Note
-        ----
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Injection electrodes, n x 6 (dipoles) or n x 3 (poles).
+        sigma : float or ndarray
+            Conductivity, scalar, or one value per current electrode (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity, n.
+
+        Notes
+        -----
         First electrode is the source (+I) and second is the sink; the potential is positive around the source.
+
+        The field of a dipole is the difference of the fields of its two electrodes, each with its own
+        treatment of the singularity (as when the fields are computed per electrode, for the sensitivity).
+
+        Surface electrodes are moved to the depth of the first cell centre.  If surface_images is True,
+        their field includes the image above the surface, so that it satisfies the no-flux condition at
+        z = 0 as the discrete solution does (see Grid25FV._with_images).
         """
-        x, y, z = self.centre_voxels()
-        u0 = np.empty((self.nc, c1c2.shape[0]))
-        # turn off warning b/c we get a divide by zero that we will fix later
-        np.seterr(divide='ignore')
+        c1c2 = np.array(c1c2, dtype=float)
+        cs = cs * np.ones((c1c2.shape[0],))
+        s1, s2 = Grid25FV._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
         if c1c2.shape[1] == 6:
-            # keep track of electrodes below the surface
-            below_surf_c1 = self.below_surface(c1c2[:, :3])
-            below_surf_c2 = self.below_surface(c1c2[:, 3:6])
-            # make sure electrodes are at least at the depth of the first cell center
-            c1c2[:, :3] = self.process_surface_elec(c1c2[:, :3])
-            c1c2[:, 3:6] = self.process_surface_elec(c1c2[:, 3:6])
-
-            for i in np.arange(c1c2.shape[0]):
-                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z - c1c2[i, 2]) ** 2)
-                # norm of negative current electrode and 1st potential electrode
-                nve1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (y - c1c2[i, 4]) ** 2 + (z - c1c2[i, 5]) ** 2)
-                if below_surf_c1[i] or below_surf_c2[i]:
-                    # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z + c1c2[i, 2]) ** 2)
-                    nveimag1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (y - c1c2[i, 4]) ** 2 + (z + c1c2[i, 5]) ** 2)
-                    gf = 4.0
-                else:
-                    pveimag1 = np.inf
-                    nveimag1 = np.inf
-                    gf = 2.0
-                u0[:, i] = cs[i] / (sigma*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
-            # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
-
-        elif c1c2.shape[1] == 3:
-            # keep track of electrodes below the surface
-            below_surf_c1 = self.below_surface(c1c2)
-            # make sure electrodes are at least at the depth of the first cell center
-            c1c2 = self.process_surface_elec(c1c2)
-
-            for i in np.arange(c1c2.shape[0]):
-                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z - c1c2[i, 2]) ** 2)
-                if below_surf_c1[i]:
-                    # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z + c1c2[i, 2]) ** 2)
-                    gf = 4.0
-                else:
-                    pveimag1 = np.inf
-                    gf = 2.0
-                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
-        else:
+            return self.compute_u_homog(c1c2[:, :3], s1, cs) - self.compute_u_homog(c1c2[:, 3:6], s2, cs)
+        elif c1c2.shape[1] != 3:
             raise ValueError("c1c2 must be either n x 3 or n x 6")
-        np.seterr(divide='warn')
 
-        # check for singularities due to the source being on a node
-        for i in range(c1c2.shape[0]):
-            ind = np.nonzero(np.isinf(u0[:, i]))
-            if ind[0].size > 0:
-                for j in range(ind[0].size):
-                    ix, iy, iz = self.revind(ind[0][j])
-                    if iz == 0:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix+1, iy, iz), i],
-                                                    u0[self.ind(ix, iy+1, iz), i],
-                                                    u0[self.ind(ix, iy, iz+1), i],
-                                                    u0[self.ind(ix-1, iy, iz), i],
-                                                    u0[self.ind(ix, iy-1, iz), i]])
-                    elif iz == self.nz-1:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy + 1, iz), i],
-                                                    u0[self.ind(ix - 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy - 1, iz), i],
-                                                    u0[self.ind(ix, iy, iz - 1), i]])
-                    else:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix+1, iy, iz), i],
-                                                    u0[self.ind(ix, iy+1, iz), i],
-                                                    u0[self.ind(ix, iy, iz+1), i],
-                                                    u0[self.ind(ix-1, iy, iz), i],
-                                                    u0[self.ind(ix, iy-1, iz), i],
-                                                    u0[self.ind(ix, iy, iz-1), i]])
+        x, y, z = self.centre_voxels()
+        images = self._with_images(c1c2)
+        c = self.process_surface_elec(c1c2.copy())
+        u0 = np.empty((self.nc, c.shape[0]))
+        with np.errstate(divide='ignore'):
+            for i in range(c.shape[0]):
+                r = np.sqrt((x - c[i, 0])**2 + (y - c[i, 1])**2 + (z - c[i, 2])**2)
+                if images[i]:
+                    ri = np.sqrt((x - c[i, 0])**2 + (y - c[i, 1])**2 + (z + c[i, 2])**2)
+                    u0[:, i] = cs[i] / (s1[i] * 4.0 * np.pi) * (1. / r + 1. / ri)
+                else:
+                    u0[:, i] = cs[i] / (s1[i] * 2.0 * np.pi) / r
+        # note: this works for electrodes at infinity, 1/np.inf is 0
+
+        # singularity due to a source at the centre of a voxel: mean of the finite values of the
+        # neighbouring voxels
+        for i in range(c.shape[0]):
+            ind = np.nonzero(np.isinf(u0[:, i]))[0]
+            new_values = []
+            for j in ind:
+                ix, iy, iz = self.revind(j)
+                nb = [self.ind(ix + dx, iy + dy, iz + dz)
+                      for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+                      if 0 <= ix + dx < self.nx and 0 <= iy + dy < self.ny and 0 <= iz + dz < self.nz]
+                v = u0[nb, i]
+                new_values.append(np.mean(v[np.isfinite(v)]))
+            u0[ind, i] = new_values
 
         return u0
+
+    def _with_images(self, pts):
+        """Return True for electrodes whose analytic field must include the image source (see Grid25FV)."""
+        if self.surface_images:
+            return np.ones((pts.shape[0],), dtype=bool)
+        return self.below_surface(pts)
+
+    def u_homog_at(self, c1c2, pts, sigma, cs):
+        """3D potential of a homogeneous half-space, source of row i evaluated at point of row i.
+
+        Exact solution at the true positions of the electrodes and points (surface electrodes have no
+        image), used as primary field at the measurement electrodes (see Grid25FV.u_homog_at).
+
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Injection electrodes, n x 6 (dipoles) or n x 3 (poles).
+        pts : ndarray
+            Evaluation points, n x 3.
+        sigma : float or ndarray
+            Conductivity, scalar or one value per current electrode (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity, n.
+        """
+        c1c2 = np.atleast_2d(np.array(c1c2, dtype=float))
+        pts = np.atleast_2d(np.array(pts, dtype=float))
+        cs = cs * np.ones((c1c2.shape[0],))
+        s1, s2 = Grid25FV._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
+
+        def pot(c, s):
+            below = self.below_surface(c)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                r = np.sqrt(np.sum((pts - c)**2, axis=1))
+                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 1] - c[:, 1])**2 + (pts[:, 2] + c[:, 2])**2)
+                u = np.where(below, (1. / r + 1. / ri) / 4.0, 1. / (2.0 * r)) / s
+            # electrode or point at infinity: no contribution (avoids inf - inf)
+            remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),
+                                                   np.all(np.isfinite(pts), axis=1)))
+            u[remote] = 0.0
+            return u
+
+        u = pot(c1c2[:, :3], s1)
+        if c1c2.shape[1] == 6:
+            u = u - pot(c1c2[:, 3:6], s2)
+        u = cs / np.pi * u
+        if np.any(np.isinf(u)):
+            raise ValueError('Evaluation point at the position of a current electrode')
+        return u
 
     def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
         """
