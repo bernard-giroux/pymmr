@@ -560,8 +560,8 @@ class GridMMR:
             else:
                 return data
 
-    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
-        return self.dc.calc_WtW(wt, par, m_active, WGx, WGy, WGz)
+    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None, WS=None):
+        return self.dc.calc_WtW(wt, par, m_active, WGx, WGy, WGz, WS)
 
     def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
         return self.dc.calc_reg(Q, par, xc, xref, WGx, WGy, WGz, m_active)

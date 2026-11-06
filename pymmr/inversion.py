@@ -422,6 +422,10 @@ class Inversion:
         """Lower cut-off value for conductivity."""
 
         self.minsupport_e = 0.000001
+        """Small value (epsilon) used in 'ekblom' and 'min. support' weights."""
+
+        self.ekblom_p = 1.0
+        """Exponent of the Ekblom measure, (x^2 + e^2)^(p/2), used with smooth_type 'ekblom'."""
 
         self.data_transf = None
         """Function to transform data: 'asinh' ou None."""
@@ -817,7 +821,9 @@ class Inversion:
                     tmp = np.log(1 / sigma)
                 elif self.param_transf == "resistivity":
                     tmp = 1 / sigma
-                WTW, WGx, WGy, WGz = g.calc_reg(m_weight, self, tmp, xref, WGx, WGy, WGz, m_active)
+                # IRLS weights are recomputed from the current model (base weights of 1); the weights
+                # returned are kept for checkpointing only, they must not be fed back (they would compound)
+                WTW, WGx, WGy, WGz = g.calc_reg(m_weight, self, tmp, xref, None, None, None, m_active)
 
             # checkpoint
             if self.checkpointing:
