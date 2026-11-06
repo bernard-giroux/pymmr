@@ -259,13 +259,23 @@ class GridDC:
         Parameters
         ----------
         roi : tuple of float
-            Tuple holding xmin, xmax, ymin, ymax, zmin, zmax
+            Tuple holding xmin, xmax, ymin, ymax, zmin, zmax.
+            In 2.5D, y is ignored and the tuple can also hold xmin, xmax, zmin, zmax.
         """
 
         if roi is None:
             return
-        self.roi = roi
-        xmin, xmax, ymin, ymax, zmin, zmax = roi
+        if self.fv.dim == 2.5:
+            if len(roi) == 4:
+                roi = (roi[0], roi[1], self.fv.y[0], self.fv.y[-1], roi[2], roi[3])
+            elif len(roi) == 6:
+                roi = (roi[0], roi[1], self.fv.y[0], self.fv.y[-1], roi[4], roi[5])
+            else:
+                raise ValueError('ROI must hold 4 values (xmin xmax zmin zmax) or 6 values in 2.5D')
+        elif len(roi) != 6:
+            raise ValueError('ROI must hold 6 values (xmin xmax ymin ymax zmin zmax)')
+        self.roi = tuple(roi)
+        xmin, xmax, ymin, ymax, zmin, zmax = self.roi
         if self.fv.is_inside(xmin, ymin, zmin) is False or \
            self.fv.is_inside(xmax, ymax, zmax) is False:
             raise ValueError('Region of interest extending beyond grid')
@@ -678,7 +688,7 @@ class GridDC:
         """
         x, y, z = self.get_roi_nodes()
         # grille temporaire pour sauvegarder sens
-        g2 = GridFV(x, y, z)
+        g2 = Grid25FV((x, z)) if self.fv.dim == 2.5 else GridFV((x, y, z))
         # make 1 file for each injection dipole
         for n in range(self.n_c1c2_u):
             (ind,) = np.where(n == self.ind_c1c2)
@@ -715,8 +725,10 @@ class GridDC:
             jx, jy, jz = self.fv.extract_xyz_faces(J[:, n])
             filename = basename+'_Jx_dc_dip'+str(n+1)
             self.fv.toVTK({'Jx': jx}, filename, component='x', metadata=metadata)
-            filename = basename+'_Jy_dc_dip'+str(n+1)
-            self.fv.toVTK({'Jy': jy}, filename, component='y', metadata=metadata)
+            if self.fv.dim != 2.5:
+                # in 2.5D, Jy = 0 in the plane y = 0
+                filename = basename+'_Jy_dc_dip'+str(n+1)
+                self.fv.toVTK({'Jy': jy}, filename, component='y', metadata=metadata)
             filename = basename+'_Jz_dc_dip'+str(n+1)
             self.fv.toVTK({'Jz': jz}, filename, component='z', metadata=metadata)
 

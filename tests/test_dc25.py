@@ -5,10 +5,13 @@ Tests of 2.5D DC resistivity forward modelling (Grid25FV), against analytic solu
 Run with:  python3 tests/test_dc25.py   (or pytest)
 """
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 
 import numpy as np
+import vtk
 import scipy.sparse as sp
 from scipy.special import k0
 from scipy.sparse.linalg import spsolve
@@ -196,6 +199,119 @@ class TestForward(unittest.TestCase):
         g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
         with self.assertRaises(NotImplementedError):
             g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO1, 1 / RHO1), calc_sens=True)
+
+
+class TestPlumbing(unittest.TestCase):
+    """Input/output and code shared with 3D (VTK files, ROI, regularization, run_job)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.c1c2, cls.p1p2 = dyke_survey()
+        cls.xg, cls.z = dyke_grid(1.0)
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.dir = cls.tmp.name
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_vtk_roundtrip(self):
+        g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        s = dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3)
+        fname = os.path.join(self.dir, 'model25')
+        g.fv.toVTK({'Conductivity': s}, fname)
+        reader = vtk.vtkXMLRectilinearGridReader()
+        reader.SetFileName(fname + '.vtr')
+        reader.Update()
+        self.assertEqual(reader.GetOutput().GetDimensions(), (g.fv.nx + 1, 2, g.fv.nz + 1))
+        np.testing.assert_array_equal(g.fv.fromVTK('Conductivity', fname + '.vtr'), s)
+        with self.assertRaises(ValueError):
+            g.fv.toVTK({'Jy': np.zeros(1)}, fname, component='y')
+
+    def test_build_from_vtk(self):
+        from pymmr.run_job import build_from_vtk
+        from pymmr.mmr import GridMMR
+        g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        s = dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3)
+        fname = os.path.join(self.dir, 'model25b')
+        g.fv.toVTK({'Conductivity': s}, fname)
+        g2, s2 = build_from_vtk(GridDC, fname + '.vtr', return_sigma=True)
+        self.assertEqual(g2.fv.dim, 2.5)
+        np.testing.assert_array_equal(g2.fv.x, g.fv.x)
+        np.testing.assert_array_equal(g2.fv.z, g.fv.z)
+        np.testing.assert_array_equal(s2, s)
+        with self.assertRaises(ValueError):
+            build_from_vtk(GridMMR, fname + '.vtr')
+
+    def test_roi(self):
+        g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        g.set_roi((-10., 20., -8., 0.))
+        g2 = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        g2.set_roi((-10., 20., -100., 100., -8., 0.))   # y ignored
+        np.testing.assert_array_equal(g.ind_roi, g2.ind_roi)
+        self.assertEqual(g.ind_roi.size, 30 * 8)
+        x, y, z = g.get_roi_nodes()
+        np.testing.assert_array_equal(y, [-0.5, 0.5])
+        self.assertEqual((x[0], x[-1], z[0], z[-1]), (-10., 20., -8., 0.))
+
+    def test_regularization(self):
+        from pymmr.inversion import Inversion
+        g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        Gx, Gy, Gz = g.fv.extract_Gxyz()
+        self.assertEqual((Gx.shape, Gy.shape, Gz.shape),
+                         ((g.fv.nfx, g.fv.nc), (0, g.fv.nc), (g.fv.nfz, g.fv.nc)))
+        inv = Inversion()
+        act = np.arange(g.fv.nc)
+        w = np.ones(g.fv.nc)
+        self.assertEqual(g.calc_WtW(w, inv, act).shape, (g.fv.nc, g.fv.nc))
+        m = np.log(dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3))
+        for smooth_type in ('smooth', 'blocky'):
+            inv.smooth_type = smooth_type
+            WtW = g.calc_reg(w, inv, m, np.zeros(g.fv.nc), None, None, None, act)[0]
+            self.assertEqual(WtW.shape, (g.fv.nc, g.fv.nc))
+
+    def test_distance_weighting(self):
+        g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        w = g.fv.distance_weighting(np.array([[0., 0., -0.5]]), 2.0)
+        self.assertEqual(w.shape, (g.fv.nc,))
+        self.assertTrue(np.all(np.isfinite(w)) and np.all(w > 0))
+        xc, _, zc = g.fv.centre_voxels()
+        self.assertLess(np.hypot(xc[np.argmax(w)], zc[np.argmax(w)] + 0.5), 1.0)
+
+    def test_save_current_density(self):
+        g = make_grid(self.xg, self.z, self.c1c2[:2], self.p1p2[:2])
+        _, J = g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3), calc_J=True)
+        base = os.path.join(self.dir, 'cur')
+        g.save_current_density(J, base)
+        self.assertTrue(os.path.isfile(base + '_Jx_dc_dip1.vtr'))
+        self.assertTrue(os.path.isfile(base + '_Jz_dc_dip2.vtr'))
+        self.assertFalse(os.path.isfile(base + '_Jy_dc_dip1.vtr'))
+
+    def test_run_job_fwd_dc(self):
+        """2.5D forward modelling through run_job.py and a parameter file."""
+        g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)
+        s = dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3)
+        v_ref = g.fwd_mod(s)
+        d = self.dir
+        g.fv.toVTK({'Conductivity': s}, os.path.join(d, 'job_model'))
+        np.savetxt(os.path.join(d, 'job_c1c2.dat'), self.c1c2)
+        np.savetxt(os.path.join(d, 'job_p1p2.dat'), self.p1p2)
+        with open(os.path.join(d, 'job.par'), 'w') as f:
+            f.write('fwd dc    # job,\n'
+                    'job       # basename,\n'
+                    'job_model.vtr    # model,\n'
+                    'job_c1c2.dat     # source file,\n'
+                    'job_p1p2.dat     # measurement file,\n'
+                    '1.0       # source current,\n'
+                    'superlu   # solver name,\n'
+                    '0         # verbose,\n')
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get('PYTHONPATH', ''))
+        res = subprocess.run([sys.executable, '-m', 'pymmr.run_job', 'job.par'], cwd=d, env=env,
+                             capture_output=True, text=True, timeout=600)
+        self.assertEqual(res.returncode, 0, res.stderr[-2000:])
+        out = np.loadtxt(os.path.join(d, 'job_dc.dat'))
+        np.testing.assert_allclose(out[:, 12], v_ref, rtol=1e-5)
 
 
 @unittest.skipUnless(fvm.has_mumps, 'MUMPS not available')
