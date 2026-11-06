@@ -140,6 +140,71 @@ class TestCalcReg(unittest.TestCase):
         self.assertTrue(np.all(np.diff(WGz[order]) <= 1e-12))
         self.assertLess(WGz[order[-1]], WGz[order[0]])
 
+    def test_min_support_forms(self):
+        """Exact weights for both forms of the minimum gradient support (capped at 2)."""
+        rng = np.random.default_rng(6)
+        g = grids()['2.5D']
+        m = layered_model(g, rng)
+        mref = np.log(0.02) * np.ones(g.fv.nc)
+        e = 0.3
+        Gx, _, Gz = g.fv.extract_Gxyz()
+        for form, f in (('portniaguine', lambda c: np.sqrt(2) * e / (c**2 + e**2)),
+                        ('general', lambda c: 2 * e**2 / (c**2 + e**2)**2)):
+            with self.subTest(form=form):
+                inv = Inversion()
+                inv.smooth_type = 'min. support'
+                inv.minsupport_e = e
+                inv.minsupport_form = form
+                _, WGx, _, WGz = g.calc_reg(np.ones(g.fv.nc), inv, m, mref, None, None, None, np.arange(g.fv.nc))
+                np.testing.assert_allclose(WGx, np.minimum(f(Gx @ (m - mref)), 2.0), rtol=1e-12)
+                np.testing.assert_allclose(WGz, np.minimum(f(Gz @ (m - mref)), 2.0), rtol=1e-12)
+        inv.minsupport_form = 'other'
+        with self.assertRaises(ValueError):
+            g.calc_reg(np.ones(g.fv.nc), inv, m, mref, None, None, None, np.arange(g.fv.nc))
+
+    def test_ekblom_smallness(self):
+        """Smallness weights computed from m - m_ref, capped by ekblom_smallness_max."""
+        rng = np.random.default_rng(8)
+        g = grids()['2.5D']
+        act = np.arange(g.fv.nc)
+        mref = np.log(0.01) * np.ones(g.fv.nc)
+        m = mref + 0.5 * rng.standard_normal(g.fv.nc)
+        m[:5] = mref[:5]   # cells equal to the reference
+        inv = Inversion()
+        inv.smooth_type = 'ekblom'
+        inv.minsupport_e = 0.01
+        p, e = inv.ekblom_p, inv.minsupport_e
+        for ws_max in (2.0, None):
+            with self.subTest(ekblom_smallness_max=ws_max):
+                inv.ekblom_smallness_max = ws_max
+                WtW, WGx, WGy, WGz = g.calc_reg(np.ones(g.fv.nc), inv, m, mref, None, None, None, act)
+                ws = p * ((m - mref)**2 + e**2)**(p / 2 - 1)
+                if ws_max is not None:
+                    ws = np.minimum(ws, ws_max)
+                ref = g.calc_WtW(np.ones(g.fv.nc), inv, act, WGx, WGy, WGz, WS=ws)
+                self.assertLess(sp.linalg.norm(WtW - ref) / sp.linalg.norm(ref), 1e-12)
+                # cells equal to the reference: p / e without limit
+                self.assertAlmostEqual(ws[0], 2.0 if ws_max else p / e)
+
+    def test_column_vectors(self):
+        """Model and reference given as column vectors: same result, weights of size n_faces."""
+        rng = np.random.default_rng(9)
+        g = grids()['3D']
+        m = layered_model(g, rng)
+        mref = np.log(0.02) * np.ones(g.fv.nc)
+        act = np.arange(g.fv.nc)
+        for st in SMOOTH_TYPES:
+            with self.subTest(smooth_type=st):
+                inv = Inversion()
+                inv.smooth_type = st
+                out1 = g.calc_reg(np.ones(g.fv.nc), inv, m, mref, None, None, None, act)
+                out2 = g.calc_reg(np.ones(g.fv.nc), inv, m.reshape(-1, 1), mref.reshape(-1, 1),
+                                  None, None, None, act)
+                self.assertLess(sp.linalg.norm(out1[0] - out2[0]), 1e-12 * sp.linalg.norm(out1[0]))
+                for a, b in zip(out1[1:], out2[1:]):
+                    self.assertEqual(np.shape(b), np.shape(a))
+                    np.testing.assert_array_equal(a, b)
+
     def test_min_support(self):
         rng = np.random.default_rng(5)
         g = grids()['3D']
@@ -201,6 +266,29 @@ class TestInversionRun(unittest.TestCase):
                 models[st] = sigma_inv[-1]
         for st in SMOOTH_TYPES[1:]:
             self.assertFalse(np.allclose(models[st], models['smooth']), st)
+
+        # with reg_var 'model', the IRLS weights are computed relative to the reference model
+        g = GridDC((x, y, z))
+        g.set_solver('superlu')
+        calls = []
+        calc_reg = g.calc_reg
+
+        def spy(Q, par, xc, xref, *args):
+            calls.append(np.array(xref, copy=True))
+            return calc_reg(Q, par, xc, xref, *args)
+
+        g.calc_reg = spy
+        inv = Inversion()
+        inv.smooth_type = 'ekblom'
+        inv.max_it = 2
+        inv.verbose = False
+        m_ref = 0.02 * np.ones(g.fv.nc)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            inv.run(g, m0=0.01 * np.ones(g.fv.nc), m_ref=m_ref, data_ert=data)
+        self.assertGreater(len(calls), 0)
+        for xref in calls:
+            np.testing.assert_allclose(xref, np.log(m_ref))
 
 
 if __name__ == '__main__':

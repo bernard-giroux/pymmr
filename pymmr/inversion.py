@@ -427,6 +427,14 @@ class Inversion:
         self.ekblom_p = 1.0
         """Exponent of the Ekblom measure, (x^2 + e^2)^(p/2), used with smooth_type 'ekblom'."""
 
+        self.ekblom_smallness_max = 2.0
+        """Upper limit of the weights of the smallness term with smooth_type 'ekblom' (None: no limit).
+        Without limit, cells equal to the reference model get weights of p / minsupport_e."""
+
+        self.minsupport_form = "portniaguine"
+        """Weights for smooth_type 'min. support': 'portniaguine' (Portniaguine & Zhdanov 1999 reweighting,
+        sqrt(2) e / (c^2 + e^2)) or 'general' (IRLS weight rho'(c)/c, 2 e^2 / (c^2 + e^2)^2)."""
+
         self.data_transf = None
         """Function to transform data: 'asinh' ou None."""
 
@@ -822,7 +830,8 @@ class Inversion:
                 if self.verbose:
                     print("  Computing regularization term")
 
-                xref = 0.0
+                # with reg_var 'model', the regularization applies to m - m_ref (see cglscd)
+                xref = m_ref if self.reg_var == "model" else 0.0
                 if self.param_transf == "conductivity":
                     tmp = sigma
                 elif self.param_transf == "log_conductivity":

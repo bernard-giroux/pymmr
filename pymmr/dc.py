@@ -583,11 +583,13 @@ class GridDC:
         Q : array_like
             Model weights (one value per cell).
         par :
-            Inversion parameters (smooth_type, alx, aly, alz, als, minsupport_e, ekblom_p).
+            Inversion parameters (smooth_type, alx, aly, alz, als, minsupport_e, minsupport_form, ekblom_p,
+            ekblom_smallness_max).
         xc : array_like
             Current model (one value per cell).
         xref : array_like or float
-            Reference model.
+            Reference model: the weights are computed from xc - xref, the quantity regularized by the
+            inversion (e.g. m - m_ref with reg_var 'model').
         WGx, WGy, WGz : array_like or None
             Base weights of the gradient terms (None: 1).  The IRLS weights computed from the current
             model multiply these base weights; they are not accumulated over iterations, i.e. the
@@ -605,20 +607,27 @@ class GridDC:
         Weights are those of the squared terms, i.e. the diagonal of W in G^T W G (see calc_WtW):
             - 'blocky': w ~ 1/|c| (L1 measure, normalized by sum(c^2)/sum(|c|)), within [1e-6, 10]
             - 'ekblom': w = p (c^2 + e^2)^(p/2 - 1) (Ekblom measure, sum (c^2 + e^2)^(p/2)), at most 2 for
-              the gradients; the smallness term is weighted the same way
-            - 'min. support': w = sqrt(2) e / (c^2 + e^2) (minimum gradient support), at most 2
-        with c the gradient of the model, p = par.ekblom_p and e = par.minsupport_e.
+              the gradients; the smallness term is weighted the same way with c = xc - xref, at most
+              par.ekblom_smallness_max (no limit if None)
+            - 'min. support' (minimum gradient support, measure sum c^2 / (c^2 + e^2)), at most 2:
+                - par.minsupport_form 'portniaguine': w = sqrt(2) e / (c^2 + e^2), the reweighting of
+                  Portniaguine & Zhdanov (1999), W_e = (c^2 + e^2)^(-1/2) applied to the gradient
+                - par.minsupport_form 'general': w = 2 e^2 / (c^2 + e^2)^2, the general IRLS weight
+                  rho'(c) / c of the measure (Farquharson & Oldenburg, 1998)
+        with c the gradient of xc - xref, p = par.ekblom_p and e = par.minsupport_e.
         """
         Gx, Gy, Gz = self.fv.extract_Gxyz()
         G = (Gx, Gy, Gz)
         base = [np.ones((Gi.shape[0],)) if Wi is None else _weights(Wi, Gi.shape[0])
                 for Gi, Wi in zip(G, (WGx, WGy, WGz))]
         WS = None
+        # 1D arrays (a column vector would broadcast to n x n arrays with the base weights)
+        ci = np.asarray(xc, dtype=float).ravel() - np.asarray(xref, dtype=float).ravel()
 
         if par.smooth_type == 'blocky':
             wt = []
             for Gi in G:
-                c = Gi @ (xc - xref)
+                c = Gi @ ci
                 with np.errstate(divide='ignore', invalid='ignore'):
                     w = np.sum(c*c) / (np.sum(np.abs(c)) * np.abs(c))
                 # zero gradient: largest weight (w ~ 1/|c|)
@@ -627,14 +636,22 @@ class GridDC:
 
         elif par.smooth_type == 'ekblom':
             p, e = par.ekblom_p, par.minsupport_e
-            ci = xc - xref
             wt = [np.minimum(p * ((Gi @ ci)**2 + e**2)**(p/2 - 1), 2.0) for Gi in G]
             # smallness term (one value per cell)
             WS = p * (ci*ci + e**2)**(p/2 - 1)
+            ws_max = getattr(par, 'ekblom_smallness_max', 2.0)
+            if ws_max is not None:
+                WS = np.minimum(WS, ws_max)
 
         elif par.smooth_type == 'min. support':
             e = par.minsupport_e
-            wt = [np.minimum(np.sqrt(2) * e / ((Gi @ xc)**2 + e**2), 2.0) for Gi in G]
+            form = getattr(par, 'minsupport_form', 'portniaguine')
+            if form == 'portniaguine':
+                wt = [np.minimum(np.sqrt(2) * e / ((Gi @ ci)**2 + e**2), 2.0) for Gi in G]
+            elif form == 'general':
+                wt = [np.minimum(2 * e**2 / ((Gi @ ci)**2 + e**2)**2, 2.0) for Gi in G]
+            else:
+                raise ValueError("minsupport_form must be 'portniaguine' or 'general'")
 
         else:
             wt = [np.ones((Gi.shape[0],)) for Gi in G]
