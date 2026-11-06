@@ -527,6 +527,9 @@ class GridDC:
 
             Gf = self.fv.build_G_faces()
 
+            # terms from the reference fields (exact primary field at the measurement electrodes)
+            R = self._reference_term_matrix()
+
             # items = [(n, c1c2, Dm, S, Gf) for n in range(self.c1c2.shape[0])]
             # with Pool() as pool:
             #     results = pool.starmap_async(self._fill_jacobian, items)
@@ -548,6 +551,8 @@ class GridDC:
                     print(msg, end='', flush=True)
 
                 sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S, Gf)
+                if R is not None:
+                    sens[:, n] += self._units_scaling * self._sigma0_term(n, R, sigma)[self.ind_roi]
 
             if self.sort_electrodes and self.sort_back is not None:
                 sens = sens[:, self.sort_back]
@@ -839,7 +844,23 @@ class GridDC:
         self._sigma0 = avg_cond
         self._sigma0_w = None
 
-        if self.fv.dim == 3:
+        if isinstance(self.fv, GridFV):
+            if self.local_sigma0:
+                # reference fields with the conductivity at each current electrode
+                self._sigma0, self._sigma0_w = self._electrode_sigma(c1c2, ref_model, return_weights=True)
+            self.u0 = self.fv.compute_u_homog(c1c2, self._sigma0, cs)
+            # q = A(sigma0) u0(sigma0): the term -D sigma0 G u0 does not depend on sigma0 (u0 ~ 1/sigma0) and
+            # is built with sigma0 = 1, but the reference potential term of A (A[0, 0], independent of sigma)
+            # must act on u0, so that the solution is exact for a homogeneous model (pole receivers
+            # included).  The dependence of q on sigma0 through this term is accounted for in the
+            # sensitivity (see _reference_term_matrix).
+            f = self.fv.compute_u_homog(c1c2, 1.0, cs)
+            A, _ = self.fv.build_A(1.0)
+            q = A @ f
+            q[0, :] += (self.u0[0, :] - f[0, :]) / self.fv.volume_voxels()[0]
+            self.q = sp.csr_array(q)
+        elif self.fv.dim == 3:
+            # tetrahedral mesh
             self.u0 = self.fv.compute_u_homog(c1c2, avg_cond, cs)
             A, _ = self.fv.build_A(avg_cond)
             self.q = sp.csr_array(A @ self.u0)
@@ -889,8 +910,9 @@ class GridDC:
                 else:
                     # sample within the cell centres (no extrapolation of sigma near the grid edges)
                     xe = np.clip(e[ok, 0], self.fv.xc[0], self.fv.xc[-1])
+                    ye = np.clip(e[ok, 1], self.fv.yc[0], self.fv.yc[-1]) if self.fv.dim == 3 else e[ok, 1]
                     ze = np.clip(e[ok, 2], self.fv.zc[0], self.fv.zc[-1])
-                    Wok = self.fv.linear_interp(xe, e[ok, 1], ze)
+                    Wok = self.fv.linear_interp(xe, ye, ze)
                     s[ok, j] = Wok @ sigma
                     i_ok = np.where(ok)[0]
                     sel = sp.csr_array((np.ones(i_ok.size), (i_ok, np.arange(i_ok.size))),
@@ -1027,8 +1049,7 @@ class GridDC:
             self._build_Q()
         # 2.5D with boundary correction: the analytic primary field is known exactly at the measurement
         # electrodes, interpolate only the (smooth) secondary field
-        exact_primary = (u is None and self.fv.dim == 2.5 and self.exact_primary and
-                         self.u0 is not None and self._sigma0 is not None)
+        exact_primary = u is None and self._uses_exact_primary()
         if u is None:
             u = self.u
         data = np.array([])
@@ -1123,12 +1144,7 @@ class GridDC:
         sens = np.empty((self.ind_roi.size, n_data))
 
         # terms from the reference fields (exact primary field at the measurement electrodes)
-        ref = self.apply_bc and self.exact_primary and self.u0 is not None and self._sigma0 is not None
-        if ref:
-            R = np.zeros((n_data, 2))
-            for ns in range(self.n_c1c2_u):
-                ind = np.where(self.ind_c1c2 == ns)[0]
-                R[ind, 0], R[ind, 1] = self._reference_terms(ns)
+        R = self._reference_term_matrix()
 
         for n in range(n_data):
             i1, i2 = self.ind_c1[n], self.ind_c2[n]
@@ -1141,16 +1157,52 @@ class GridDC:
                 GWk = GU[i][:, r1] - GU[i][:, r2]
                 tmp += g[i] * (dm * (Gf.T @ (GUk * S * GWk)) + k[i]**2 * mass * Uk * Wk)
             tmp *= -0.5
-            if ref:
-                for e, ip in ((0, i1), (1, i2)):
-                    if self._sigma0_w is None:
-                        # sigma0: geometric mean of the model
-                        tmp -= R[n, e] / fv.nc
-                    else:
-                        w = self._sigma0_w[0][[ip], :].toarray().ravel()
-                        tmp -= R[n, e] * w * sigma / self._sigma0[ip]
+            if R is not None:
+                tmp += self._sigma0_term(n, R, sigma)
             sens[:, n] = self._units_scaling * tmp[self.ind_roi]
         return sens
+
+    def _uses_exact_primary(self):
+        """True if the data include the analytic primary field (rectilinear grids with boundary correction)."""
+        return (isinstance(self.fv, (GridFV, Grid25FV)) and self.exact_primary and self.u0 is not None and
+                self._sigma0 is not None)
+
+    def _reference_term_matrix(self):
+        """Terms R_e of the data depending on the reference fields (see _reference_terms), n_data x 2.
+
+        Returns None if the data do not include the analytic primary field.
+        """
+        if not (self.apply_bc and self._uses_exact_primary()):
+            return None
+        R = np.zeros((self.c1c2.shape[0], 2))
+        for ns in range(self.n_c1c2_u):
+            ind = np.where(self.ind_c1c2 == ns)[0]
+            R[ind, 0], R[ind, 1] = self._reference_terms(ns)
+        if isinstance(self.fv, GridFV):
+            # source term (3D): the reference potential term A[0, 0] acts on u0 (see _boundary_correction),
+            # which contributes W_n[0] u0_e[0] to the data, W_n being the field of unit sources at the
+            # measurement electrodes (A^-T = Vc A^-1 Vc^-1)
+            n_poles = self.c12_u.shape[0]
+            W0 = self.u[0, n_poles + self.ind_p1] - self.u[0, n_poles + self.ind_p2]
+            R[:, 0] += W0 * self.u0[0, self.ind_c1]
+            R[:, 1] -= W0 * self.u0[0, self.ind_c2]
+        return R
+
+    def _sigma0_term(self, n, R, sigma):
+        """Contribution to d(data_n)/d(ln sigma) of the conductivity of the reference fields (unscaled).
+
+        R_e is proportional to 1/sigma0_e, sigma0_e being the conductivity interpolated at current electrode
+        e (local_sigma0), or the geometric mean of the model.
+        """
+        tmp = np.zeros((self.fv.nc,))
+        for e, ip in ((0, self.ind_c1[n]), (1, self.ind_c2[n])):
+            if self._sigma0_w is None:
+                # sigma0: geometric mean of the model
+                tmp -= R[n, e] / self.fv.nc
+            else:
+                w = self._sigma0_w[0][[ip], :].toarray().ravel()
+                tmp -= R[n, e] * w * sigma / self._sigma0[ip]
+        return tmp
 
     def _get_u(self, d):
         u = None
