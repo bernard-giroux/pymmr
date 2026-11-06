@@ -35,6 +35,25 @@ from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver
 def all(a: np.ndarray) -> bool:
     return a.sum() == a.size
 
+
+def _weights(w, n):
+    """Return weights as a 1D array of size n.
+
+    w can be a 1D array, a column vector, or a (sparse) diagonal matrix.  Note that the diagonal of a
+    column vector has a single element, which scipy would broadcast to all faces.
+    """
+    if sp.issparse(w):
+        w = w.diagonal()
+    else:
+        w = np.asarray(w, dtype=float)
+        if w.ndim == 2 and w.shape[0] == w.shape[1] and w.shape[0] > 1:
+            w = np.diagonal(w)
+        w = w.ravel()
+    if w.size != n:
+        raise ValueError(f'Weights must have {n} elements, got {w.size}')
+    return w
+
+
 def sortrows(a: np.ndarray, sort_back=False):
     """
     Sort rows of 2D array
@@ -541,93 +560,90 @@ class GridDC:
             return data
 
     def calc_reg(self, Q, par, xc, xref, WGx, WGy, WGz, m_active):
-        """Compute regularization matrix.
+        """Compute regularization matrix with weights from iteratively reweighted least squares (IRLS).
+
+        Parameters
+        ----------
+        Q : array_like
+            Model weights (one value per cell).
+        par :
+            Inversion parameters (smooth_type, alx, aly, alz, als, minsupport_e, minsupport_form, ekblom_p,
+            ekblom_smallness_max).
+        xc : array_like
+            Current model (one value per cell).
+        xref : array_like or float
+            Reference model: the weights are computed from xc - xref, the quantity regularized by the
+            inversion (e.g. m - m_ref with reg_var 'model').
+        WGx, WGy, WGz : array_like or None
+            Base weights of the gradient terms (None: 1).  The IRLS weights computed from the current
+            model multiply these base weights; they are not accumulated over iterations, i.e. the
+            weights returned should not be passed back as base weights.
+        m_active : array_like
+            Active cells.
+
+        Returns
+        -------
+        tuple
+            WtW, and the weights of the gradient terms WGx, WGy, WGz (base weights x IRLS weights)
+
+        Notes
+        -----
+        Weights are those of the squared terms, i.e. the diagonal of W in G^T W G (see calc_WtW):
+            - 'blocky': w ~ 1/|c| (L1 measure, normalized by sum(c^2)/sum(|c|)), within [1e-6, 10]
+            - 'ekblom': w = p (c^2 + e^2)^(p/2 - 1) (Ekblom measure, sum (c^2 + e^2)^(p/2)), at most 2 for
+              the gradients; the smallness term is weighted the same way with c = xc - xref, at most
+              par.ekblom_smallness_max (no limit if None)
+            - 'min. support' (minimum gradient support, measure sum c^2 / (c^2 + e^2)), at most 2:
+                - par.minsupport_form 'portniaguine': w = sqrt(2) e / (c^2 + e^2), the reweighting of
+                  Portniaguine & Zhdanov (1999), W_e = (c^2 + e^2)^(-1/2) applied to the gradient
+                - par.minsupport_form 'general': w = 2 e^2 / (c^2 + e^2)^2, the general IRLS weight
+                  rho'(c) / c of the measure (Farquharson & Oldenburg, 1998)
+        with c the gradient of xc - xref, p = par.ekblom_p and e = par.minsupport_e.
         """
         Gx, Gy, Gz = self.fv.extract_Gxyz()
-
-        if WGx is None:
-            WGx = np.ones((Gx.shape[0], 1))
-            WGx_save = WGx.copy()
-        else:
-            WGx_save = WGx.copy()
-        if WGy is None:
-            WGy = np.ones((Gy.shape[0], 1))
-            WGy_save = WGy.copy()
-        else:
-            WGy_save = WGy.copy()
-        if WGz is None:
-            WGz = np.ones((Gz.shape[0], 1))
-            WGz_save = WGz.copy()
-        else:
-            WGz_save = WGz.copy()
+        G = (Gx, Gy, Gz)
+        base = [np.ones((Gi.shape[0],)) if Wi is None else _weights(Wi, Gi.shape[0])
+                for Gi, Wi in zip(G, (WGx, WGy, WGz))]
+        WS = None
+        # 1D arrays (a column vector would broadcast to n x n arrays with the base weights)
+        ci = np.asarray(xc, dtype=float).ravel() - np.asarray(xref, dtype=float).ravel()
 
         if par.smooth_type == 'blocky':
-            cx = Gx @ (xc-xref)
-            cy = Gy @ (xc-xref)
-            cz = Gz @ (xc-xref)
-
-            izx = cx==0.0
-            izy = cy==0.0
-            izz = cz==0.0
-
-            with np.errstate(divide='ignore'):
-                wtx = np.sum(cx*cx, axis=0) / (np.sum(np.abs(cx), axis=0) *
-                                               np.abs(cx))
-                wty = np.sum(cy*cy, axis=0) / (np.sum(np.abs(cy), axis=0) *
-                                               np.abs(cy))
-                wtz = np.sum(cz*cz, axis=0) / (np.sum(np.abs(cz), axis=0) *
-                                               np.abs(cz))
-
-                wtx[izx] = 0.0
-                wty[izy] = 0.0
-                wtz[izz] = 0.0
-
-                bloc_cutoff = 1.e-6
-                wtx[wtx > 10] = 10
-                wtx[wtx < bloc_cutoff] = bloc_cutoff
-                wty[wty > 10] = 10
-                wty[wty < bloc_cutoff] = bloc_cutoff
-                wtz[wtz > 10] = 10
-                wtz[wtz < bloc_cutoff] = bloc_cutoff
-
-                WGx = WGx_save * wtx.reshape(-1, 1)
-                WGy = WGy_save * wty.reshape(-1, 1)
-                WGz = WGz_save * wtz.reshape(-1, 1)
+            wt = []
+            for Gi in G:
+                c = Gi @ ci
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    w = np.sum(c*c) / (np.sum(np.abs(c)) * np.abs(c))
+                # zero gradient: largest weight (w ~ 1/|c|)
+                w[c == 0.0] = 10.0
+                wt.append(np.clip(w, 1.e-6, 10.0))
 
         elif par.smooth_type == 'ekblom':
-            ci = xc-xref
-            cx = Gx @ ci
-            cz = Gz @ ci
-
-            wtx = par.ekblom_p * (cx*cx + par.minsupport_e**2)**-((par.ekblom_p/2-1)/2)
-            wtz = par.ekblom_p * (cz*cz + par.minsupport_e**2)**-((par.ekblom_p/2-1)/2)
-            wti = par.ekblom_p * (ci*ci + par.minsupport_e**2)**-((par.ekblom_p/2-1))
-            wtx[wtx > 2] = 2
-            wtz[wtz > 2] = 2
-
-            WGx = wtx
-            WGz = wtz
-            WGy = wti
+            p, e = par.ekblom_p, par.minsupport_e
+            wt = [np.minimum(p * ((Gi @ ci)**2 + e**2)**(p/2 - 1), 2.0) for Gi in G]
+            # smallness term (one value per cell)
+            WS = p * (ci*ci + e**2)**(p/2 - 1)
+            ws_max = getattr(par, 'ekblom_smallness_max', 2.0)
+            if ws_max is not None:
+                WS = np.minimum(WS, ws_max)
 
         elif par.smooth_type == 'min. support':
-            cx = Gx @ xc
-            cy = Gy @ xc
-            cz = Gz @ xc
+            e = par.minsupport_e
+            form = getattr(par, 'minsupport_form', 'portniaguine')
+            if form == 'portniaguine':
+                wt = [np.minimum(np.sqrt(2) * e / ((Gi @ ci)**2 + e**2), 2.0) for Gi in G]
+            elif form == 'general':
+                wt = [np.minimum(2 * e**2 / ((Gi @ ci)**2 + e**2)**2, 2.0) for Gi in G]
+            else:
+                raise ValueError("minsupport_form must be 'portniaguine' or 'general'")
 
-            wtx = (np.sqrt(2)*par.minsupport_e) / (cx*cx + par.minsupport_e**2)
-            wty = (np.sqrt(2)*par.minsupport_e) / (cy*cy + par.minsupport_e**2)
-            wtz = (np.sqrt(2)*par.minsupport_e) / (cz*cz + par.minsupport_e**2)
-            wtx[wtx > 2] = 2
-            wty[wty > 2] = 2
-            wtz[wtz > 2] = 2
+        else:
+            wt = [np.ones((Gi.shape[0],)) for Gi in G]
 
-            WGx = wtx
-            WGy = wty
-            WGz = wtz
+        WGx, WGy, WGz = (b * w for b, w in zip(base, wt))
+        return self.calc_WtW(Q, par, m_active, WGx, WGy, WGz, WS=WS), WGx, WGy, WGz
 
-        return self.calc_WtW(Q, par, m_active, WGx, WGy, WGz), WGx, WGy, WGz
-
-    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None):
+    def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None, WS=None):
         """Compute model weighting matrix.
 
         Parameters
@@ -638,30 +654,41 @@ class GridDC:
             Weighting parameters.
         m_active : array_like
             Cellules du modèles actives.
-        WGx : array_like
-            Poids de lissage des cellules en x.
-        WGy : array_like
+        WGx : array_like, optional
+            Poids de lissage des cellules en x (one value per face, 1D or column vector, or diagonal matrix).
+        WGy : array_like, optional
             Poids de lissage des cellules en y.
-        WGz : array_like
+        WGz : array_like, optional
             Poids de lissage des cellules en z.
+        WS : array_like, optional
+            Weights of the smallness term (one value per cell).
 
         Returns
         -------
         output : `csr_matrix`
             Model weighting matrix.
+
+        Notes
+        -----
+        WtW = Wt^T (al_x^2 Gx^T WGx Gx + al_y^2 Gy^T WGy Gy + al_z^2 Gz^T WGz Gz + al_s WS) Wt, i.e. the
+        weights multiply the squared terms (sqrt(WG) is applied to G).
         """
 
         Gx, Gy, Gz = self.fv.extract_Gxyz()
 
         if WGx is not None:
-            Gx = sp.diags_array(WGx.diagonal(), shape=(self.fv.nfx, self.fv.nfx), format='csr') @ Gx
+            Gx = sp.diags_array(np.sqrt(_weights(WGx, self.fv.nfx)), format='csr') @ Gx
         if WGy is not None:
-            Gy = sp.diags_array(WGy.diagonal(), shape=(self.fv.nfy, self.fv.nfy), format='csr') @ Gy
+            Gy = sp.diags_array(np.sqrt(_weights(WGy, self.fv.nfy)), shape=(self.fv.nfy, self.fv.nfy),
+                                format='csr') @ Gy
         if WGz is not None:
-            Gz = sp.diags_array(WGz.diagonal(), shape=(self.fv.nfz, self.fv.nfz), format='csr') @ Gz
+            Gz = sp.diags_array(np.sqrt(_weights(WGz, self.fv.nfz)), format='csr') @ Gz
 
         Gs = sp.vstack((par.alx*Gx, par.aly*Gy, par.alz*Gz), format='csr')
-        V = sp.diags_array(np.ones((self.fv.nc,)), format='csr')
+        if WS is None:
+            V = sp.diags_array(np.ones((self.fv.nc,)), format='csr')
+        else:
+            V = sp.diags_array(_weights(WS, self.fv.nc), format='csr')
         Wt = sp.diags_array(wt, shape=(self.fv.nc, self.fv.nc), format='csr')
 
         WtW = Wt.T @ (Gs.T @ Gs + par.als * V) @ Wt
