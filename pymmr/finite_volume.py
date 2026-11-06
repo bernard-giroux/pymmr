@@ -167,6 +167,14 @@ def _get_umf_family(A):
     return family, A_new
 
 
+def _canonical_csr(A):
+    """Return a copy of A in canonical CSR format (sorted indices, duplicates summed)."""
+    A = sp.csr_array(A, copy=True)
+    A.sum_duplicates()
+    A.sort_indices()
+    return A
+
+
 def tetra_coord(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray):
     # Almost the same as Hugues' function,
     # except it does not involve the homogeneous coordinates.
@@ -288,6 +296,13 @@ class BaseFV:
             self.solver_A.A = val
         else:
             raise RuntimeError("Solver not defined, cannot set A")
+
+    def set_system(self, A, keep_solver=True, verbose=False):
+        """Instantiate the solver for matrix A, or update it if it exists and keep_solver is True."""
+        if self.solver_A is None or keep_solver is False:
+            self.solver_A = Solver(self.get_solver_params(), A, verbose=verbose)
+        else:
+            self.A = A
 
     def set_solver(self, name, atol=1e-9, rtol=1e-5, max_it=1000, precon='0', do_perm=False):
         """Define parameters of solver to be used during forward modelling.
@@ -2259,10 +2274,16 @@ class Grid25FV(BaseFV):
         x, z = param
         self.x = x
         self.z = z
+        # wavenumbers & weights of the inverse Fourier transform, u = 1/2 sum_i g_i U(k_i),
+        # normalized so that sum_i g_i K0(k_i r) ~ 1/r.  Default values from Pidlisecky & Knight (2008),
+        # accurate for r in 0.5 - 20 m; with auto_kg True, they are optimized for the survey (see optimize_k_g)
         self.k = np.array([0.0217102, 0.2161121, 1.0608400, 5.0765870])
         self.g = np.array([0.0463660, 0.2365931, 1.0382080, 5.3648010])
+        self.auto_kg = True
+        self.n_k = 11
+        self.surface_images = True   # see _with_images
+        self._kg_range = None
         self.dim = 2.5
-        self._A = None
 
     def ind(self, i, j, k, component=None):
         """
@@ -2429,13 +2450,35 @@ class Grid25FV(BaseFV):
 
     @property
     def A(self):
-        # We must override this property in the 2.5D case
-        return self._A
+        """Base matrix A = -D M G (without the k^2 sigma term)."""
+        if self.solver_A is None:
+            return None
+        return self.solver_A.A
 
     @A.setter
     def A(self, val):
-        self._A = val   # store "base" matrix A
-        self.solver_A.A = val   # set solver
+        if self.solver_A is None:
+            raise RuntimeError("Solver not defined, cannot set A")
+        self.solver_A.update(val, self._sigma)
+
+    def set_system(self, A, keep_solver=True, verbose=False):
+        """Factorize the systems A + k_i^2 sigma, one per wavenumber.
+
+        Parameters
+        ----------
+        A : sparse array
+            Base matrix returned by build_A (conductivity model is the one given to build_A).
+        keep_solver : bool, optional
+            Reuse existing solvers (refactorization only) if wavenumbers have not changed.
+        verbose : bool, optional
+        """
+        # note: set_solver instantiates an (empty) Solver, replaced here by a Solver25
+        if (not isinstance(self.solver_A, Solver25) or keep_solver is False or
+                not self.solver_A.same_kg(self.k, self.g)):
+            self.solver_A = Solver25(self.get_solver_params(), A, self._sigma, self.k, self.g, verbose=verbose,
+                                     comm=self.comm, n_threads=self.n_threads)
+        else:
+            self.solver_A.update(A, self._sigma)
 
     def is_inside(self, x, y, z):
         """Check if point is inside grid.
@@ -2624,12 +2667,8 @@ class Grid25FV(BaseFV):
         else:
             M = self.build_M(sigma)
         self._sigma = sigma
+        # no reference potential needed: A + k^2 sigma is nonsingular for k > 0
         A = -self.D @ M @ self.G
-        # I, J, V = sp.find(A[0, :])
-        # for jj in J:
-        #     A[0, jj] = 0.0
-        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
-        A[0, 0] += 1.0 / self.volume_voxels()[0]
 
         return A, M
 
@@ -2881,6 +2920,21 @@ class Grid25FV(BaseFV):
             iz = 1
         return pts[:, iz] != self.z[-1]
 
+    def _with_images(self, pts):
+        """Return True for electrodes whose analytic field must include the image source.
+
+        Notes
+        -----
+        Surface electrodes are moved to the depth of the first cell centre (process_surface_elec).  If
+        surface_images is True, their analytic field includes the image above the surface, so that it
+        satisfies the no-flux condition at z = 0 as the discrete solution does.  Without the image, the
+        source term of the boundary correction contains a spurious flux at the surface, which yields an
+        error of order h in heterogeneous models.
+        """
+        if self.surface_images:
+            return np.ones((pts.shape[0],), dtype=bool)
+        return self.below_surface(pts)
+
     def process_surface_elec(self, elec):
         """Process surface Tx coordinate to make sure electrodes are at least at the depth of the first cell center.
 
@@ -2906,26 +2960,149 @@ class Grid25FV(BaseFV):
         return elec
 
     def solve(self, b):
-        x = np.zeros(b.shape)
-        s = sp.diags_array(self._sigma, shape=(self.nc, self.nc), format='csr')
-        b = 0.5 * b   # divide by 2 -> 2.5D
-        # b = 2 * b / np.pi
-        for n in range(self.k.size):
-            L = self._A + self.k[n]**2 * s
-            self.solver_A.A = L
-            x += self.g[n] * self.solver_A.solve(b)
+        """Solve for the potential in the spatial domain.
 
-        return x
+        Parameters
+        ----------
+        b : array_like or KSource
+            Source term, the same for all wavenumbers (array) or one per wavenumber (KSource)
+        """
+        return self.solver_A.solve(b)
 
     def compute_u_homog(self, c1c2, sigma, cs):
+        """3D potential of a homogeneous half-space at the centre of the voxels (y = 0).
+
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Injection electrodes, n x 6 (dipoles) or n x 3 (poles).
+        sigma : float or ndarray
+            Conductivity, scalar, or one value per current electrode (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity, n.
+        """
+        return self._u_homog(c1c2.copy(), sigma, cs, lambda r: 1. / r)
+
+    def compute_U_homog_k(self, c1c2, sigma, cs, k):
+        """Fourier-domain potential of a homogeneous half-space at the centre of the voxels, wavenumber k.
+
+        Notes
+        -----
+        Same as compute_u_homog with 1/r replaced by 2 K0(k r), so that 1/2 sum_i g_i U(k_i) = u.
+        """
+        return self._u_homog(c1c2.copy(), sigma, cs, lambda r: 2. * k0(k * r))
+
+    def boundary_source(self, c1c2, sigma0, cs, correct_quadrature=True):
+        """Source terms of the boundary correction, one per wavenumber.
+
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Coordinates of injection electrodes (n x 6 for dipoles, n x 3 for poles).
+        sigma0 : float or ndarray
+            Conductivity of the reference model, scalar or one value per current electrode
+            (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity.
+        correct_quadrature : bool, optional
+            Keep the analytic fields so that the error of the inverse Fourier transform applies to the
+            secondary field only (the solution is exact for the homogeneous half-space).
+
+        Returns
+        -------
+        tuple
+            KSource, and analytic 3D potential u0 at the voxel centres (nc x n)
+
+        Notes
+        -----
+        Correction of Pidlisecky et al. (2007) applied in the wavenumber domain: q_k = L_k(sigma0) U0_k,
+        with U0_k the analytic solution and L_k = sigma0 (-D G + k^2).  Because U0_k is proportional to
+        1/sigma0, q_k does not depend on sigma0 (nor does the solution); sigma0 only defines the reference
+        fields U0_k and u0 used to correct the quadrature and the interpolation at the measurement electrodes.
+        These corrections work best when the reference fields have the same singular behaviour as the
+        solution near the current electrodes, i.e. with sigma0 equal to the conductivity at each electrode.
+        """
+        L1 = -(self.D @ self.G)
+        I = sp.eye_array(self.nc, self.nc, format='csr')
+        q = np.empty((self.k.size, self.nc, c1c2.shape[0]))
+        U0 = np.empty(q.shape) if correct_quadrature else None
+        for i, k in enumerate(self.k):
+            q[i] = (L1 + (k * k) * I) @ self.compute_U_homog_k(c1c2, 1.0, cs, k)
+            if correct_quadrature:
+                U0[i] = self.compute_U_homog_k(c1c2, sigma0, cs, k)
+        u0 = self.compute_u_homog(c1c2, sigma0, cs)
+        return KSource(q, U0, u0 if correct_quadrature else None), u0
+
+    @staticmethod
+    def _electrode_sigma(sigma, n, dipole):
+        """Conductivity at each current electrode, returns 2 arrays of size n."""
+        s = np.asarray(sigma, dtype=float)
+        if s.ndim == 0:
+            s1 = s2 = s * np.ones((n,))
+        elif dipole:
+            s = s.reshape(n, 2)
+            s1, s2 = s[:, 0], s[:, 1]
+        else:
+            s1 = s2 = s.reshape(n)
+        return s1, s2
+
+    def u_homog_at(self, c1c2, pts, sigma, cs):
+        """3D potential of a homogeneous half-space, source of row i evaluated at point of row i.
+
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Injection electrodes, n x 6 (dipoles) or n x 3 (poles).
+        pts : ndarray
+            Evaluation points, n x 3.
+        sigma : float or ndarray
+            Conductivity, scalar or one value per current electrode (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity, n.
+
+        Notes
+        -----
+        Exact solution at the true positions of the electrodes and points (surface electrodes are not
+        moved to the depth of the first cell centre and have no image), used as primary field at the
+        measurement electrodes.
+        """
+        c1c2 = np.atleast_2d(np.array(c1c2, dtype=float))
+        pts = np.atleast_2d(np.array(pts, dtype=float))
+        cs = cs * np.ones((c1c2.shape[0],))
+        s1, s2 = self._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
+
+        def pot(c, s):
+            below = self.below_surface(c)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                r = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] - c[:, 2])**2)
+                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] + c[:, 2])**2)
+                return below, 1. / (s * r), 1. / (s * ri)
+
+        # as in _u_homog: images (and gf = 4) for both electrodes if any of them is below the surface
+        below, u, ui = pot(c1c2[:, :3], s1)
+        if c1c2.shape[1] == 6:
+            b2, u2, u2i = pot(c1c2[:, 3:6], s2)
+            below = np.logical_or(below, b2)
+            u = u - u2
+            ui = ui - u2i
+        u = u + np.where(below, ui, 0.0)
+        gf = np.where(below, 4.0, 2.0)
+        u = cs / (gf * np.pi) * u
+        if np.any(np.isinf(u)):
+            raise ValueError('Evaluation point at the position of a current electrode')
+        return u
+
+    def _u_homog(self, c1c2, sigma, cs, kernel):
+        """Potential of a homogeneous half-space, with kernel(r) = 1/r (3D) or 2 K0(k r) (Fourier domain)."""
         x, _, z = self.centre_voxels()
         u0 = np.empty((self.nc, c1c2.shape[0]))
+        s1, s2 = self._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
         # turn off warning b/c we get a divide by zero that we will fix later
         np.seterr(divide='ignore')
         if c1c2.shape[1] == 6:
             # keep track of electrodes below the surface
-            below_surf_c1 = self.below_surface(c1c2[:, :3])
-            below_surf_c2 = self.below_surface(c1c2[:, 3:6])
+            below_surf_c1 = self._with_images(c1c2[:, :3])
+            below_surf_c2 = self._with_images(c1c2[:, 3:6])
             # make sure electrodes are at least at the depth of the first cell center
             c1c2[:, :3] = self.process_surface_elec(c1c2[:, :3])
             c1c2[:, 3:6] = self.process_surface_elec(c1c2[:, 3:6])
@@ -2943,13 +3120,14 @@ class Grid25FV(BaseFV):
                     pveimag1 = np.inf
                     nveimag1 = np.inf
                     gf = 2.0
-                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (
-                            1. / pve1 - 1. / nve1 + 1. / pveimag1 - 1. / nveimag1).flatten()
-            # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
+                u0[:, i] = cs[i] / (gf * np.pi) * (
+                            (kernel(pve1) + kernel(pveimag1)) / s1[i] -
+                            (kernel(nve1) + kernel(nveimag1)) / s2[i]).flatten()
+            # note: this works for electrodes at infinity, kernel(np.inf) is 0
 
         elif c1c2.shape[1] == 3:
             # keep track of electrodes below the surface
-            below_surf_c1 = self.below_surface(c1c2)
+            below_surf_c1 = self._with_images(c1c2)
             # make sure electrodes are at least at the depth of the first cell center
             c1c2 = self.process_surface_elec(c1c2)
 
@@ -2962,7 +3140,7 @@ class Grid25FV(BaseFV):
                 else:
                     pveimag1 = np.inf
                     gf = 2.0
-                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
+                u0[:, i] = cs[i] / (s1[i] * gf * np.pi) * (kernel(pve1) + kernel(pveimag1)).flatten()
         else:
             raise ValueError("c1c2 must be either n x 3 or n x 6")
         np.seterr(divide='warn')
@@ -2989,7 +3167,30 @@ class Grid25FV(BaseFV):
 
         return u0
 
-    def optimize_k_g(self, num):
+    def optimize_k_g(self, num, r_min=None, r_max=None):
+        """Optimize wavenumbers and weights of the inverse Fourier transform.
+
+        Parameters
+        ----------
+        num : int
+            Number of wavenumbers.
+        r_min : float, optional
+            Smallest distance for which the transform should be accurate.  Default: smallest cell size / 4.
+        r_max : float, optional
+            Largest distance for which the transform should be accurate.  Default: 4 x grid length.
+
+        Notes
+        -----
+        Weights are normalized such that sum_i g_i K0(k_i r) ~ 1/r, as the default values (approach of
+        SimPEG, least-squares fit at log-spaced distances).
+
+        Calling this method sets auto_kg to False, i.e. the wavenumbers are not optimized automatically
+        for the survey at the next forward modelling.
+        """
+        self._optimize_k_g(num, r_min, r_max)
+        self.auto_kg = False
+
+    def _optimize_k_g(self, num, r_min=None, r_max=None):
         def get_phi(r):
             e = np.ones_like(r)
 
@@ -3007,11 +3208,12 @@ class Grid25FV(BaseFV):
 
             return phi, g
 
-        # find the minimum cell spacing, and the maximum side of the mesh
-        min_r = min(np.r_[self.hx, self.hz])
-        max_r = self.x[-1] - self.x[0]
+        if r_min is None:
+            r_min = min(np.r_[self.hx, self.hz]) / 4
+        if r_max is None:
+            r_max = 4 * (self.x[-1] - self.x[0])
         # generate test points log spaced between these two end members
-        rs = np.logspace(np.log10(min_r / 4), np.log10(max_r * 4), 100)
+        rs = np.logspace(np.log10(r_min), np.log10(r_max), 100)
 
         min_rinv = -np.log10(rs).max()
         max_rinv = -np.log10(rs).min()
@@ -3028,8 +3230,9 @@ class Grid25FV(BaseFV):
             print(f"Estimated transform Error: {out['fun']}")
         # transform the solution back to normal points
         self.k = 10 ** out["x"]
-        # transform has a 2/pi and we want 1/pi, so divide by 2
-        self.g = g_func(self.k) / 2
+        # sum g K0(k r) ~ 1/r; the factor 1/2 is applied in Solver25.solve
+        self.g = g_func(self.k)
+        self._kg_range = (num, r_min, r_max)
 
     def print_info(self, file=None):
         print('    Grid: {0:d} x {1:d} voxels'.format(self.nx, self.nz), file=file)
@@ -3204,10 +3407,131 @@ class Grid25FV(BaseFV):
         # reform A to obtain the final g values
         A = rinv1 * np.real(kv(0, rpos1 * Km) - kv(0, rneg1 * Km) + kv(0, rpos_im1 * Km) - kv(0, rneg_im1 * Km))
         self.g = np.linalg.solve(A.T @ A, A.T @ I).flatten()
+        self.auto_kg = False
         return obj, err
 
 
 # %% Solver
+
+
+class KSource:
+    """Source terms defined for each wavenumber (2.5D modelling).
+
+    Parameters
+    ----------
+    q : ndarray
+        Source terms, n_k x nc x ns.
+    U0 : ndarray, optional
+        Analytic Fourier-domain fields of the reference model, n_k x nc x ns.
+    u0 : ndarray, optional
+        Analytic spatial-domain field of the reference model, nc x ns.
+
+    Notes
+    -----
+    If U0 and u0 are given, the solution is corrected as u = u0 + 1/2 sum_i g_i (U_i - U0_i), so that the
+    error of the inverse Fourier transform applies to the secondary field only.
+
+    Supports slicing of the columns, i.e. q[:, cols], as done for sparse source terms.
+    """
+
+    def __init__(self, q, U0=None, u0=None):
+        self.q = q
+        self.U0 = U0
+        self.u0 = u0
+
+    @property
+    def shape(self):
+        return self.q.shape[1:]
+
+    def __getitem__(self, key):
+        rows, cols = key
+        if rows != slice(None):
+            raise IndexError('KSource: only slicing of columns is supported')
+        if isinstance(cols, (int, np.integer)):
+            cols = [cols]
+        return KSource(self.q[:, :, cols],
+                       None if self.U0 is None else self.U0[:, :, cols],
+                       None if self.u0 is None else self.u0[:, cols])
+
+
+class Solver25:
+    """Solvers for 2.5D modelling, one per wavenumber.
+
+    Parameters
+    ----------
+    solver_par : tuple
+        Solver parameters (see Solver).
+    A : sparse array
+        Base matrix -D M G.
+    sigma : ndarray or float
+        Conductivity model.
+    k : ndarray
+        Wavenumbers.
+    g : ndarray
+        Weights, normalized such that sum_i g_i K0(k_i r) ~ 1/r.
+    verbose : bool, optional
+    """
+
+    def __init__(self, solver_par, A, sigma, k, g, verbose=False, comm=None, n_threads=1):
+        self.k = np.array(k, dtype=float)
+        self.g = np.array(g, dtype=float)
+        self.verbose = verbose
+        self._A = A
+        self.solvers = []
+        for n, k_i in enumerate(self.k):
+            if verbose:
+                print('    Wavenumber {0:d} of {1:d}'.format(n + 1, self.k.size))
+            self.solvers.append(Solver(solver_par, self._L(A, sigma, k_i), verbose=verbose,
+                                       comm=comm, n_threads=n_threads))
+
+    @staticmethod
+    def _L(A, sigma, k):
+        s = sigma * np.ones((A.shape[0],))
+        return (A + (k * k) * sp.diags_array(s, format='csr')).tocsr()
+
+    @property
+    def A(self):
+        """Base matrix -D M G."""
+        return self._A
+
+    def update(self, A, sigma):
+        """Refactorize for a new conductivity model."""
+        self._A = A
+        for s, k_i in zip(self.solvers, self.k):
+            s.A = self._L(A, sigma, k_i)
+
+    def same_kg(self, k, g):
+        return (np.size(k) == self.k.size and np.size(g) == self.g.size and
+                np.allclose(k, self.k, rtol=1e-12, atol=0) and np.allclose(g, self.g, rtol=1e-12, atol=0))
+
+    def solve(self, rhs, verbose=None):
+        """Solve for the potential in the spatial domain, u = 1/2 sum_i g_i U(k_i).
+
+        Parameters
+        ----------
+        rhs : array_like or KSource
+            Source term, the same for all wavenumbers, or one per wavenumber.
+        """
+        if verbose is None:
+            verbose = self.verbose
+        u = None
+        for n, s in enumerate(self.solvers):
+            b = rhs.q[n] if isinstance(rhs, KSource) else rhs
+            U = 0.5 * self.g[n] * s.solve(b, verbose=verbose)
+            if isinstance(rhs, KSource) and rhs.U0 is not None:
+                U -= 0.5 * self.g[n] * rhs.U0[n]
+            u = U if u is None else u + U
+        if isinstance(rhs, KSource) and rhs.u0 is not None:
+            u += rhs.u0
+        return u
+
+    def set_mumps_print_level(self, level):
+        for s in self.solvers:
+            s.set_mumps_print_level(level)
+
+    def print_info(self, file=None):
+        self.solvers[0].print_info(file)
+        print('    2.5D: {0:d} wavenumbers'.format(self.k.size), file=file)
 
 
 class Solver:
@@ -3300,13 +3624,16 @@ class Solver:
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages by default
+            self.solver = self._solve_mumps
             if A is None:
                 return
+            A = _canonical_csr(A)   # see A.setter
+            self._A = A
             if self.ctx.myid == 0:
                 self.ctx.set_centralized_sparse(A)
             if verbose and self.ctx.myid == 0:
                 print("    Analyzing & factorizing matrix A ... ", end="", flush=True)
-            self.ctx.run(job=4)  # Analysis & Factorization
+            self._mumps_factorize(job=4)  # Analysis & Factorization
             if verbose and self.ctx.myid == 0:
                 print("done.")
             self.solver = self._solve_mumps
@@ -3563,29 +3890,22 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             # we are using MUMPS
             if val.shape[0] != val.shape[1]:
                 raise RuntimeError("MUMPS: matrix must be square")
+            # values passed to MUMPS when only they change must be in the same order as the
+            # entries given at analysis: use canonical CSR (sorted indices, no duplicates) everywhere
+            val = _canonical_csr(val)
+            self._A = val
             if self.ctx.myid == 0:
                 if not same_struct:
                     self.ctx.set_shape(val.shape[0])
                     self.ctx.set_centralized_sparse(val)
                 else:
                     self.ctx.set_centralized_assembled_values(val.data)
-            if same_struct:
-                if self.verbose:
+            if self.verbose:
+                if same_struct:
                     print("    Factorizing matrix A ... ", end="", flush=True)
-                try:
-                    self.ctx.run(job=2)  # Factorization
-                except:
-                    if self.ctx.id.infog[0] == -9:
-                        if self.verbose:
-                            print(" Exception raised!   Increasing memory space & factorizing matrix A ... ", end="", flush=True)
-                        self.ctx.id.icntl[13] += 20
-                        self.A = val
-                    else:
-                        raise RuntimeError(f"MUMPS: factorization failed with error code {self.ctx.id.infog[0]}")
-            else:
-                if self.verbose:
+                else:
                     print("    Analyzing & factorizing matrix A ... ", end="", flush=True)
-                self.ctx.run(job=4)  # Analysis & Factorization
+            self._mumps_factorize(job=2 if same_struct else 4)
             if self.verbose:
                 print("done.")
             return
@@ -3625,6 +3945,24 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 print("done.")
         self.solver = lambda A, b: self.it_slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol, maxiter=self.max_it,
                                                M=self.Mpre)
+
+    def _mumps_factorize(self, job, max_retry=5):
+        """Run MUMPS factorization (job=2) or analysis & factorization (job=4).
+
+        If the workspace is too small (error -9), it is increased by 20% and the
+        factorization is attempted again.
+        """
+        for _ in range(max_retry + 1):
+            try:
+                self.ctx.run(job=job)
+                return
+            except RuntimeError:
+                if self.ctx.id.infog[0] != -9:
+                    raise RuntimeError(f"MUMPS: factorization failed with error code {self.ctx.id.infog[0]}")
+                if self.verbose:
+                    print(" workspace too small, increasing ... ", end="", flush=True)
+                self.ctx.id.icntl[13] += 20
+        raise RuntimeError("MUMPS: factorization failed, workspace too small (error -9)")
 
     def _solve_mumps(self, A, b):
         if self.ctx.myid == 0:
