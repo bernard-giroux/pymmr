@@ -1601,7 +1601,7 @@ class GridFV(BaseFV):
             for i in range(c.shape[0]):
                 r = np.sqrt((x - c[i, 0])**2 + (y - c[i, 1])**2 + (z - c[i, 2])**2)
                 if images[i]:
-                    ri = np.sqrt((x - c[i, 0])**2 + (y - c[i, 1])**2 + (z + c[i, 2])**2)
+                    ri = np.sqrt((x - c[i, 0])**2 + (y - c[i, 1])**2 + (z + c[i, 2] - 2 * self.z[-1])**2)
                     u0[:, i] = cs[i] / (s1[i] * 4.0 * np.pi) * (1. / r + 1. / ri)
                 else:
                     u0[:, i] = cs[i] / (s1[i] * 2.0 * np.pi) / r
@@ -1655,7 +1655,7 @@ class GridFV(BaseFV):
             below = self.below_surface(c)
             with np.errstate(divide='ignore', invalid='ignore'):
                 r = np.sqrt(np.sum((pts - c)**2, axis=1))
-                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 1] - c[:, 1])**2 + (pts[:, 2] + c[:, 2])**2)
+                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 1] - c[:, 1])**2 + (pts[:, 2] + c[:, 2] - 2 * self.z[-1])**2)
                 u = np.where(below, (1. / r + 1. / ri) / 4.0, 1. / (2.0 * r)) / s
             # electrode or point at infinity: no contribution (avoids inf - inf)
             remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),
@@ -3219,7 +3219,7 @@ class Grid25FV(BaseFV):
             below = self.below_surface(c)
             with np.errstate(divide='ignore', invalid='ignore'):
                 r = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] - c[:, 2])**2)
-                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] + c[:, 2])**2)
+                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] + c[:, 2] - 2 * self.z[-1])**2)
                 u = np.where(below, (1. / r + 1. / ri) / 4.0, 1. / (2.0 * r)) / s
             # electrode or point at infinity (e.g. pole-pole): no contribution (avoids inf - inf)
             remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),
@@ -3259,7 +3259,7 @@ class Grid25FV(BaseFV):
                 pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z - c1c2[i, 2]) ** 2)
                 if below_surf_c1[i]:
                     # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z + c1c2[i, 2]) ** 2)
+                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z + c1c2[i, 2] - 2 * self.z[-1]) ** 2)
                     gf = 4.0
                 else:
                     pveimag1 = np.inf

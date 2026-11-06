@@ -849,10 +849,16 @@ class GridDC:
                 # reference fields with the conductivity at each current electrode
                 self._sigma0, self._sigma0_w = self._electrode_sigma(c1c2, ref_model, return_weights=True)
             self.u0 = self.fv.compute_u_homog(c1c2, self._sigma0, cs)
-            # q = A(sigma0) u0(sigma0) does not depend on sigma0 (u0 ~ 1/sigma0): use sigma0 = 1 (only
-            # the reference fields used for the data depend on sigma0, see _reference_terms)
+            # q = A(sigma0) u0(sigma0): the term -D sigma0 G u0 does not depend on sigma0 (u0 ~ 1/sigma0) and
+            # is built with sigma0 = 1, but the reference potential term of A (A[0, 0], independent of sigma)
+            # must act on u0, so that the solution is exact for a homogeneous model (pole receivers
+            # included).  The dependence of q on sigma0 through this term is accounted for in the
+            # sensitivity (see _reference_term_matrix).
+            f = self.fv.compute_u_homog(c1c2, 1.0, cs)
             A, _ = self.fv.build_A(1.0)
-            self.q = sp.csr_array(A @ self.fv.compute_u_homog(c1c2, 1.0, cs))
+            q = A @ f
+            q[0, :] += (self.u0[0, :] - f[0, :]) / self.fv.volume_voxels()[0]
+            self.q = sp.csr_array(q)
         elif self.fv.dim == 3:
             # tetrahedral mesh
             self.u0 = self.fv.compute_u_homog(c1c2, avg_cond, cs)
@@ -1172,6 +1178,14 @@ class GridDC:
         for ns in range(self.n_c1c2_u):
             ind = np.where(self.ind_c1c2 == ns)[0]
             R[ind, 0], R[ind, 1] = self._reference_terms(ns)
+        if isinstance(self.fv, GridFV):
+            # source term (3D): the reference potential term A[0, 0] acts on u0 (see _boundary_correction),
+            # which contributes W_n[0] u0_e[0] to the data, W_n being the field of unit sources at the
+            # measurement electrodes (A^-T = Vc A^-1 Vc^-1)
+            n_poles = self.c12_u.shape[0]
+            W0 = self.u[0, n_poles + self.ind_p1] - self.u[0, n_poles + self.ind_p2]
+            R[:, 0] += W0 * self.u0[0, self.ind_c1]
+            R[:, 1] -= W0 * self.u0[0, self.ind_c2]
         return R
 
     def _sigma0_term(self, n, R, sigma):

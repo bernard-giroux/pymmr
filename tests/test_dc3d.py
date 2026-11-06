@@ -78,6 +78,31 @@ class TestLayeredEarth(unittest.TestCase):
         g = self.grid()
         np.testing.assert_allclose(g.fwd_mod(self.model(g)), self.d_layered, rtol=1e-2)
 
+    def test_pole_receivers_homogeneous(self):
+        """Electrodes at infinity (dipole-pole, pole-pole, pole-dipole): exact for a homogeneous model."""
+        inf = np.inf
+        c1c2 = np.array([[-20., 0, 0, -15, 0, 0], [-20., 0, 0, inf, inf, inf], [0., 0, 0, inf, inf, inf]])
+        p1p2 = np.array([[5., 0, 0, inf, inf, inf], [10., 0, 0, inf, inf, inf], [15., 0, 0, 20, 0, 0]])
+        d_ex = 1e3 * self.rho1 / (2 * np.pi) * np.array([1 / 25 - 1 / 20, 1 / 30, 1 / 15 - 1 / 20])
+        g = GridDC((self.x, self.y, self.z))
+        g.set_solver(SOLVER)
+        g.set_survey_ert(c1c2, p1p2, cs=1.0)
+        np.testing.assert_allclose(g.fwd_mod(self.model(g, False)), d_ex, rtol=1e-8)
+
+    def test_elevation(self):
+        """Same results with the grid and the electrodes shifted vertically (images about the grid top)."""
+        c1c2 = np.r_[self.c1c2[:6], [[-20., 0, -4., 10., 0, 0]]]   # one buried electrode
+        p1p2 = np.r_[self.p1p2[:6], [[0., 0, 0, 5., 0, 0]]]
+        d = []
+        for dz in (0.0, 100.0):
+            g = GridDC((self.x, self.y, self.z + dz))
+            g.set_solver(SOLVER)
+            shift = np.array([0, 0, dz, 0, 0, dz])
+            g.set_survey_ert(c1c2 + shift, p1p2 + shift, cs=1.0)
+            d.append(g.fwd_mod(self.model(g) if dz == 0 else np.where(g.fv.centre_voxels()[2] > dz - self.hl,
+                                                                         1 / self.rho1, 1 / self.rho2)))
+        np.testing.assert_allclose(d[1], d[0], rtol=1e-8)
+
     def test_previous_correction_less_accurate(self):
         """Without surface images and exact primary field (previous correction): error of order h."""
         g = self.grid(surface_images=False, exact_primary=False)
@@ -93,8 +118,12 @@ class TestSensitivity(unittest.TestCase):
         x = padded(np.arange(-6., 6.01, h), h, 8)
         y = padded(np.arange(-3., 3.01, h), h, 8)
         z = padded(np.arange(-5., 0.01, h), h, 8, top=False)
-        c1c2 = np.array([[-3., 0, 0, -2, 0, 0], [-1., 0, 0, 0, 0, 0], [-3., 0, 0, -2, 0, 0]])
-        p1p2 = np.array([[1., 0, 0, 2, 0, 0], [2., 0, 0, 3, 0, 0], [3., 0, 0, 5, 0, 0]])
+        inf = np.inf
+        # dipoles, and poles (source and receivers) to check the reference potential term of the source
+        c1c2 = np.array([[-3., 0, 0, -2, 0, 0], [-1., 0, 0, 0, 0, 0], [-3., 0, 0, -2, 0, 0],
+                         [-4., 0, 0, inf, inf, inf], [-3., 0, 0, -2, 0, 0]])
+        p1p2 = np.array([[1., 0, 0, 2, 0, 0], [2., 0, 0, 3, 0, 0], [3., 0, 0, 5, 0, 0],
+                         [2., 0, 0, inf, inf, inf], [4., 0, 0, inf, inf, inf]])
 
         def grid(opts):
             g = GridDC((x, y, z))

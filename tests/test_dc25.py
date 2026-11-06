@@ -158,6 +158,16 @@ class TestForward(unittest.TestCase):
         v = 1e-3 * g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO1, 1 / RHO1))
         np.testing.assert_allclose(v, RHO1 / (2 * np.pi * np.array([5., 8.])), rtol=1e-3)
 
+    def test_elevation(self):
+        """Same results with the grid and the electrodes shifted vertically (images about the grid top)."""
+        c1c2 = np.r_[self.c1c2[:5], [[-6., 0, -3., 4., 0, 0]]]   # one buried electrode
+        p1p2 = np.r_[self.p1p2[:5], [[0., 0, 0, 2., 0, 0]]]
+        d = []
+        for dz in (0.0, 100.0):
+            g = make_grid(self.xg, self.z + dz, c1c2 + [0, 0, dz, 0, 0, dz], p1p2 + [0, 0, dz, 0, 0, dz])
+            d.append(g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3)))
+        np.testing.assert_allclose(d[1], d[0], rtol=1e-8)
+
     def test_electrode_at_grid_edge(self):
         c = np.array([[self.xg[-1], 0, 0, -1, 0, 0]])
         p = np.array([[1., 0, 0, 2, 0, 0]])
