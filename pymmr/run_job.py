@@ -101,8 +101,8 @@ z : elevation
 *** 2.5D DC resistivity modeling ***
 If the model file holds a rectilinear grid with a single cell along y, 2.5D modelling is performed: the
 conductivity is invariant along y and the profile lies in the plane y = 0 (y coordinates of electrodes are
-ignored).  Such files are produced by `GridDC.fv.toVTK` for a 2.5D grid.  Sensitivity and inversion are not
-yet available in 2.5D.
+ignored).  Such files are produced by `GridDC.fv.toVTK` for a 2.5D grid.  Forward modelling, sensitivity and
+inversion of DC data are available in 2.5D.
 
 *** MMR modeling ***
 It is possible to save ∆V values for predetermined dipoles, in addition to the Bx, By, and Bz values, when

@@ -2529,6 +2529,24 @@ class Grid25FV(BaseFV):
         # GridFV.fromVTK only uses the grid dimensions (nx, ny, nz), defined for the 2.5D grid
         return GridFV.fromVTK(self, fieldname, filename)
 
+    def volume_faces(self):
+        """Returns the dual area associated with the (interior) faces of the grid.
+
+        Returns
+        -------
+        ndarray
+            face length times distance between the centres of the two adjacent cells, ordered as the
+            faces (x, then z).
+
+        Notes
+        -----
+        With Vc = volume_voxels() and Vf = volume_faces(), D = -Vc^-1 G^T Vf, so that diag(Vc) @ L_k,
+        with L_k = -D M G + k^2 sigma, is symmetric.  Used to apply L_k^-T in the adjoint computations.
+        """
+        vx = np.kron(self.hz, self.dx)
+        vz = np.kron(self.dz, self.hx)
+        return np.r_[vx, vz]
+
     def extract_Gxyz(self):
         """Extract Gx, Gy & Gz from G (Gy is empty in 2.5D)."""
         Gx = self.G[:self.nfx, :]
@@ -3052,18 +3070,20 @@ class Grid25FV(BaseFV):
         elec[ind, iz] = self.zc[-1]
         return elec
 
-    def solve(self, b):
+    def solve(self, b, return_k=False):
         """Solve for the potential in the spatial domain.
 
         Parameters
         ----------
         b : array_like or KSource
             Source term, the same for all wavenumbers (array) or one per wavenumber (KSource)
+        return_k : bool, optional
+            Also return the fields of each wavenumber (see Solver25.solve)
         """
         if not self.solver_A.same_kg(self.k, self.g):
             # wavenumbers changed since the solvers were built (e.g. new survey with no new model)
             self.set_system(self.solver_A.A, keep_solver=False, verbose=self.solver_A.verbose)
-        return self.solver_A.solve(b)
+        return self.solver_A.solve(b, return_k=return_k)
 
     def compute_u_homog(self, c1c2, sigma, cs):
         """3D potential of a homogeneous half-space at the centre of the voxels (y = 0).
@@ -3168,30 +3188,23 @@ class Grid25FV(BaseFV):
         s1, s2 = self._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
 
         def pot(c, s):
+            """Field of one electrode (image and gf = 4 if it is below the surface)."""
             below = self.below_surface(c)
             with np.errstate(divide='ignore', invalid='ignore'):
                 r = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] - c[:, 2])**2)
                 ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] + c[:, 2])**2)
-                u, ui = 1. / (s * r), 1. / (s * ri)
+                u = np.where(below, (1. / r + 1. / ri) / 4.0, 1. / (2.0 * r)) / s
             # electrode or point at infinity (e.g. pole-pole): no contribution (avoids inf - inf)
             remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),
                                                    np.all(np.isfinite(pts), axis=1)))
             u[remote] = 0.0
-            ui[remote] = 0.0
-            # an electrode at infinity must not trigger the images of the other electrode
-            below = np.logical_and(below, np.all(np.isfinite(c), axis=1))
-            return below, u, ui
+            return u
 
-        # as in _u_homog: images (and gf = 4) for both electrodes if any of them is below the surface
-        below, u, ui = pot(c1c2[:, :3], s1)
+        # sum of the fields of the electrodes, as in _u_homog
+        u = pot(c1c2[:, :3], s1)
         if c1c2.shape[1] == 6:
-            b2, u2, u2i = pot(c1c2[:, 3:6], s2)
-            below = np.logical_or(below, b2)
-            u = u - u2
-            ui = ui - u2i
-        u = u + np.where(below, ui, 0.0)
-        gf = np.where(below, 4.0, 2.0)
-        u = cs / (gf * np.pi) * u
+            u = u - pot(c1c2[:, 3:6], s2)
+        u = cs / np.pi * u
         if np.any(np.isinf(u)):
             raise ValueError('Evaluation point at the position of a current electrode')
         return u
@@ -3202,34 +3215,14 @@ class Grid25FV(BaseFV):
         u0 = np.empty((self.nc, c1c2.shape[0]))
         s1, s2 = self._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
         # turn off warning b/c we get a divide by zero that we will fix later
-        np.seterr(divide='ignore')
         if c1c2.shape[1] == 6:
-            # keep track of electrodes below the surface
-            below_surf_c1 = self._with_images(c1c2[:, :3])
-            below_surf_c2 = self._with_images(c1c2[:, 3:6])
-            # make sure electrodes are at least at the depth of the first cell center
-            c1c2[:, :3] = self.process_surface_elec(c1c2[:, :3])
-            c1c2[:, 3:6] = self.process_surface_elec(c1c2[:, 3:6])
+            # dipole = difference of the fields of the two electrodes, each with its own treatment of the
+            # singularity (as when the fields are computed per electrode, for the sensitivity)
+            return (self._u_homog(c1c2[:, :3].copy(), s1, cs, kernel) -
+                    self._u_homog(c1c2[:, 3:6].copy(), s2, cs, kernel))
 
-            for i in np.arange(c1c2.shape[0]):
-                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z - c1c2[i, 2]) ** 2)
-                # norm of negative current electrode and 1st potential electrode
-                nve1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (z - c1c2[i, 5]) ** 2)
-                if below_surf_c1[i] or below_surf_c2[i]:
-                    # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z + c1c2[i, 2]) ** 2)
-                    nveimag1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (z + c1c2[i, 5]) ** 2)
-                    gf = 4.0
-                else:
-                    pveimag1 = np.inf
-                    nveimag1 = np.inf
-                    gf = 2.0
-                u0[:, i] = cs[i] / (gf * np.pi) * (
-                            (kernel(pve1) + kernel(pveimag1)) / s1[i] -
-                            (kernel(nve1) + kernel(nveimag1)) / s2[i]).flatten()
-            # note: this works for electrodes at infinity, kernel(np.inf) is 0
-
-        elif c1c2.shape[1] == 3:
+        np.seterr(divide='ignore')
+        if c1c2.shape[1] == 3:
             # keep track of electrodes below the surface
             below_surf_c1 = self._with_images(c1c2)
             # make sure electrodes are at least at the depth of the first cell center
@@ -3249,25 +3242,18 @@ class Grid25FV(BaseFV):
             raise ValueError("c1c2 must be either n x 3 or n x 6")
         np.seterr(divide='warn')
 
-        # check for singularities due to the source being on a node
+        # singularities due to a source at the centre of a cell: mean of the finite values of the
+        # neighbouring cells (the two electrodes of a dipole can be in adjacent cells)
         for i in range(c1c2.shape[0]):
-            ind = np.nonzero(np.isinf(u0[:, i]))
-            if ind[0].size > 0:
-                for j in range(ind[0].size):
-                    ix, iy, iz = self.revind(ind[0][j])
-                    if iz == 0:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy, iz + 1), i],
-                                                    u0[self.ind(ix - 1, iy, iz), i]])
-                    elif iz == self.nz-1:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
-                                                    u0[self.ind(ix - 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy, iz - 1), i]])
-                    else:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy, iz + 1), i],
-                                                    u0[self.ind(ix - 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy, iz - 1), i]])
+            ind = np.nonzero(np.isinf(u0[:, i]))[0]
+            new_values = []
+            for j in ind:
+                ix, _, iz = self.revind(j)
+                nb = [self.ind(ix + dx, 0, iz + dz) for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                      if 0 <= ix + dx < self.nx and 0 <= iz + dz < self.nz]
+                v = u0[nb, i]
+                new_values.append(np.mean(v[np.isfinite(v)]))
+            u0[ind, i] = new_values
 
         return u0
 
@@ -3608,25 +3594,35 @@ class Solver25:
         return (np.size(k) == self.k.size and np.size(g) == self.g.size and
                 np.allclose(k, self.k, rtol=1e-12, atol=0) and np.allclose(g, self.g, rtol=1e-12, atol=0))
 
-    def solve(self, rhs, verbose=None):
+    def solve(self, rhs, verbose=None, return_k=False):
         """Solve for the potential in the spatial domain, u = 1/2 sum_i g_i U(k_i).
 
         Parameters
         ----------
         rhs : array_like or KSource
             Source term, the same for all wavenumbers, or one per wavenumber.
+        return_k : bool, optional
+            Also return the fields in the wavenumber domain U(k_i), n_k x nc x ns (used for sensitivity).
         """
         if verbose is None:
             verbose = self.verbose
         u = None
+        U_k = None
         for n, s in enumerate(self.solvers):
             b = rhs.q[n] if isinstance(rhs, KSource) else rhs
-            U = 0.5 * self.g[n] * s.solve(b, verbose=verbose)
+            Un = s.solve(b, verbose=verbose)
+            if return_k:
+                if U_k is None:
+                    U_k = np.empty((self.k.size,) + Un.shape)
+                U_k[n] = Un
+            U = 0.5 * self.g[n] * Un
             if isinstance(rhs, KSource) and rhs.U0 is not None:
                 U -= 0.5 * self.g[n] * rhs.U0[n]
             u = U if u is None else u + U
         if isinstance(rhs, KSource) and rhs.u0 is not None:
             u += rhs.u0
+        if return_k:
+            return u, U_k
         return u
 
     def set_mumps_print_level(self, level):

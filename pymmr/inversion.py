@@ -492,15 +492,25 @@ class Inversion:
 
         where `wt` is the weight in %, data is the B-field or the voltage, and 𝜖 is attribute `e` of the class.
 
+        If `show_plots` is False, a non-interactive matplotlib backend is used during the inversion, and the
+        backend in use before the call is restored afterwards.
         """
 
         if data_mmr is None and data_ert is None:
             raise ValueError("No data to invert")
 
+        backend = matplotlib.get_backend()
         if self.show_plots is False:
             matplotlib.use("pdf")
         else:
             matplotlib.use(default_backend)
+        try:
+            return self._run(g, m0, m_ref, data_mmr, data_ert, m_weight, m_active)
+        finally:
+            matplotlib.use(backend)
+
+    def _run(self, g, m0, m_ref, data_mmr, data_ert, m_weight, m_active):
+        """Body of run (see run)."""
 
         dobs = None
         wt = None
