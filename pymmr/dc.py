@@ -390,6 +390,9 @@ class GridDC:
             self._check_cs()
 
         if calc_sens is True:
+            if not isinstance(self.fv, GridFV):
+                # 2.5D needs the fields of each wavenumber; tetrahedral meshes lack the face operators
+                raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
             if np.any(self.cs != self.cs[0]):
                 raise ValueError('Sensitivity computation implemented only for I equal at all dipoles.')
 
