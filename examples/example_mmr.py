@@ -28,7 +28,7 @@ z = np.r_[z[0] - pad, z]
 
 g = GridMMR((x, y, z))
 g.verbose = True
-g.set_solver("mumps")
+g.set_solver("pardiso")
 
 
 c1c2 = np.array(
