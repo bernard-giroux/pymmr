@@ -288,8 +288,9 @@ class TestPlumbing(unittest.TestCase):
         np.testing.assert_array_equal(g2.fv.x, g.fv.x)
         np.testing.assert_array_equal(g2.fv.z, g.fv.z)
         np.testing.assert_array_equal(s2, s)
-        with self.assertRaises(ValueError):
-            build_from_vtk(GridMMR, fname + '.vtr')
+        g3 = build_from_vtk(GridMMR, fname + '.vtr')     # 2.5D MMR (docs/mmr25.md)
+        self.assertEqual(g3.fv.dim, 2.5)
+        self.assertEqual(g3.dc.fv.nc, g.fv.nc)
 
     def test_roi(self):
         g = make_grid(self.xg, self.z, self.c1c2, self.p1p2)

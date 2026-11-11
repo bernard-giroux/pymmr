@@ -513,7 +513,9 @@ class Inversion:
                 g.set_survey_mmr(data_mmr.xs, data_mmr.xo, data_mmr.cs)
                 g.check_acquisition()
                 dobs = g.data_to_obs(data_mmr.data)
-                wt = data_mmr.wt
+                # weights are given per datum and component (all x, then y, then z, see df_to_data): same
+                # ordering as dobs
+                wt = g.data_to_obs(np.asarray(data_mmr.wt).reshape(3, -1).T).flatten()
                 nobs_mmr = dobs.size
             except AttributeError:
                 raise RuntimeError("Format of MMR data incorrect")

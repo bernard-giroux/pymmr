@@ -32,9 +32,14 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.special import legendre_p_all
 
+from scipy.stats.mstats import gmean
+
 from pymmr.dc import GridDC
-from pymmr.finite_volume import calc_padding, GridFV, MeshFV, Solver
+from pymmr.finite_volume import calc_padding, GridFV, Grid25FV, MeshFV, Solver, Solver25
+from pymmr.kquad import KQuadrature, select_k
 from pymmr.legendre import p_prime
+
+MU0 = 4.e-7 * np.pi   # magnetic permeability of free space (H/m)
 
 # %% class GridMMR
 
@@ -52,9 +57,15 @@ class GridMMR:
                 Node coordinates along y (m)
             z : array of float
                 Node coordinates along z (m)
-        if tuple has 2 elements, a mesh in built and the elements are
+            or, if x has 2 dimensions, a tetrahedral mesh is built with
             pts : array of float
             tet: array of int
+            (third element ignored)
+        if tuple has 2 elements, a 2.5D grid is built (conductivity invariant along y) and the elements are
+            x : array of float
+                Node coordinates along x (m)
+            z : array of float
+                Node coordinates along z (m)
     units : str, optional
         B-field units
     comm : MPI Communicator, optional
@@ -66,18 +77,26 @@ class GridMMR:
     - It is possible to compute the DC resistivity response for injection
     dipoles that are different from the source term defined for MMR modeling.
     This has been implemented for allowing joint inversion of MMR & ERT data.
+
+    - In 2.5D (see docs/mmr25.md), current electrodes and measurement points can be at any y; the
+    fields are computed for `n_k` wavenumbers (selected for the survey) and transformed back at the
+    distance along y between each electrode and each measurement point.
     """
 
     units_scaling_factors = {'pT': 1.e12, 'nT': 1.e9}
 
     def __init__(self, param_fv, units='pT', comm=None, n_threads=1):
-        if len(param_fv) != 3:
-            raise ValueError('GridDC: param_fv must have 3 elements')
-
-        if param_fv[0].ndim == 1:
-            self.fv = GridFV(param_fv, comm=comm, n_threads=n_threads)
+        if len(param_fv) == 2:
+            if np.ndim(param_fv[0]) != 1:
+                raise ValueError('GridMMR: 2.5D not implemented for triangular meshes')
+            self.fv = Grid25FV(param_fv, comm=comm, n_threads=n_threads)
+        elif len(param_fv) == 3:
+            if param_fv[0].ndim == 1:
+                self.fv = GridFV(param_fv, comm=comm, n_threads=n_threads)
+            else:
+                self.fv = MeshFV(param_fv, comm=comm, n_threads=n_threads)
         else:
-            self.fv = MeshFV(param_fv, comm=comm, n_threads=n_threads)
+            raise ValueError('GridMMR: param_fv must have 2 or 3 elements')
 
         self.dc = GridDC(param_fv, units='mV', comm=comm, n_threads=n_threads)
         self.dc.verbose = 0
@@ -96,6 +115,14 @@ class GridMMR:
         self._verbose = 0
         self.pod_p1p2 = None
         self.Q_pod_e = None
+        # 2.5D
+        self.n_k = 30                 # number of wavenumbers
+        self.k = None                 # wavenumbers (selected for the survey at the first fwd_mod)
+        self.surface_images = False   # image of surface electrodes in the DC reference fields (see fwd_mod)
+        self._k_range = None
+        self._kq = None
+        self._plan25 = None
+        self._solvers_k = None
 
     @property
     def apply_bc(self):
@@ -136,9 +163,10 @@ class GridMMR:
         else:
             raise ValueError('Size of source term must be nsrc x 6')
         for ns in range(tmp.shape[0]):
-            if self.fv.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
-               self.fv.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
-                raise ValueError('Source term outside grid')
+            for e in (tmp[ns, :3], tmp[ns, 3:]):
+                # an electrode with non-finite coordinates is at infinity (pole source)
+                if np.all(np.isfinite(e)) and self.fv.is_inside(e[0], e[1], e[2]) is False:
+                    raise ValueError('Source term outside grid')
         self._xs = tmp
         self.acq_checked = False
 
@@ -291,6 +319,9 @@ class GridMMR:
             self.nobs_xs = self.xo.shape[0] + np.zeros((self.xs.shape[0],), dtype=int)
         self.nobs_mmr = np.sum(self.nobs_xs)
 
+        # electric dipoles at the measurement points: derived from the current survey only
+        self.pod_p1p2 = None
+        self.Q_pod_e = None
         if self.pod_e is not None:
             pod_e_dx, pod_e_dy, pod_e_dz = self.pod_e
             p1 = self.xo_all.copy()
@@ -307,6 +338,7 @@ class GridMMR:
             if pod_p1p2[0] is not None or pod_p1p2[1] is not None or pod_p1p2[2] is not None:
                 self.pod_p1p2 = pod_p1p2
 
+        self._plan25 = None
         self.acq_checked = True
 
     def set_solver(self, name, atol=1e-9, rtol=1e-5, max_it=1000, precon='0', do_perm=False):
@@ -404,7 +436,7 @@ class GridMMR:
         only once.  Option `keep_solver` allows this, matrix A being factorized
         when the solver is instantiated.
         """
-        if self.fv.nc == self.dc.fv.nc:
+        if self.fv.nc == self.dc.fv.nc and self.fv.dim != 2.5:   # 2.5D: see _setup25
             self._add_air()
 
         if self.xs is None:
@@ -419,12 +451,15 @@ class GridMMR:
             if self.fv.solver_A is not None:
                 self.fv.solver_A.print_info()
 
-        if calc_sens and not isinstance(self.dc.fv, GridFV):
+        if calc_sens and not isinstance(self.dc.fv, (GridFV, Grid25FV)):
             # tetrahedral meshes lack the face operators used for the sensitivity
-            raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
+            raise NotImplementedError('Sensitivity computation implemented only for rectilinear grids')
 
         if not self.acq_checked:
             self.check_acquisition()
+
+        if self.fv.dim == 2.5:
+            return self._fwd_mod25(sigma, keep_solver, calc_sens)
 
         if self.in_inv and self.dc.c1c2 is not None:
             # joint inversion
@@ -574,6 +609,245 @@ class GridMMR:
             else:
                 return data
 
+    # --------------------------------------------------------------------------------------------
+    # 2.5D modelling (see docs/mmr25.md)
+    # --------------------------------------------------------------------------------------------
+
+    def _fwd_mod25(self, sigma, keep_solver, calc_sens=False):
+        """Forward modelling in 2.5D, returns data (and sensitivity) as fwd_mod."""
+        if self.pod_p1p2 is not None:
+            raise NotImplementedError('Electric dipoles at measurement points (pod_e) not available in 2.5D')
+        sigma = np.asarray(sigma, dtype=float).ravel() * np.ones((self.dc.fv.nc,))
+
+        if self.in_inv and self.dc.c1c2 is not None:
+            # joint inversion: DC data computed with the wavenumbers of the DC code
+            res_dc = self.dc.fwd_mod(sigma, calc_sens=calc_sens)
+
+        verbose = self.verbose and self.fv.comm.rank == 0
+        self._setup25()
+        poles = self._plan25['poles']
+        if verbose:
+            print('  {0:d} current electrodes, {1:d} wavenumbers in [{2:g}, {3:g}] 1/m'.format(
+                poles.shape[0], self.k.size, self.k[0], self.k[-1]))
+            print('  Computing DC fields ... ', end='', flush=True)
+        U, M_k, dc_solvers = self._dc_fields25(sigma, poles, keep_solvers=calc_sens)
+        if verbose:
+            print('done.\n  Solving MMR systems ... ', end='', flush=True)
+        Bk = self._mmr_fields25(U, M_k, keep_solver)
+        if verbose:
+            print('done.')
+        data = self._units_scaling * self._transform25(Bk)
+        if calc_sens:
+            if verbose:
+                print('  Computing sensitivity ... ', end='', flush=True)
+            sens = self._sens25(sigma, U, M_k, dc_solvers)
+            if verbose:
+                print('done.')
+
+        if not self.in_inv:
+            data = data[self.ind_back, :]
+        else:
+            data = self.data_to_obs(data, False)
+            if self.dc.c1c2 is not None:
+                if calc_sens:
+                    data = np.r_[data, res_dc[0].reshape(-1, 1)]
+                    sens = np.c_[sens, res_dc[1]]
+                else:
+                    data = np.r_[data, res_dc.reshape(-1, 1)]
+        if verbose:
+            print('End of modelling.')
+        if calc_sens:
+            return data, sens
+        return data
+
+    def _setup25(self):
+        """Air layers, current electrodes, wavenumbers and inverse transform weights (once per survey)."""
+        if self.fv.nc == self.dc.fv.nc:
+            # A_z = 0 at the top: the air must be thick compared with the source-receiver distances,
+            # whatever the size of the top cells (see docs/mmr25.md, section 9)
+            self._add_air(min_thickness=self.dc.fv.z[-1] - self.dc.fv.z[0])
+        if self._plan25 is not None and self._k_range == self._survey_range25():
+            return
+
+        # current electrodes: the 2D solution depends on (x, z) only; y enters through dy
+        e = np.vstack((self.xs_u[:, :3], self.xs_u[:, 3:6]))
+        ok = np.all(np.isfinite(e), axis=1)
+        poles, inv = np.unique(e[ok][:, [0, 2]], axis=0, return_inverse=True)
+        ind = -np.ones((e.shape[0],), dtype=int)
+        ind[ok] = inv.ravel()
+        n_s = self.xs_u.shape[0]
+        ind_c = (ind[:n_s], ind[n_s:])
+        poles = np.c_[poles[:, 0], np.zeros((poles.shape[0],)), poles[:, 1]]
+
+        self._k_range = self._survey_range25()
+        self.k = select_k(self._k_range[1], self._k_range[2], self._k_range[0])
+        self._kq = KQuadrature(self.k)
+
+        # data combinations, in modelling order: dipole ns, measurement point nr -> ns * no + nr
+        no = self.xo_all.shape[0]
+        NS = np.repeat(np.arange(n_s), no)
+        NR = np.tile(np.arange(no), n_s)
+        terms = []
+        for sign, ic, col in ((1.0, ind_c[0], 1), (-1.0, ind_c[1], 4)):
+            p = ic[NS]
+            sel = p >= 0
+            dy = self.xo_all[NR[sel], 1] - self.xs_u[NS[sel], col]
+            terms.append({'rows': np.where(sel)[0], 'rec': NR[sel], 'pole': p[sel],
+                          'w': sign * self.cs_u[NS[sel]],
+                          'W_even': self._kq.weights(dy, 'even'), 'W_odd': self._kq.weights(dy, 'odd')})
+        self._plan25 = {'poles': poles, 'terms': terms, 'n_data': n_s * no}
+        self.Q = self._build_Q(self.xo_all)
+
+    def _survey_range25(self):
+        """(n_k, r_min, r_max) for the selection of the wavenumbers.
+
+        r_min is the smallest distance in the x-z plane between a current electrode and a measurement
+        point (at least half the smallest cell size), and r_max is 4 times the largest distance, in 3D,
+        between a current electrode and a measurement point, and at least 100 r_min.
+        """
+        e = np.vstack((self.xs_u[:, :3], self.xs_u[:, 3:6]))
+        e = e[np.all(np.isfinite(e), axis=1)]
+        e[:, :] = np.c_[e[:, 0], e[:, 1], self.dc.fv.process_surface_elec(e[:, [0, 2]].copy())[:, 1]]
+        xo = self.xo_all
+        dx = xo[:, None, 0] - e[None, :, 0]
+        dz = xo[:, None, 2] - e[None, :, 2]
+        dy = xo[:, None, 1] - e[None, :, 1]
+        h_min = min(self.dc.fv.hx.min(), self.dc.fv.hz.min())
+        r_min = max(np.sqrt(dx**2 + dz**2).min(), 0.5 * h_min)
+        r_max = max(4.0 * np.sqrt(dx**2 + dy**2 + dz**2).max(), 100.0 * r_min)
+        return (int(self.n_k), float(r_min), float(r_max))
+
+    def _dc_fields25(self, sigma, poles, keep_solvers=False):
+        """DC fields U_k of unit current electrodes (n_k x nc x n_poles), M_k of the DC grid, and the
+        solvers of each wavenumber (None unless keep_solvers)."""
+        fv = self.dc.fv
+        A, _ = fv.build_A(sigma)
+        n_p = poles.shape[0]
+        cs = np.ones((n_p,))
+        if self.dc.apply_bc:
+            # boundary correction of Pidlisecky et al. (2007) for each wavenumber, as in GridDC
+            if self.dc.local_sigma0:
+                sigma0 = self.dc._electrode_sigma(poles, sigma)
+            else:
+                sigma0 = gmean(sigma)
+            images = fv.surface_images
+            fv.surface_images = self.surface_images
+            try:
+                src, _ = fv.boundary_source(poles, sigma0, cs, correct_quadrature=False, k=self.k)
+            finally:
+                fv.surface_images = images
+            q = src.q
+        else:
+            p = fv.process_surface_elec(poles.copy())
+            q0 = (fv.linear_interp(p[:, 0], p[:, 1], p[:, 2]).T.toarray() /
+                  fv.volume_voxels()[:, None])
+            q = np.broadcast_to(q0, (self.k.size,) + q0.shape)
+
+        U = np.empty((self.k.size, fv.nc, n_p))
+        par = fv.get_solver_params()
+        solvers = [] if keep_solvers else None
+        for i, k in enumerate(self.k):
+            s = Solver(par, Solver25._L(A, sigma, k), verbose=(self.verbose > 1),
+                       comm=fv.comm, n_threads=fv.n_threads)
+            U[i] = s.solve(q[i]).reshape(fv.nc, n_p)
+            if keep_solvers:
+                solvers.append(s)
+        return U, fv.build_M_k(sigma), solvers
+
+    def _mmr_fields25(self, U, M_k, keep_solver):
+        """Transformed B (T) at the measurement points: 3 x n_k x n_obs x n_poles (Bx, By, Bz)."""
+        fv, fv_dc = self.fv, self.dc.fv
+        same = (self._solvers_k is not None and keep_solver and self._solvers_k[0].size == self.k.size and
+                np.allclose(self._solvers_k[0], self.k, rtol=1e-12, atol=0.0) and
+                self._solvers_k[1] == (fv.nx, fv.nz))
+        if not same:
+            par = fv.get_solver_params()
+            solvers = [Solver(par, fv.build_L_k(k) / MU0, verbose=(self.verbose > 1),
+                              comm=fv.comm, n_threads=fv.n_threads) for k in self.k]
+            self._solvers_k = (self.k.copy(), (fv.nx, fv.nz), solvers)
+
+        # faces of the DC grid (earth) in the grid with air: same indices, components shifted
+        ind_earth = np.r_[np.arange(fv_dc.nfx), fv.nfx + np.arange(fv_dc.nc),
+                          fv.nfx + fv.nc + np.arange(fv_dc.nfz)]
+        Qx, Qy, Qz = self.Q
+        n_p = U.shape[2]
+        Bk = np.empty((3, self.k.size, self.xo_all.shape[0], n_p))
+        for i, k in enumerate(self.k):
+            q = np.zeros((fv.nf_k, n_p))
+            q[ind_earth, :] = -(M_k @ (fv_dc.build_G_k(k) @ U[i]))   # transformed current density
+            a = self._solvers_k[2][i].solve(q).reshape(fv.nf_k, n_p)
+            B = fv.build_C_k(k, to_faces=False) @ a
+            Bk[0, i] = Qx @ B[:fv.nex]
+            Bk[1, i] = Qy @ B[fv.nex:fv.nex + fv.ney]
+            Bk[2, i] = Qz @ B[fv.nex + fv.ney:]
+        return Bk
+
+    def _transform25(self, Bk):
+        """Inverse transform and sum over the electrodes of the dipoles: n_data x 3 (modelling order)."""
+        data = np.zeros((self._plan25['n_data'], 3))
+        for t in self._plan25['terms']:
+            for c, W in ((0, t['W_odd']), (1, t['W_even']), (2, t['W_odd'])):
+                vals = np.einsum('dk,kd->d', W, Bk[c][:, t['rec'], t['pole']])
+                data[t['rows'], c] += t['w'] * vals
+        return data
+
+    def _sens25(self, sigma, U, M_k, dc_solvers):
+        """Sensitivity d(data)/d(ln sigma) in 2.5D, n_roi x (3 n_data), columns ordered as data_to_obs.
+
+        For one wavenumber and a current electrode (unit current), with R = Q C_f the interpolation of
+        B at the measurement points, J = -M G U the current density and U = L_dc^-1 q (q does not depend
+        on sigma, see Grid25FV.boundary_source):
+
+            d(R A)/d(ln sigma) = -Jm^T [ G U * Vf * (X + G L_dc^-1 D M X) ]
+
+        where X = (L/mu0)^-1 Vf^-1 R^T on the earth faces (L^-T = Vf L^-1 Vf^-1, D^T = -Vf G Vc^-1,
+        L_dc^-T = Vc L_dc^-1 Vc^-1, see docs/mmr25.md), and Jm = d(M)/d(ln sigma): m^2 w / sigma on the x
+        and z faces (harmonic mean with weights w, build_G_faces), sigma for the y component.  X and the
+        DC adjoint fields depend only on the measurement points: 2 solves per wavenumber for all the
+        data.  The sum over wavenumbers and electrodes uses the weights of _transform25.
+        """
+        fv, fv_dc = self.fv, self.dc.fv
+        nfx, nc = fv_dc.nfx, fv_dc.nc
+        ind_earth = np.r_[np.arange(nfx), fv.nfx + np.arange(nc), fv.nfx + fv.nc + np.arange(fv_dc.nfz)]
+        ind_xz = np.r_[np.arange(nfx), nfx + nc + np.arange(fv_dc.nfz)]
+        Gf = fv_dc.build_G_faces()
+        m2_xz = M_k.diagonal()[ind_xz]**2
+        dm = 1.0 / sigma
+        vf = fv_dc.volume_faces_k()
+        vf_inv_air = 1.0 / fv.volume_faces_k()
+        Qx, Qy, Qz = self.Q
+        n_rec = Qx.shape[0]
+        n_p = U.shape[2]
+        plan = self._plan25
+        # columns of the terms of each electrode: (rows, receivers, weights) per component
+        by_pole = [[] for _ in range(n_p)]
+        for t in plan['terms']:
+            for p in np.unique(t['pole']):
+                sel = t['pole'] == p
+                by_pole[p].append((t['rows'][sel], t['rec'][sel], t['w'][sel], t['W_odd'][sel], t['W_even'][sel]))
+
+        sens = np.zeros((nc, 3 * plan['n_data']))
+        nex, ney = fv.nex, fv.ney
+        for i, k in enumerate(self.k):
+            Cf = fv.build_C_k(k, to_faces=False)
+            R = sp.vstack((Qx @ Cf[:nex], Qy @ Cf[nex:nex + ney], Qz @ Cf[nex + ney:]))   # 3 n_rec x nf_k
+            rhs = R.T.toarray() * vf_inv_air[:, None]
+            X = self._solvers_k[2][i].solve(rhs).reshape(fv.nf_k, 3 * n_rec)[ind_earth]
+            G_k = fv_dc.build_G_k(k)
+            Phi = dc_solvers[i].solve(fv_dc.build_D_k(k) @ (M_k @ X)).reshape(nc, 3 * n_rec)
+            T = (X + G_k @ Phi) * vf[:, None]
+            GU = G_k @ U[i]
+            for p in range(n_p):
+                V = GU[:, p][:, None] * T
+                g = -(dm[:, None] * (Gf.T @ (m2_xz[:, None] * V[ind_xz])) + sigma[:, None] * V[nfx:nfx + nc])
+                for rows, rec, w, W_odd, W_even in by_pole[p]:
+                    for c, W in ((0, W_odd), (1, W_even), (2, W_odd)):
+                        sens[:, 3 * rows + c] += g[:, c * n_rec + rec] * (w * W[:, i])
+
+        # order of data_to_obs (per dipole: Bx, By, Bz of its measurement points)
+        cols = self.data_to_obs(np.arange(3 * plan['n_data']).reshape(-1, 3), False).ravel()
+        return self._units_scaling * sens[np.ix_(self.dc.ind_roi, cols)]
+
     def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None, WS=None):
         return self.dc.calc_WtW(wt, par, m_active, WGx, WGy, WGz, WS)
 
@@ -597,9 +871,11 @@ class GridMMR:
             basename for output files (1 per dipole).
         """
         x, y, z = self.dc.get_roi_nodes()
-        # grille temporaire pour sauvegarder sens
-        g2 = GridFV((x, y, z))
-        xo = self.xo[self.ind_s, :]
+        # grille temporaire pour sauvegarder sens (2.5D: grid one cell thick along y)
+        g2 = Grid25FV((x, z)) if self.fv.dim == 2.5 else GridFV((x, y, z))
+        # measurement point of each modelled datum (modelling order, see check_acquisition); valid for
+        # pairs of dipoles and points as well as for all combinations
+        xo = np.tile(self.xo_all, (self.xs_u.shape[0], 1))[self.mask]
 
         # make 1 file for each injection dipole
         for ns in range(self.xs_u.shape[0]):
@@ -626,10 +902,18 @@ class GridMMR:
             filename = basename+'_mmr_sens_dip'+str(ns+1)
             g2.toVTK(sens_data, filename, metadata=metadata)
 
-    def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
-        # add air layers
-        dz_air = calc_padding(self.dc.fv.hz[-1], n_cells=n_crois_cells, factor=factor)
-        dz_air = np.r_[self.fv.hz[-1]+np.zeros((n_const_cells,)), dz_air]
+    def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3, min_thickness=0.0):
+        """Add air layers above the DC grid.
+
+        `n_const_cells` cells of the size of the top cell, then `n_crois_cells` cells growing by
+        `factor`, with more growing cells if needed to reach a total thickness of `min_thickness`.
+        """
+        while True:
+            dz_air = calc_padding(self.dc.fv.hz[-1], n_cells=n_crois_cells, factor=factor)
+            dz_air = np.r_[self.dc.fv.hz[-1]+np.zeros((n_const_cells,)), dz_air]
+            if dz_air.sum() >= min_thickness:
+                break
+            n_crois_cells += 1
         z_air = np.cumsum(dz_air)
         self.fv.z = np.r_[self.dc.fv.z, self.dc.fv.z[-1] + z_air]
 
@@ -833,8 +1117,18 @@ class VerticalDyke:
 
         Notes
         -----
-        Solution from pages 1187-1188 and thesis of Boggs
+        Solution from pages 1187-1188 and thesis of Boggs.  The expressions are for an electrode on
+        the left of the dyke or within it; an electrode on the right is handled by reflection about
+        the centre of the dyke (rho1 and rho3 swapped; Bz, a component of a pseudovector, changes
+        sign).
         """
+        xo = np.asarray(xo, dtype=float)
+        if xs - self.xd > self.d:
+            xm = 2.0 * self.xd + self.d        # x -> xm - x maps the dyke onto itself
+            mirror = VerticalDyke(self.rho3, self.rho2, self.rho1, self.d, self.xd, self.n_max)
+            xo_m = np.c_[xm - xo[:, 0], xo[:, 1:]]
+            return -mirror.fwd_mod(xo_m, xm - xs, cs)
+
         b = xs - self.xd         # electrode location relative to dyke
         x = xo[:, 0] - self.xd   # x coord of observation pt relative to dyke
         y = xo[:, 1]             # y coord of observation pt
@@ -908,13 +1202,14 @@ class VerticalDyke:
                 self.k12 * -tmp3 / np.sqrt(y2 + tmp3 * tmp3)
             )
 
-            # TODO double check next equation
+            # Source plus the images transmitted through the dyke, at b - 2nd.  Coefficients obtained
+            # from continuity of Bz at x = d with Bz2 and Bz3 -> 0 for x -> inf (the previous
+            # expression, from the thesis of Boggs, did not satisfy either); checked against the 2.5D
+            # finite-volume solution (tests/test_mmr25.py).
             Bz3 = tmp0 * (
-                self.k13 - (1. - self.k32) * self.k12 * (
-                    np.sum((self.k12 * self.k32) ** self.n * tmp8 / np.sqrt(y2t + tmp8 * tmp8), axis=1) #+
-#                    self.k32 * np.sum((self.k12 * self.k32) ** self.n * tmp7 / np.sqrt(y2t + tmp7 * tmp7), axis=1)
-                )
-                + self.k32 * -tmp6 / np.sqrt(y2 + tmp6 * tmp6)     # sign of tmp6 changed from thesis of Boggs
+                self.k13 - tmp3 / np.sqrt(y2 + tmp3 * tmp3)
+                - (1. + self.k12) * (1. - self.k32) *
+                np.sum((self.k12 * self.k32) ** self.n * tmp8 / np.sqrt(y2t + tmp8 * tmp8), axis=1)
             )
 
         Bz1[np.logical_not(ind1)] = 0.0
