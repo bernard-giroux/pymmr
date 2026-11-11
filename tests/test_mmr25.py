@@ -167,6 +167,76 @@ class TestVerticalDykeAnalytic(unittest.TestCase):
             np.testing.assert_allclose(vd.fwd_mod(xo, xs), -vm.fwd_mod(xm, 30.0 - xs), rtol=1e-10, atol=1e-14)
 
 
+def sens_model():
+    """Small heterogeneous model for the sensitivity tests (h = 10 m)."""
+    h = 10.0
+    pad = np.cumsum(calc_padding(h, 10))
+    x = np.arange(-150.0, 150.0 + h / 2, h)
+    x = np.r_[x[0] - pad[::-1], x, x[-1] + pad]
+    z = np.arange(-100.0, h / 2, h)
+    z = np.r_[z[0] - pad[::-1], z]
+    xc, zc = np.meshgrid(0.5 * (x[1:] + x[:-1]), 0.5 * (z[1:] + z[:-1]))
+    sig = 0.01 * np.ones(xc.shape)
+    sig[(xc > 0) & (xc < 30)] = 0.1
+    sig[(xc > -60) & (xc < -20) & (zc < -20) & (zc > -60)] = 0.002
+    sig *= np.exp(0.2 * np.random.default_rng(0).standard_normal(sig.shape))
+    g = GridMMR((x, z))
+    g.set_solver(SOLVER)
+    cells = [np.argmin(np.abs(xc - 5) + np.abs(zc + 15)), np.argmin(np.abs(xc + 45) + np.abs(zc + 35)),
+             np.argmin(np.abs(xc + 300) + np.abs(zc + 100))]
+    return g, sig.ravel(), cells
+
+
+class TestSensitivity(unittest.TestCase):
+    """d(data)/d(ln sigma) vs central differences."""
+
+    EPS = 1e-4
+
+    def fd(self, g, sigma, cell, data):
+        sp_, sm_ = sigma.copy(), sigma.copy()
+        sp_[cell] *= np.exp(self.EPS)
+        sm_[cell] *= np.exp(-self.EPS)
+        return (data(sp_) - data(sm_)) / (2 * self.EPS)
+
+    def test_fd(self):
+        # all combinations of a dipole across strike and a pole, receivers on and off the line
+        g, sigma, cells = sens_model()
+        c1c2 = np.array([[-80.0, 5.0, 0.0, 70.0, -10.0, 0.0], [-40.0, 0.0, 0.0, np.inf, np.inf, np.inf]])
+        xo = np.array([[a, b, 0.0] for b in (0.0, 15.0, -40.0) for a in np.arange(-50.0, 51.0, 25.0)])
+        g.set_survey_mmr(c1c2, xo, 1.0)
+        d, S = g.fwd_mod(sigma, calc_sens=True)
+        self.assertEqual(S.shape, (g.dc.fv.nc, d.size))
+
+        def data(s):   # data in the order of the columns of S
+            mod = np.empty((g.ind_back.size, 3))
+            mod[g.ind_back] = g.fwd_mod(s, keep_solver=True)
+            return g.data_to_obs(mod, False).ravel()
+
+        for c in cells:
+            fd = self.fd(g, sigma, c, data)
+            np.testing.assert_allclose(S[c], fd, rtol=0, atol=1e-6 * np.abs(fd).max())
+
+    def test_fd_inversion(self):
+        # inversion mode, pairs of dipoles and measurement points (not all combinations), plus ERT data
+        g, sigma, cells = sens_model()
+        g.in_inv = True
+        xs = np.array([[-80.0, 0.0, 0.0, 70.0, 0.0, 0.0]] * 3 + [[-40.0, 10.0, 0.0, 40.0, 10.0, 0.0]] * 2)
+        xo = np.array([[-20.0, 0.0, 0.0], [10.0, 20.0, 0.0], [30.0, -30.0, 0.0], [-20.0, 0.0, 0.0], [0.0, 30.0, 0.0]])
+        g.set_survey_mmr(xs, xo, 2.0)
+        c1c2 = np.array([[-60.0, 0.0, 0.0, -50.0, 0.0, 0.0]] * 2)
+        p1p2 = np.array([[-40.0, 0.0, 0.0, -30.0, 0.0, 0.0], [-20.0, 0.0, 0.0, -10.0, 0.0, 0.0]])
+        g.set_survey_ert(c1c2, p1p2, 1.0)
+        d, S = g.fwd_mod(sigma, calc_sens=True)
+        self.assertEqual(d.shape, (3 * xs.shape[0] + c1c2.shape[0], 1))
+        self.assertEqual(S.shape, (g.dc.fv.nc, d.size))
+        for c in cells[:2]:
+            fd = self.fd(g, sigma, c, lambda s: g.fwd_mod(s, keep_solver=True).ravel())
+            n = 3 * xs.shape[0]
+            np.testing.assert_allclose(S[c, :n], fd[:n], rtol=0, atol=1e-6 * np.abs(fd[:n]).max())
+            # ERT columns: GridDC 2.5D sensitivity
+            np.testing.assert_allclose(S[c, n:], fd[n:], rtol=0, atol=1e-6 * np.abs(fd[n:]).max())
+
+
 class TestPlumbing(unittest.TestCase):
 
     def test_grid(self):
@@ -209,9 +279,6 @@ class TestPlumbing(unittest.TestCase):
         g.set_survey_mmr(C1C2, receivers(), 1.0, pod_e=(1.0, 0.0, 0.0))
         with self.assertRaises(NotImplementedError):
             g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))
-        g.set_survey_mmr(C1C2, receivers(), 1.0)
-        with self.assertRaises(NotImplementedError):
-            g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)), calc_sens=True)
 
 
 if __name__ == '__main__':

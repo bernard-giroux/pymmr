@@ -448,15 +448,15 @@ class GridMMR:
             if self.fv.solver_A is not None:
                 self.fv.solver_A.print_info()
 
-        if calc_sens and not isinstance(self.dc.fv, GridFV):
+        if calc_sens and not isinstance(self.dc.fv, (GridFV, Grid25FV)):
             # tetrahedral meshes lack the face operators used for the sensitivity
-            raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
+            raise NotImplementedError('Sensitivity computation implemented only for rectilinear grids')
 
         if not self.acq_checked:
             self.check_acquisition()
 
         if self.fv.dim == 2.5:
-            return self._fwd_mod25(sigma, keep_solver)
+            return self._fwd_mod25(sigma, keep_solver, calc_sens)
 
         if self.in_inv and self.dc.c1c2 is not None:
             # joint inversion
@@ -610,15 +610,15 @@ class GridMMR:
     # 2.5D modelling (see docs/mmr25.md)
     # --------------------------------------------------------------------------------------------
 
-    def _fwd_mod25(self, sigma, keep_solver):
-        """Forward modelling in 2.5D, returns data as fwd_mod."""
+    def _fwd_mod25(self, sigma, keep_solver, calc_sens=False):
+        """Forward modelling in 2.5D, returns data (and sensitivity) as fwd_mod."""
         if self.pod_p1p2 is not None:
             raise NotImplementedError('Electric dipoles at measurement points (pod_e) not available in 2.5D')
         sigma = np.asarray(sigma, dtype=float).ravel() * np.ones((self.dc.fv.nc,))
 
         if self.in_inv and self.dc.c1c2 is not None:
             # joint inversion: DC data computed with the wavenumbers of the DC code
-            res_dc = self.dc.fwd_mod(sigma)
+            res_dc = self.dc.fwd_mod(sigma, calc_sens=calc_sens)
 
         verbose = self.verbose and self.fv.comm.rank == 0
         self._setup25()
@@ -627,22 +627,34 @@ class GridMMR:
             print('  {0:d} current electrodes, {1:d} wavenumbers in [{2:g}, {3:g}] 1/m'.format(
                 poles.shape[0], self.k.size, self.k[0], self.k[-1]))
             print('  Computing DC fields ... ', end='', flush=True)
-        U, M_k = self._dc_fields25(sigma, poles)
+        U, M_k, dc_solvers = self._dc_fields25(sigma, poles, keep_solvers=calc_sens)
         if verbose:
             print('done.\n  Solving MMR systems ... ', end='', flush=True)
         Bk = self._mmr_fields25(U, M_k, keep_solver)
         if verbose:
             print('done.')
         data = self._units_scaling * self._transform25(Bk)
+        if calc_sens:
+            if verbose:
+                print('  Computing sensitivity ... ', end='', flush=True)
+            sens = self._sens25(sigma, U, M_k, dc_solvers)
+            if verbose:
+                print('done.')
 
         if not self.in_inv:
             data = data[self.ind_back, :]
         else:
             data = self.data_to_obs(data, False)
             if self.dc.c1c2 is not None:
-                data = np.r_[data, res_dc.reshape(-1, 1)]
+                if calc_sens:
+                    data = np.r_[data, res_dc[0].reshape(-1, 1)]
+                    sens = np.c_[sens, res_dc[1]]
+                else:
+                    data = np.r_[data, res_dc.reshape(-1, 1)]
         if verbose:
             print('End of modelling.')
+        if calc_sens:
+            return data, sens
         return data
 
     def _setup25(self):
@@ -702,8 +714,9 @@ class GridMMR:
         r_max = max(4.0 * np.sqrt(dx**2 + dy**2 + dz**2).max(), 100.0 * r_min)
         return (int(self.n_k), float(r_min), float(r_max))
 
-    def _dc_fields25(self, sigma, poles):
-        """DC fields U_k of unit current electrodes (n_k x nc x n_poles), and M_k of the DC grid."""
+    def _dc_fields25(self, sigma, poles, keep_solvers=False):
+        """DC fields U_k of unit current electrodes (n_k x nc x n_poles), M_k of the DC grid, and the
+        solvers of each wavenumber (None unless keep_solvers)."""
         fv = self.dc.fv
         A, _ = fv.build_A(sigma)
         n_p = poles.shape[0]
@@ -729,11 +742,14 @@ class GridMMR:
 
         U = np.empty((self.k.size, fv.nc, n_p))
         par = fv.get_solver_params()
+        solvers = [] if keep_solvers else None
         for i, k in enumerate(self.k):
             s = Solver(par, Solver25._L(A, sigma, k), verbose=(self.verbose > 1),
                        comm=fv.comm, n_threads=fv.n_threads)
             U[i] = s.solve(q[i]).reshape(fv.nc, n_p)
-        return U, fv.build_M_k(sigma)
+            if keep_solvers:
+                solvers.append(s)
+        return U, fv.build_M_k(sigma), solvers
 
     def _mmr_fields25(self, U, M_k, keep_solver):
         """Transformed B (T) at the measurement points: 3 x n_k x n_obs x n_poles (Bx, By, Bz)."""
@@ -771,6 +787,63 @@ class GridMMR:
                 vals = np.einsum('dk,kd->d', W, Bk[c][:, t['rec'], t['pole']])
                 data[t['rows'], c] += t['w'] * vals
         return data
+
+    def _sens25(self, sigma, U, M_k, dc_solvers):
+        """Sensitivity d(data)/d(ln sigma) in 2.5D, n_roi x (3 n_data), columns ordered as data_to_obs.
+
+        For one wavenumber and a current electrode (unit current), with R = Q C_f the interpolation of
+        B at the measurement points, J = -M G U the current density and U = L_dc^-1 q (q does not depend
+        on sigma, see Grid25FV.boundary_source):
+
+            d(R A)/d(ln sigma) = -Jm^T [ G U * Vf * (X + G L_dc^-1 D M X) ]
+
+        where X = (L/mu0)^-1 Vf^-1 R^T on the earth faces (L^-T = Vf L^-1 Vf^-1, D^T = -Vf G Vc^-1,
+        L_dc^-T = Vc L_dc^-1 Vc^-1, see docs/mmr25.md), and Jm = d(M)/d(ln sigma): m^2 w / sigma on the x
+        and z faces (harmonic mean with weights w, build_G_faces), sigma for the y component.  X and the
+        DC adjoint fields depend only on the measurement points: 2 solves per wavenumber for all the
+        data.  The sum over wavenumbers and electrodes uses the weights of _transform25.
+        """
+        fv, fv_dc = self.fv, self.dc.fv
+        nfx, nc = fv_dc.nfx, fv_dc.nc
+        ind_earth = np.r_[np.arange(nfx), fv.nfx + np.arange(nc), fv.nfx + fv.nc + np.arange(fv_dc.nfz)]
+        ind_xz = np.r_[np.arange(nfx), nfx + nc + np.arange(fv_dc.nfz)]
+        Gf = fv_dc.build_G_faces()
+        m2_xz = M_k.diagonal()[ind_xz]**2
+        dm = 1.0 / sigma
+        vf = fv_dc.volume_faces_k()
+        vf_inv_air = 1.0 / fv.volume_faces_k()
+        Qx, Qy, Qz = self.Q
+        n_rec = Qx.shape[0]
+        n_p = U.shape[2]
+        plan = self._plan25
+        # columns of the terms of each electrode: (rows, receivers, weights) per component
+        by_pole = [[] for _ in range(n_p)]
+        for t in plan['terms']:
+            for p in np.unique(t['pole']):
+                sel = t['pole'] == p
+                by_pole[p].append((t['rows'][sel], t['rec'][sel], t['w'][sel], t['W_odd'][sel], t['W_even'][sel]))
+
+        sens = np.zeros((nc, 3 * plan['n_data']))
+        nex, ney = fv.nex, fv.ney
+        for i, k in enumerate(self.k):
+            Cf = fv.build_C_k(k, to_faces=False)
+            R = sp.vstack((Qx @ Cf[:nex], Qy @ Cf[nex:nex + ney], Qz @ Cf[nex + ney:]))   # 3 n_rec x nf_k
+            rhs = R.T.toarray() * vf_inv_air[:, None]
+            X = self._solvers_k[2][i].solve(rhs).reshape(fv.nf_k, 3 * n_rec)[ind_earth]
+            G_k = fv_dc.build_G_k(k)
+            Phi = dc_solvers[i].solve(fv_dc.build_D_k(k) @ (M_k @ X)).reshape(nc, 3 * n_rec)
+            T = (X + G_k @ Phi) * vf[:, None]
+            GU = G_k @ U[i]
+            for p in range(n_p):
+                V = GU[:, p][:, None] * T
+                g = -(dm[:, None] * (Gf.T @ (m2_xz[:, None] * V[ind_xz])) + sigma[:, None] * V[nfx:nfx + nc])
+                for rows, rec, w, W_odd, W_even in by_pole[p]:
+                    for c, W in ((0, W_odd), (1, W_even), (2, W_odd)):
+                        sens[:, 3 * rows + c] += g[:, c * n_rec + rec] * (w * W[:, i])
+
+        # order of data_to_obs (per dipole: Bx, By, Bz of its measurement points)
+        cols = self.data_to_obs(np.arange(3 * plan['n_data']).reshape(-1, 3), False).ravel()
+        return self._units_scaling * sens[np.ix_(self.dc.ind_roi, cols)]
 
     def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None, WS=None):
         return self.dc.calc_WtW(wt, par, m_active, WGx, WGy, WGz, WS)

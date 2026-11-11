@@ -135,6 +135,38 @@ about 1 s.
 
 These are the same relations as used in 3D (`GridMMR._adj`) and in `GridDC._sens25`.
 
+### Sensitivity (`GridMMR._sens25`, `fwd_mod(sigma, calc_sens=True)`)
+
+For one wavenumber and one current electrode of unit current, the datum is R A with R = Q C_f
+(interpolation of one component of B at one measurement point), (1/μ0) L A = P J, J = −M G U and
+L_dc U = q. The source q does not depend on σ (`Grid25FV.boundary_source`), so
+
+    dJ = −[I + M G L_dc⁻¹ D] dM (G U)
+
+and, with the relations above,
+
+    ∂(R A)/∂ln σ = −Jmᵀ [ G U ⊙ Vf ⊙ (X + G L_dc⁻¹ D M X) ],    X = P ᵀ (L/μ0)⁻¹ Vf⁻¹ Rᵀ
+
+where Jm = ∂M/∂ln σ: m² w/σ on the x and z faces (harmonic mean with weights w,
+`build_G_faces`) and σ for the y component. X and L_dc⁻¹ D M X depend only on the measurement
+points. For each wavenumber, two solves with 3 n_rec right-hand sides (one with the MMR
+factorization, one with the DC factorization kept from the forward problem) serve all the
+electrodes. The sum over wavenumbers and over the electrodes of the dipoles uses the weights
+W(Δy) of the forward problem, so the result is the exact derivative of the discrete data.
+
+The rows are the cells of `dc.ind_roi`. The columns follow `data_to_obs`: for each dipole, Bx, By
+and Bz of its measurement points, as in 3D. In a joint inversion the ERT columns of
+`GridDC._sens25` follow.
+
+Checks (`tests/test_mmr25.py`, `TestSensitivity`): against central differences in ln σ
+(ε = 1e-4), on a heterogeneous model with a dipole across strike and a pole, receivers on and off
+the line. The relative difference is 1e-8 to 1e-10 for all three components, also in inversion
+mode with paired dipoles and receivers and ERT data.
+
+Cost, h = 5 m grid (4000 cells), 36 receivers, n_k = 30, MUMPS: the forward problem takes 1 s
+when the MMR factorizations are kept, and 5.7 s (1 dipole) or 6.6 s (4 dipoles) with the
+sensitivity.
+
 ## 8. Forward modelling (`GridMMR` with a 2D grid)
 
 `GridMMR((x, z))` builds the 2.5D model. Current electrodes and measurement points are given in
@@ -163,7 +195,7 @@ These are the same relations as used in 3D (`GridMMR._adj`) and in `GridDC._sens
    are the sum over its electrodes, each weighted by ±I.
 
 The DC data of a joint inversion are computed by `GridDC` with its own wavenumbers. Not yet
-available in 2.5D: sensitivity (phase 5) and electric dipoles at the receivers (`pod_e`).
+available in 2.5D: electric dipoles at the receivers (`pod_e`).
 
 ### Half-space test (`tests/test_mmr25.py`)
 
