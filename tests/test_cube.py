@@ -14,7 +14,7 @@ sys.path.append("/Users/giroux/GitHub/pymumps")
 from pymmr.finite_volume import calc_padding
 from pymmr.mmr import GridMMR, normal_field
 
-os.chdir('/Users/giroux/GitHub/pymmr/tests')
+# os.chdir('/Users/giroux/GitHub/pymmr/tests')
 
 # %%
 
@@ -34,8 +34,8 @@ c1c2 = np.array(
     [[-600.0, 0.0, 0.0, 600.0, 0.0, 0.0]]
 )
 
-nx = 28
-ny = 26
+nx = 31 #28
+ny = 31 #26
 
 xo = np.linspace(-400, 400, nx)
 yo = np.linspace(-300, 300, ny)
