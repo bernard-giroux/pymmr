@@ -345,6 +345,10 @@ class TestPlumbing(unittest.TestCase):
         g.set_survey_mmr(C1C2, receivers(), 1.0, pod_e=(1.0, 0.0, 0.0))
         with self.assertRaises(NotImplementedError):
             g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))
+        # new survey without electric dipoles: the previous ones must not be kept
+        g.set_survey_mmr(C1C2, receivers(), 1.0)
+        d = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))
+        self.assertEqual(d.shape, (receivers().shape[0], 3))
 
 
 if __name__ == '__main__':

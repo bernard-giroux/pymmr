@@ -319,6 +319,9 @@ class GridMMR:
             self.nobs_xs = self.xo.shape[0] + np.zeros((self.xs.shape[0],), dtype=int)
         self.nobs_mmr = np.sum(self.nobs_xs)
 
+        # electric dipoles at the measurement points: derived from the current survey only
+        self.pod_p1p2 = None
+        self.Q_pod_e = None
         if self.pod_e is not None:
             pod_e_dx, pod_e_dy, pod_e_dz = self.pod_e
             p1 = self.xo_all.copy()
