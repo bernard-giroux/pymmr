@@ -97,8 +97,35 @@ A dipole is the difference of its two poles, each with its own Δy. The DC waven
 
     B(Δy) ≈ Σ_i W_i(Δy) B̃(k_i)
 
-(phase 2). Since W is explicit, the discrete forward map is linear in the B̃(k_i), and its adjoint
+Since W is explicit, the discrete forward map is linear in the B̃(k_i), and its adjoint
 for the sensitivity is exact. The DC fields U_k must be computed at the same wavenumbers.
+
+Implementation (`pymmr/kquad.py`):
+
+- `select_k(r_min, r_max, n_k=30)`: log-spaced wavenumbers from 0.05 / r_max to 15 / r_min, where
+  r_min is the smallest distance in the x-z plane that must be resolved and r_max the largest
+  distance (including Δy).
+- `KQuadrature(k).weights(dy, parity)`: the samples F(k_i) are interpolated by a cubic spline in
+  ln k (cardinal splines, so linear in the samples). The integral of the spline times cos(kΔy) or
+  sin(kΔy) is computed by composite Gauss–Legendre, with at most a quarter of a period per
+  sub-interval, so any Δy is handled exactly for the interpolant. Tails:
+  - k < k_1: even fields take F = a + b ln k through the first two samples (the log singularity
+    of fields decaying as 1/r), integrated analytically with Si. Odd fields hold F = F_1, a small
+    contribution since sin(kΔy) ≈ kΔy there.
+  - k > k_n: F = F_n exp(−(k − k_n)·decay) with decay = 15 / k_n, integrated analytically. This
+    avoids the oscillating error ~F_n/Δy that a hard truncation causes.
+
+Accuracy on analytic pairs (1/r, 1/r³, ρ/(ρ²+y²) even; y/r³, y/(ρ²+y²) odd), with ρ from 0.5 to
+100 m, |Δy| ≤ 200 m and k from `select_k(0.5, 300)`. The largest error is relative to the field's
+size at each ρ:
+
+| n_k | 20     | 30     | 40     |
+|-----|--------|--------|--------|
+| max | 1.2e-2 | 1.2e-3 | 2.2e-4 |
+
+With 30 wavenumbers, the pointwise relative error is below 1% wherever the field is at least 1% of
+its size at that ρ (`tests/test_kquad.py`). Weights are cached per |Δy|; 500 distinct offsets take
+about 1 s.
 
 ## 7. Adjoint relations (for the sensitivity)
 
