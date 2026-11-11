@@ -12,7 +12,7 @@ from pymmr.finite_volume import calc_padding, GridFV
 from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, DataMMR
 
-os.chdir('/Users/giroux/GitHub/pymmr/examples')
+# os.chdir('/Users/giroux/GitHub/pymmr/examples')
 
 # %%
 
