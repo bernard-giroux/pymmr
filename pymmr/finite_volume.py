@@ -12,9 +12,12 @@ x : easting
 y : northing
 z : elevation
 
-This coordinate system (elevation -> z positive upward) has implications on the
-definition of the sign of current source in DC resistivity modeling, which is
-opposite of the case where the z axis is depth (positive downward).
+Sign convention: physical.  A current +I injected at the first electrode of a
+dipole (source) produces a positive potential around it, and current flows
+down into the ground beneath it.  With z positive upward, this current is along
+-z below the source, so the azimuthal magnetic field around it is negative
+(right-hand rule).  The potential, being a scalar, does not depend on the
+orientation of the z axis; only vector components (J, B) do.
 
 References
 ----------
@@ -164,6 +167,14 @@ def _get_umf_family(A):
     return family, A_new
 
 
+def _canonical_csr(A):
+    """Return a copy of A in canonical CSR format (sorted indices, duplicates summed)."""
+    A = sp.csr_array(A, copy=True)
+    A.sum_duplicates()
+    A.sort_indices()
+    return A
+
+
 def tetra_coord(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray):
     # Almost the same as Hugues' function,
     # except it does not involve the homogeneous coordinates.
@@ -285,6 +296,13 @@ class BaseFV:
             self.solver_A.A = val
         else:
             raise RuntimeError("Solver not defined, cannot set A")
+
+    def set_system(self, A, keep_solver=True, verbose=False):
+        """Instantiate the solver for matrix A, or update it if it exists and keep_solver is True."""
+        if self.solver_A is None or keep_solver is False:
+            self.solver_A = Solver(self.get_solver_params(), A, verbose=verbose)
+        else:
+            self.A = A
 
     def set_solver(self, name, atol=1e-9, rtol=1e-5, max_it=1000, precon='0', do_perm=False):
         """Define parameters of solver to be used during forward modelling.
@@ -469,6 +487,7 @@ class GridFV(BaseFV):
         self.y = y
         self.z = z
         self.dim = 3
+        self.surface_images = True   # see compute_u_homog
 
     def ind(self, i, j, k, component=None):
         """
@@ -704,6 +723,26 @@ class GridFV(BaseFV):
         """
         return np.kron(self.hz, np.kron(self.hy, self.hx))
 
+    def volume_faces(self):
+        """Returns the dual volume associated with the (interior) faces of the grid.
+
+        Returns
+        -------
+        ndarray
+            face area times distance between the centres of the two adjacent voxels,
+            ordered as the faces (x, then y, then z).
+
+        Notes
+        -----
+        With Vc = volume_voxels() and Vf = volume_faces(), D = -Vc^-1 G^T Vf, so that
+        diag(Vc) @ A (A = -D M G) and diag(Vf) @ (C_e C_f - G D) are symmetric.
+        This is used to apply A^-T with the factorization of A in the adjoint computations.
+        """
+        vx = np.kron(self.hz, np.kron(self.hy, self.dx))
+        vy = np.kron(self.hz, np.kron(self.dy, self.hx))
+        vz = np.kron(self.dz, np.kron(self.hy, self.hx))
+        return np.r_[vx, vy, vz]
+
     def centre_voxels(self):
         """Returns coordinates at the centres of voxels.
 
@@ -850,7 +889,7 @@ class GridFV(BaseFV):
             y = np.array([y])
             z = np.array([z])
 
-        Q = sp.lil_matrix((len(x), nc))
+        Q = sp.lil_array((len(x), nc))
         for i in range(len(x)):
 
             if np.any(np.array([x[i], y[i], z[i]]) == np.inf):
@@ -919,7 +958,7 @@ class GridFV(BaseFV):
         """
         # Build LHS matrix
         if np.isscalar(sigma) is True:
-            M = sigma * sp.eye(self.nf, self.nf)
+            M = sigma * sp.eye_array(self.nf, self.nf)
         else:
             M = self.build_M(sigma)
         A = -self.D @ M @ self.G
@@ -955,7 +994,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.ny * self.nz,))
-        Dx = sp.coo_matrix((s, (ii, jj)))
+        Dx = sp.coo_array((s, (ii, jj)))
 
         # Dy
 
@@ -973,7 +1012,7 @@ class GridFV(BaseFV):
             (np.kron(1.0 / self.hy[:-1], np.ones((self.nx,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx,))))
         )
         s = np.tile(s, (self.nz,))
-        Dy = sp.coo_matrix((s, (ii, jj)))
+        Dy = sp.coo_array((s, (ii, jj)))
 
         # Dz
 
@@ -986,7 +1025,7 @@ class GridFV(BaseFV):
                 np.kron(-1.0 / self.hz[1:], np.ones((self.nx * self.ny,))),
             )
         )
-        Dz = sp.coo_matrix((s, (i, j)))
+        Dz = sp.coo_array((s, (i, j)))
 
         # assemblage
 
@@ -1074,7 +1113,7 @@ class GridFV(BaseFV):
 
         # assemblage
 
-        return sp.coo_matrix((np.hstack((Mx, My, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
+        return sp.coo_array((np.hstack((Mx, My, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
 
     def build_G(self, v=None):
         """Construction of gradient matrix.
@@ -1112,7 +1151,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.ny * self.nz,))
-        Gx = sp.coo_matrix((s, (ii, jj)))
+        Gx = sp.coo_array((s, (ii, jj)))
 
         # Gy
 
@@ -1128,7 +1167,7 @@ class GridFV(BaseFV):
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.hstack((np.kron(-1.0 / self.dy, np.ones((self.nx,))), np.kron(1.0 / self.dy, np.ones((self.nx,)))))
         s = np.tile(s, (self.nz,))
-        Gy = sp.coo_matrix((s, (ii, jj)))
+        Gy = sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -1140,16 +1179,16 @@ class GridFV(BaseFV):
                 np.kron(1.0 / self.dz, np.ones((self.nx * self.ny,))),
             )
         )
-        Gz = sp.coo_matrix((s, (i, j)))
+        Gz = sp.coo_array((s, (i, j)))
 
         # assemblage
         return sp.vstack((Gx, Gy, Gz), format="csr")
 
     def _gradient_faces(self, v):
 
-        v_x = sp.diags(v[: self.nfx])
-        v_y = sp.diags(v[self.nfx : (self.nfx + self.nfy)])
-        v_z = sp.diags(v[(self.nfx + self.nfy) :])
+        v_x = sp.diags_array(v[: self.nfx])
+        v_y = sp.diags_array(v[self.nfx : (self.nfx + self.nfy)])
+        v_z = sp.diags_array(v[(self.nfx + self.nfy) :])
 
         # Gx
 
@@ -1166,7 +1205,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.ny * self.nz,))
-        Gx = v_x @ sp.coo_matrix((s, (ii, jj)))
+        Gx = v_x @ sp.coo_array((s, (ii, jj)))
 
         # Gy
 
@@ -1189,7 +1228,7 @@ class GridFV(BaseFV):
             )
         )
         s = np.tile(s, (self.nz,))
-        Gy = v_y @ sp.coo_matrix((s, (ii, jj)))
+        Gy = v_y @ sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -1203,7 +1242,7 @@ class GridFV(BaseFV):
                 np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx * self.ny,))),
             )
         )
-        Gz = v_z @ sp.coo_matrix((s, (i, j)))
+        Gz = v_z @ sp.coo_array((s, (i, j)))
 
         # assemblage
         return sp.vstack((Gx, Gy, Gz), format="csr")
@@ -1231,7 +1270,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.ny * self.nz,))
-        Gx = sp.coo_matrix((s, (ii, jj)))
+        Gx = sp.coo_array((s, (ii, jj)))
 
         # Gy
 
@@ -1254,7 +1293,7 @@ class GridFV(BaseFV):
             )
         )
         s = np.tile(s, (self.nz,))
-        Gy = sp.coo_matrix((s, (ii, jj)))
+        Gy = sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -1268,7 +1307,7 @@ class GridFV(BaseFV):
                 np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx * self.ny,))),
             )
         )
-        Gz = sp.coo_matrix((s, (i, j)))
+        Gz = sp.coo_array((s, (i, j)))
 
         return sp.vstack((Gx, Gy, Gz), format="csr")
 
@@ -1309,7 +1348,7 @@ class GridFV(BaseFV):
             (np.kron(1.0 / self.hy[:-1], np.ones((self.nx - 1,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx - 1,))))
         )
         s = np.tile(s, (self.nz,))
-        Dzy = sp.coo_matrix((s, (ii, jj)))
+        Dzy = sp.coo_array((s, (ii, jj)))
 
         # dHy / dz
         N = (self.nx - 1) * self.ny * (self.nz - 1)
@@ -1321,7 +1360,7 @@ class GridFV(BaseFV):
                 np.kron(-1.0 / self.hz[1:], np.ones(((self.nx - 1) * self.ny,))),
             )
         )
-        Dyz = sp.coo_matrix((s, (i, j)))
+        Dyz = sp.coo_array((s, (i, j)))
 
         # dHx / dz
         N = self.nx * (self.ny - 1) * (self.nz - 1)
@@ -1333,7 +1372,7 @@ class GridFV(BaseFV):
                 np.kron(-1.0 / self.hz[1:], np.ones((self.nx * (self.ny - 1),))),
             )
         )
-        Dxz = sp.coo_matrix((s, (i, j)))
+        Dxz = sp.coo_array((s, (i, j)))
 
         # dHz / dx
         M = self.nx
@@ -1347,7 +1386,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), ((self.ny - 1) * self.nz,))
-        Dzx = sp.coo_matrix((s, (ii, jj)))
+        Dzx = sp.coo_array((s, (ii, jj)))
 
         # dHy / dx
         M = self.nx
@@ -1361,7 +1400,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.ny * (self.nz - 1),))
-        Dyx = sp.coo_matrix((s, (ii, jj)))
+        Dyx = sp.coo_array((s, (ii, jj)))
 
         # dHx / dy
         M = self.nx * self.ny
@@ -1378,13 +1417,13 @@ class GridFV(BaseFV):
             (np.kron(1.0 / self.hy[:-1], np.ones((self.nx,))), np.kron(-1.0 / self.hy[1:], np.ones((self.nx,))))
         )
         s = np.tile(s, (self.nz - 1,))
-        Dxy = sp.coo_matrix((s, (ii, jj)))
+        Dxy = sp.coo_array((s, (ii, jj)))
 
         return sp.vstack(
             (
-                sp.hstack((sp.csr_matrix((self.nfx, self.nex)), -Dyz, Dzy), format="csr"),
-                sp.hstack((Dxz, sp.csr_matrix((self.nfy, self.ney)), -Dzx), format="csr"),
-                sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nfz, self.nez))), format="csr"),
+                sp.hstack((sp.csr_array((self.nfx, self.nex)), -Dyz, Dzy), format="csr"),
+                sp.hstack((Dxz, sp.csr_array((self.nfy, self.ney)), -Dzx), format="csr"),
+                sp.hstack((-Dxy, Dyx, sp.csr_array((self.nfz, self.nez))), format="csr"),
             )
         )
 
@@ -1403,7 +1442,7 @@ class GridFV(BaseFV):
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.hstack((np.kron(-1.0 / self.dy, np.ones((self.nx,))), np.kron(1.0 / self.dy, np.ones((self.nx,)))))
         s = np.tile(s, (self.nz - 1,))
-        Dzy = sp.coo_matrix((s, (ii, jj)))
+        Dzy = sp.coo_array((s, (ii, jj)))
 
         # dAy / dz
         N = self.nx * (self.ny - 1) * (self.nz - 1)
@@ -1415,7 +1454,7 @@ class GridFV(BaseFV):
                 np.kron(1.0 / self.dz, np.ones((self.nx * (self.ny - 1),))),
             )
         )
-        Dyz = sp.coo_matrix((s, (i, j)))
+        Dyz = sp.coo_array((s, (i, j)))
 
         # dAx / dz
         N = (self.nx - 1) * self.ny * (self.nz - 1)
@@ -1427,7 +1466,7 @@ class GridFV(BaseFV):
                 np.kron(1.0 / self.dz, np.ones(((self.nx - 1) * self.ny,))),
             )
         )
-        Dxz = sp.coo_matrix((s, (i, j)))
+        Dxz = sp.coo_array((s, (i, j)))
 
         # dAz / dx
         M = self.nx - 1
@@ -1441,7 +1480,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.ny * (self.nz - 1),))
-        Dzx = sp.coo_matrix((s, (ii, jj)))
+        Dzx = sp.coo_array((s, (ii, jj)))
 
         # dAy / dx
         M = self.nx - 1
@@ -1455,7 +1494,7 @@ class GridFV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), ((self.ny - 1) * self.nz,))
-        Dyx = sp.coo_matrix((s, (ii, jj)))
+        Dyx = sp.coo_array((s, (ii, jj)))
 
         # dAx / dy
         M = (self.nx - 1) * (self.ny - 1)
@@ -1472,13 +1511,13 @@ class GridFV(BaseFV):
             (np.kron(-1.0 / self.dy, np.ones((self.nx - 1,))), np.kron(1.0 / self.dy, np.ones((self.nx - 1,))))
         )
         s = np.tile(s, (self.nz,))
-        Dxy = sp.coo_matrix((s, (ii, jj)))
+        Dxy = sp.coo_array((s, (ii, jj)))
 
         return sp.vstack(
             (
-                sp.hstack((sp.csr_matrix((self.nex, self.nfx)), -Dyz, Dzy), format="csr"),
-                sp.hstack((Dxz, sp.csr_matrix((self.ney, self.nfy)), -Dzx), format="csr"),
-                sp.hstack((-Dxy, Dyx, sp.csr_matrix((self.nez, self.nfz))), format="csr"),
+                sp.hstack((sp.csr_array((self.nex, self.nfx)), -Dyz, Dzy), format="csr"),
+                sp.hstack((Dxz, sp.csr_array((self.ney, self.nfy)), -Dzx), format="csr"),
+                sp.hstack((-Dxy, Dyx, sp.csr_array((self.nez, self.nfz))), format="csr"),
             )
         )
 
@@ -1524,88 +1563,113 @@ class GridFV(BaseFV):
         return self.solver_A.solve(b)
 
     def compute_u_homog(self, c1c2, sigma, cs):
-        """Compute the potential at the center of the voxels for a given set of electrodes.
+        """Potential of a homogeneous half-space at the centre of the voxels.
 
-        Note
-        ----
-        Current intensity is multiplied by -1 because we are working with elevation (z positive upward) and first
-        electrode is the source (current "going down in the ground") and second is the sink (current "coming back")
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Injection electrodes, n x 6 (dipoles) or n x 3 (poles).
+        sigma : float or ndarray
+            Conductivity, scalar, or one value per current electrode (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity, n.
+
+        Notes
+        -----
+        First electrode is the source (+I) and second is the sink; the potential is positive around the source.
+
+        The field of a dipole is the difference of the fields of its two electrodes, each with its own
+        treatment of the singularity (as when the fields are computed per electrode, for the sensitivity).
+
+        Surface electrodes are moved to the depth of the first cell centre.  If surface_images is True,
+        their field includes the image above the surface, so that it satisfies the no-flux condition at
+        z = 0 as the discrete solution does (see Grid25FV._with_images).
         """
-        x, y, z = self.centre_voxels()
-        u0 = np.empty((self.nc, c1c2.shape[0]))
-        # turn off warning b/c we get a divide by zero that we will fix later
-        np.seterr(divide='ignore')
+        c1c2 = np.array(c1c2, dtype=float)
+        cs = cs * np.ones((c1c2.shape[0],))
+        s1, s2 = Grid25FV._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
         if c1c2.shape[1] == 6:
-            # keep track of electrodes below the surface
-            below_surf_c1 = self.below_surface(c1c2[:, :3])
-            below_surf_c2 = self.below_surface(c1c2[:, 3:6])
-            # make sure electrodes are at least at the depth of the first cell center
-            c1c2[:, :3] = self.process_surface_elec(c1c2[:, :3])
-            c1c2[:, 3:6] = self.process_surface_elec(c1c2[:, 3:6])
-
-            for i in np.arange(c1c2.shape[0]):
-                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z - c1c2[i, 2]) ** 2)
-                # norm of negative current electrode and 1st potential electrode
-                nve1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (y - c1c2[i, 4]) ** 2 + (z - c1c2[i, 5]) ** 2)
-                if below_surf_c1[i] or below_surf_c2[i]:
-                    # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z + c1c2[i, 2]) ** 2)
-                    nveimag1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (y - c1c2[i, 4]) ** 2 + (z + c1c2[i, 5]) ** 2)
-                    gf = 4.0
-                else:
-                    pveimag1 = np.inf
-                    nveimag1 = np.inf
-                    gf = 2.0
-                u0[:, i] = -cs[i] / (sigma*gf*np.pi) * (1./pve1 - 1./nve1 + 1./pveimag1 - 1./nveimag1).flatten()
-            # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
-
-        elif c1c2.shape[1] == 3:
-            # keep track of electrodes below the surface
-            below_surf_c1 = self.below_surface(c1c2)
-            # make sure electrodes are at least at the depth of the first cell center
-            c1c2 = self.process_surface_elec(c1c2)
-
-            for i in np.arange(c1c2.shape[0]):
-                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z - c1c2[i, 2]) ** 2)
-                if below_surf_c1[i]:
-                    # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (y - c1c2[i, 1]) ** 2 + (z + c1c2[i, 2]) ** 2)
-                    gf = 4.0
-                else:
-                    pveimag1 = np.inf
-                    gf = 2.0
-                u0[:, i] = -cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
-        else:
+            return self.compute_u_homog(c1c2[:, :3], s1, cs) - self.compute_u_homog(c1c2[:, 3:6], s2, cs)
+        elif c1c2.shape[1] != 3:
             raise ValueError("c1c2 must be either n x 3 or n x 6")
-        np.seterr(divide='warn')
 
-        # check for singularities due to the source being on a node
-        for i in range(c1c2.shape[0]):
-            ind = np.nonzero(np.isinf(u0[:, i]))
-            if ind[0].size > 0:
-                for j in range(ind[0].size):
-                    ix, iy, iz = self.revind(ind[0][j])
-                    if iz == 0:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix+1, iy, iz), i],
-                                                    u0[self.ind(ix, iy+1, iz), i],
-                                                    u0[self.ind(ix, iy, iz+1), i],
-                                                    u0[self.ind(ix-1, iy, iz), i],
-                                                    u0[self.ind(ix, iy-1, iz), i]])
-                    elif iz == self.nz-1:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy + 1, iz), i],
-                                                    u0[self.ind(ix - 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy - 1, iz), i],
-                                                    u0[self.ind(ix, iy, iz - 1), i]])
-                    else:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix+1, iy, iz), i],
-                                                    u0[self.ind(ix, iy+1, iz), i],
-                                                    u0[self.ind(ix, iy, iz+1), i],
-                                                    u0[self.ind(ix-1, iy, iz), i],
-                                                    u0[self.ind(ix, iy-1, iz), i],
-                                                    u0[self.ind(ix, iy, iz-1), i]])
+        x, y, z = self.centre_voxels()
+        images = self._with_images(c1c2)
+        c = self.process_surface_elec(c1c2.copy())
+        u0 = np.empty((self.nc, c.shape[0]))
+        with np.errstate(divide='ignore'):
+            for i in range(c.shape[0]):
+                r = np.sqrt((x - c[i, 0])**2 + (y - c[i, 1])**2 + (z - c[i, 2])**2)
+                if images[i]:
+                    ri = np.sqrt((x - c[i, 0])**2 + (y - c[i, 1])**2 + (z + c[i, 2] - 2 * self.z[-1])**2)
+                    u0[:, i] = cs[i] / (s1[i] * 4.0 * np.pi) * (1. / r + 1. / ri)
+                else:
+                    u0[:, i] = cs[i] / (s1[i] * 2.0 * np.pi) / r
+        # note: this works for electrodes at infinity, 1/np.inf is 0
+
+        # singularity due to a source at the centre of a voxel: mean of the finite values of the
+        # neighbouring voxels
+        for i in range(c.shape[0]):
+            ind = np.nonzero(np.isinf(u0[:, i]))[0]
+            new_values = []
+            for j in ind:
+                ix, iy, iz = self.revind(j)
+                nb = [self.ind(ix + dx, iy + dy, iz + dz)
+                      for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+                      if 0 <= ix + dx < self.nx and 0 <= iy + dy < self.ny and 0 <= iz + dz < self.nz]
+                v = u0[nb, i]
+                new_values.append(np.mean(v[np.isfinite(v)]))
+            u0[ind, i] = new_values
 
         return u0
+
+    def _with_images(self, pts):
+        """Return True for electrodes whose analytic field must include the image source (see Grid25FV)."""
+        if self.surface_images:
+            return np.ones((pts.shape[0],), dtype=bool)
+        return self.below_surface(pts)
+
+    def u_homog_at(self, c1c2, pts, sigma, cs):
+        """3D potential of a homogeneous half-space, source of row i evaluated at point of row i.
+
+        Exact solution at the true positions of the electrodes and points (surface electrodes have no
+        image), used as primary field at the measurement electrodes (see Grid25FV.u_homog_at).
+
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Injection electrodes, n x 6 (dipoles) or n x 3 (poles).
+        pts : ndarray
+            Evaluation points, n x 3.
+        sigma : float or ndarray
+            Conductivity, scalar or one value per current electrode (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity, n.
+        """
+        c1c2 = np.atleast_2d(np.array(c1c2, dtype=float))
+        pts = np.atleast_2d(np.array(pts, dtype=float))
+        cs = cs * np.ones((c1c2.shape[0],))
+        s1, s2 = Grid25FV._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
+
+        def pot(c, s):
+            below = self.below_surface(c)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                r = np.sqrt(np.sum((pts - c)**2, axis=1))
+                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 1] - c[:, 1])**2 + (pts[:, 2] + c[:, 2] - 2 * self.z[-1])**2)
+                u = np.where(below, (1. / r + 1. / ri) / 4.0, 1. / (2.0 * r)) / s
+            # electrode or point at infinity: no contribution (avoids inf - inf)
+            remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),
+                                                   np.all(np.isfinite(pts), axis=1)))
+            u[remote] = 0.0
+            return u
+
+        u = pot(c1c2[:, :3], s1)
+        if c1c2.shape[1] == 6:
+            u = u - pot(c1c2[:, 3:6], s2)
+        u = cs / np.pi * u
+        if np.any(np.isinf(u)):
+            raise ValueError('Evaluation point at the position of a current electrode')
+        return u
 
     def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
         """
@@ -1632,9 +1696,10 @@ class GridFV(BaseFV):
         if not isinstance(fields, dict):
             raise ValueError("'fields' must be a dict[str, ndarray]")
 
-        xCoords = vtk.vtkFloatArray()
-        yCoords = vtk.vtkFloatArray()
-        zCoords = vtk.vtkFloatArray()
+        # double precision, so that grids read back from the file are identical
+        xCoords = vtk.vtkDoubleArray()
+        yCoords = vtk.vtkDoubleArray()
+        zCoords = vtk.vtkDoubleArray()
 
         if component == "s":
             x = self.x
@@ -1686,7 +1751,7 @@ class GridFV(BaseFV):
         rgrid.SetZCoordinates(zCoords)
 
         for fn in fields:
-            field = fields[fn]
+            field = np.asarray(fields[fn]).ravel()   # fields may be column vectors (e.g. extract_xyz_faces)
             data = vtk.vtkDoubleArray()
             for i in field:
                 data.InsertNextValue(i)
@@ -1975,7 +2040,7 @@ class MeshFV(BaseFV, SimplexMesh):
         M = self.average_cell_to_face
         if harmon:
             tmp = M @ (1.0 / v)
-            return sp.diags(1.0 / tmp, format='csr')
+            return sp.diags_array(1.0 / tmp, format='csr')
         else:
             return M @ v
 
@@ -1995,7 +2060,7 @@ class MeshFV(BaseFV, SimplexMesh):
         """
         # Build LHS matrix
         if np.isscalar(sigma) is True:
-            M = sigma * sp.eye(self.nf, self.nf)
+            M = sigma * sp.eye_array(self.nf, self.nf)
         else:
             M = self.build_M(sigma)
         A = -self.D @ M @ self.G
@@ -2237,10 +2302,16 @@ class Grid25FV(BaseFV):
         x, z = param
         self.x = x
         self.z = z
+        # wavenumbers & weights of the inverse Fourier transform, u = 1/2 sum_i g_i U(k_i),
+        # normalized so that sum_i g_i K0(k_i r) ~ 1/r.  Default values from Pidlisecky & Knight (2008),
+        # accurate for r in 0.5 - 20 m; with auto_kg True, they are optimized for the survey (see optimize_k_g)
         self.k = np.array([0.0217102, 0.2161121, 1.0608400, 5.0765870])
         self.g = np.array([0.0463660, 0.2365931, 1.0382080, 5.3648010])
+        self.auto_kg = True
+        self.n_k = 11
+        self.surface_images = True   # see _with_images
+        self._kg_range = None
         self.dim = 2.5
-        self._A = None
 
     def ind(self, i, j, k, component=None):
         """
@@ -2407,13 +2478,144 @@ class Grid25FV(BaseFV):
 
     @property
     def A(self):
-        # We must override this property in the 2.5D case
-        return self._A
+        """Base matrix A = -D M G (without the k^2 sigma term)."""
+        if self.solver_A is None:
+            return None
+        return self.solver_A.A
 
     @A.setter
     def A(self, val):
-        self._A = val   # store "base" matrix A
-        self.solver_A.A = val   # set solver
+        if self.solver_A is None:
+            raise RuntimeError("Solver not defined, cannot set A")
+        self.solver_A.update(val, self._sigma)
+
+    def set_system(self, A, keep_solver=True, verbose=False):
+        """Factorize the systems A + k_i^2 sigma, one per wavenumber.
+
+        Parameters
+        ----------
+        A : sparse array
+            Base matrix returned by build_A (conductivity model is the one given to build_A).
+        keep_solver : bool, optional
+            Reuse existing solvers (refactorization only) if wavenumbers have not changed.
+        verbose : bool, optional
+        """
+        # note: set_solver instantiates an (empty) Solver, replaced here by a Solver25
+        if (not isinstance(self.solver_A, Solver25) or keep_solver is False or
+                not self.solver_A.same_kg(self.k, self.g)):
+            self.solver_A = Solver25(self.get_solver_params(), A, self._sigma, self.k, self.g, verbose=verbose,
+                                     comm=self.comm, n_threads=self.n_threads)
+        else:
+            self.solver_A.update(A, self._sigma)
+
+    # The 2.5D grid is seen as a 3D grid one cell thick along y, centred on y = 0, for input/output
+    # (VTK files) and for the code shared with 3D (region of interest, regularization).
+    ny = 1
+    nfy = 0
+    y = np.array([-0.5, 0.5])
+    yc = np.array([0.0])
+    hy = np.array([1.0])
+
+    def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
+        """Save fields in a VTK file (rectilinear grid one cell thick along y, see GridFV.toVTK).
+
+        Parameters
+        ----------
+        fields : dict[str, ndarray]
+            dict holding the name to assign to the data (key) and the data array (value)
+        filename : string
+            name of file without extension
+        component : string, optional
+            - 's' : field is a scalar (defined at centre of voxels)
+            - 'x' : X component of a field defined on faces
+            - 'z' : Z component of a field defined on faces
+        on_face : bool, optional
+            must be True (fields on edges are not defined in 2.5D)
+        metadata : dict[str, str], optional
+            metadata to store in field data
+
+        Notes
+        -----
+        Files written for 2.5D models can be used as model files in run_job.py (2.5D is selected when
+        the grid has a single cell along y).
+        """
+        if component == "y":
+            raise ValueError("no Y component on faces in 2.5D")
+        if not on_face:
+            raise NotImplementedError("fields defined on edges not available in 2.5D")
+        # GridFV.toVTK only uses the coordinates (x, y, z and centres), defined for the 2.5D grid
+        GridFV.toVTK(self, fields, filename, component=component, on_face=on_face, metadata=metadata)
+
+    def fromVTK(self, fieldname, filename):
+        """Extract scalar field from a VTK file (rectilinear grid one cell thick along y).
+
+        Returns
+        -------
+        ndarray (or None if field not in file)
+        """
+        # GridFV.fromVTK only uses the grid dimensions (nx, ny, nz), defined for the 2.5D grid
+        return GridFV.fromVTK(self, fieldname, filename)
+
+    def volume_faces(self):
+        """Returns the dual area associated with the (interior) faces of the grid.
+
+        Returns
+        -------
+        ndarray
+            face length times distance between the centres of the two adjacent cells, ordered as the
+            faces (x, then z).
+
+        Notes
+        -----
+        With Vc = volume_voxels() and Vf = volume_faces(), D = -Vc^-1 G^T Vf, so that diag(Vc) @ L_k,
+        with L_k = -D M G + k^2 sigma, is symmetric.  Used to apply L_k^-T in the adjoint computations.
+        """
+        vx = np.kron(self.hz, self.dx)
+        vz = np.kron(self.dz, self.hx)
+        return np.r_[vx, vz]
+
+    def extract_Gxyz(self):
+        """Extract Gx, Gy & Gz from G (Gy is empty in 2.5D)."""
+        Gx = self.G[:self.nfx, :]
+        Gy = sp.csr_array((0, self.nc))
+        Gz = self.G[self.nfx:, :]
+        return Gx, Gy, Gz
+
+    def extract_xyz_faces(self, v):
+        """Split a field defined on faces in its X, Y (empty in 2.5D) and Z components."""
+        if v.ndim == 1:
+            v = v.reshape(-1, 1)
+        return v[:self.nfx, :], v[:0, :], v[self.nfx:, :]
+
+    def distance_weighting(self, xo, beta):
+        """Calculate distance weighting.
+
+        Parameters
+        ----------
+        xo : array_like
+            coordinates of observation points (y is ignored).
+        beta : float
+            Determines weighting intensity.
+
+        Returns
+        -------
+        ndarray (nc,)
+            Weights.
+
+        Notes
+        -----
+        Eq 19 of Li & Oldenburg 2000 Geophysics, vol 65, no 2, pp. 540-552, as in GridFV, with distances
+        in the x-z plane and the cell areas.
+        """
+        xo = np.atleast_2d(xo)
+        dA = self.volume_voxels()
+        xc, _, zc = self.centre_voxels()
+        R0 = 0.5 * np.sqrt(dA.min())
+        Q = np.zeros((self.nc,))
+        for i in np.arange(xo.shape[0]):
+            R = np.sqrt((xc - xo[i, 0])**2 + (zc - xo[i, -1])**2)
+            Q += (dA / (R + R0)**3)**2
+        return Q ** (0.25 * beta)
 
     def is_inside(self, x, y, z):
         """Check if point is inside grid.
@@ -2544,7 +2746,7 @@ class Grid25FV(BaseFV):
             x = np.array([x])
             z = np.array([z])
 
-        Q = sp.lil_matrix((len(x), nc))
+        Q = sp.lil_array((len(x), nc))
         for i in range(len(x)):
 
             if np.any(np.array([x[i], z[i]]) == np.inf):
@@ -2552,8 +2754,9 @@ class Grid25FV(BaseFV):
                 Q[i, 0] = 0.0
                 continue
 
+            # points beyond the first or last node are extrapolated linearly from the two nearest nodes
             im = np.argmin(np.abs(x[i] - xc))
-            if x[i] <= xc[im] and im > 0:
+            if (x[i] <= xc[im] and im > 0) or im == len(xc) - 1:
                 ix[0] = im - 1
                 ix[1] = im
             else:
@@ -2563,7 +2766,7 @@ class Grid25FV(BaseFV):
             dx[1] = xc[ix[1]] - x[i]
 
             im = np.argmin(np.abs(z[i] - zc))
-            if z[i] <= zc[im] and im > 0:
+            if (z[i] <= zc[im] and im > 0) or im == len(zc) - 1:
                 iz[0] = im - 1
                 iz[1] = im
             else:
@@ -2598,16 +2801,12 @@ class Grid25FV(BaseFV):
         """
         # Build LHS matrix
         if np.isscalar(sigma) is True:
-            M = sigma * sp.eye(self.nf, self.nf)
+            M = sigma * sp.eye_array(self.nf, self.nf)
         else:
             M = self.build_M(sigma)
         self._sigma = sigma
+        # no reference potential needed: A + k^2 sigma is nonsingular for k > 0
         A = -self.D @ M @ self.G
-        # I, J, V = sp.find(A[0, :])
-        # for jj in J:
-        #     A[0, jj] = 0.0
-        # A[0, 0] = 1.0/(self.fv.hx[0] * self.fv.hy[0] * self.fv.hz[0])
-        A[0, 0] += 1.0 / self.volume_voxels()[0]
 
         return A, M
 
@@ -2634,7 +2833,7 @@ class Grid25FV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((1.0 / self.hx[:-1], -1.0 / self.hx[1:])), (self.nz,))
-        Dx = sp.coo_matrix((s, (ii, jj)))
+        Dx = sp.coo_array((s, (ii, jj)))
 
         # Dz
 
@@ -2647,7 +2846,7 @@ class Grid25FV(BaseFV):
                 np.kron(-1.0 / self.hz[1:], np.ones((self.nx,))),
             )
         )
-        Dz = sp.coo_matrix((s, (i, j)))
+        Dz = sp.coo_array((s, (i, j)))
 
         # assemblage
 
@@ -2716,7 +2915,7 @@ class Grid25FV(BaseFV):
 
         # assemblage
 
-        return sp.coo_matrix((np.hstack((Mx, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
+        return sp.coo_array((np.hstack((Mx, Mz)), (np.arange(self.nf), np.arange(self.nf)))).tocsr()
 
     def build_G(self, v=None):
         """Construction of gradient matrix.
@@ -2754,7 +2953,7 @@ class Grid25FV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((-1.0 / self.dx, 1.0 / self.dx)), (self.nz,))
-        Gx = sp.coo_matrix((s, (ii, jj)))
+        Gx = sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -2766,15 +2965,15 @@ class Grid25FV(BaseFV):
                 np.kron(1.0 / self.dz, np.ones((self.nx,))),
             )
         )
-        Gz = sp.coo_matrix((s, (i, j)))
+        Gz = sp.coo_array((s, (i, j)))
 
         # assemblage
         return sp.vstack((Gx, Gz), format="csr")
 
     def _gradient_faces(self, v):
 
-        v_x = sp.diags(v[: self.nfx])
-        v_z = sp.diags(v[(self.nfx) :])
+        v_x = sp.diags_array(v[: self.nfx])
+        v_z = sp.diags_array(v[(self.nfx) :])
 
         # Gx
 
@@ -2791,7 +2990,7 @@ class Grid25FV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.nz,))
-        Gx = v_x @ sp.coo_matrix((s, (ii, jj)))
+        Gx = v_x @ sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -2805,7 +3004,7 @@ class Grid25FV(BaseFV):
                 np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx,))),
             )
         )
-        Gz = v_z @ sp.coo_matrix((s, (i, j)))
+        Gz = v_z @ sp.coo_array((s, (i, j)))
 
         # assemblage
         return sp.vstack((Gx, Gz), format="csr")
@@ -2833,7 +3032,7 @@ class Grid25FV(BaseFV):
             ii[(n * nval) : ((n + 1) * nval)] = i + n * M
             jj[(n * nval) : ((n + 1) * nval)] = j + n * N
         s = np.tile(np.hstack((0.5 * self.hx[:-1] / dVf, 0.5 * self.hx[1:] / dVf)), (self.nz,))
-        Gx = sp.coo_matrix((s, (ii, jj)))
+        Gx = sp.coo_array((s, (ii, jj)))
 
         # Gz
 
@@ -2847,7 +3046,7 @@ class Grid25FV(BaseFV):
                 np.kron(0.5 * self.hz[1:] / dVf, np.ones((self.nx,))),
             )
         )
-        Gz = sp.coo_matrix((s, (i, j)))
+        Gz = sp.coo_array((s, (i, j)))
 
         return sp.vstack((Gx, Gz), format="csr")
 
@@ -2858,6 +3057,21 @@ class Grid25FV(BaseFV):
         else:
             iz = 1
         return pts[:, iz] != self.z[-1]
+
+    def _with_images(self, pts):
+        """Return True for electrodes whose analytic field must include the image source.
+
+        Notes
+        -----
+        Surface electrodes are moved to the depth of the first cell centre (process_surface_elec).  If
+        surface_images is True, their analytic field includes the image above the surface, so that it
+        satisfies the no-flux condition at z = 0 as the discrete solution does.  Without the image, the
+        source term of the boundary correction contains a spurious flux at the surface, which yields an
+        error of order h in heterogeneous models.
+        """
+        if self.surface_images:
+            return np.ones((pts.shape[0],), dtype=bool)
+        return self.below_surface(pts)
 
     def process_surface_elec(self, elec):
         """Process surface Tx coordinate to make sure electrodes are at least at the depth of the first cell center.
@@ -2883,51 +3097,161 @@ class Grid25FV(BaseFV):
         elec[ind, iz] = self.zc[-1]
         return elec
 
-    def solve(self, b):
-        x = np.zeros(b.shape)
-        s = sp.diags(self._sigma, 0, shape=(self.nc, self.nc), format='csr')
-        b = 0.5 * b   # divide by 2 -> 2.5D
-        # b = 2 * b / np.pi
-        for n in range(self.k.size):
-            L = self._A + self.k[n]**2 * s
-            self.solver_A.A = L
-            x += self.g[n] * self.solver_A.solve(b)
+    def solve(self, b, return_k=False):
+        """Solve for the potential in the spatial domain.
 
-        return x
+        Parameters
+        ----------
+        b : array_like or KSource
+            Source term, the same for all wavenumbers (array) or one per wavenumber (KSource)
+        return_k : bool, optional
+            Also return the fields of each wavenumber (see Solver25.solve)
+        """
+        if not self.solver_A.same_kg(self.k, self.g):
+            # wavenumbers changed since the solvers were built (e.g. new survey with no new model)
+            self.set_system(self.solver_A.A, keep_solver=False, verbose=self.solver_A.verbose)
+        return self.solver_A.solve(b, return_k=return_k)
 
     def compute_u_homog(self, c1c2, sigma, cs):
+        """3D potential of a homogeneous half-space at the centre of the voxels (y = 0).
+
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Injection electrodes, n x 6 (dipoles) or n x 3 (poles).
+        sigma : float or ndarray
+            Conductivity, scalar, or one value per current electrode (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity, n.
+        """
+        return self._u_homog(c1c2.copy(), sigma, cs, lambda r: 1. / r)
+
+    def compute_U_homog_k(self, c1c2, sigma, cs, k):
+        """Fourier-domain potential of a homogeneous half-space at the centre of the voxels, wavenumber k.
+
+        Notes
+        -----
+        Same as compute_u_homog with 1/r replaced by 2 K0(k r), so that 1/2 sum_i g_i U(k_i) = u.
+        """
+        return self._u_homog(c1c2.copy(), sigma, cs, lambda r: 2. * k0(k * r))
+
+    def boundary_source(self, c1c2, sigma0, cs, correct_quadrature=True):
+        """Source terms of the boundary correction, one per wavenumber.
+
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Coordinates of injection electrodes (n x 6 for dipoles, n x 3 for poles).
+        sigma0 : float or ndarray
+            Conductivity of the reference model, scalar or one value per current electrode
+            (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity.
+        correct_quadrature : bool, optional
+            Keep the analytic fields so that the error of the inverse Fourier transform applies to the
+            secondary field only (the solution is exact for the homogeneous half-space).
+
+        Returns
+        -------
+        tuple
+            KSource, and analytic 3D potential u0 at the voxel centres (nc x n)
+
+        Notes
+        -----
+        Correction of Pidlisecky et al. (2007) applied in the wavenumber domain: q_k = L_k(sigma0) U0_k,
+        with U0_k the analytic solution and L_k = sigma0 (-D G + k^2).  Because U0_k is proportional to
+        1/sigma0, q_k does not depend on sigma0 (nor does the solution); sigma0 only defines the reference
+        fields U0_k and u0 used to correct the quadrature and the interpolation at the measurement electrodes.
+        These corrections work best when the reference fields have the same singular behaviour as the
+        solution near the current electrodes, i.e. with sigma0 equal to the conductivity at each electrode.
+        """
+        L1 = -(self.D @ self.G)
+        I = sp.eye_array(self.nc, self.nc, format='csr')
+        q = np.empty((self.k.size, self.nc, c1c2.shape[0]))
+        U0 = np.empty(q.shape) if correct_quadrature else None
+        for i, k in enumerate(self.k):
+            q[i] = (L1 + (k * k) * I) @ self.compute_U_homog_k(c1c2, 1.0, cs, k)
+            if correct_quadrature:
+                U0[i] = self.compute_U_homog_k(c1c2, sigma0, cs, k)
+        u0 = self.compute_u_homog(c1c2, sigma0, cs)
+        return KSource(q, U0, u0 if correct_quadrature else None), u0
+
+    @staticmethod
+    def _electrode_sigma(sigma, n, dipole):
+        """Conductivity at each current electrode, returns 2 arrays of size n."""
+        s = np.asarray(sigma, dtype=float)
+        if s.ndim == 0:
+            s1 = s2 = s * np.ones((n,))
+        elif dipole:
+            s = s.reshape(n, 2)
+            s1, s2 = s[:, 0], s[:, 1]
+        else:
+            s1 = s2 = s.reshape(n)
+        return s1, s2
+
+    def u_homog_at(self, c1c2, pts, sigma, cs):
+        """3D potential of a homogeneous half-space, source of row i evaluated at point of row i.
+
+        Parameters
+        ----------
+        c1c2 : ndarray
+            Injection electrodes, n x 6 (dipoles) or n x 3 (poles).
+        pts : ndarray
+            Evaluation points, n x 3.
+        sigma : float or ndarray
+            Conductivity, scalar or one value per current electrode (n x 2 for dipoles, n for poles).
+        cs : ndarray
+            Current intensity, n.
+
+        Notes
+        -----
+        Exact solution at the true positions of the electrodes and points (surface electrodes are not
+        moved to the depth of the first cell centre and have no image), used as primary field at the
+        measurement electrodes.
+        """
+        c1c2 = np.atleast_2d(np.array(c1c2, dtype=float))
+        pts = np.atleast_2d(np.array(pts, dtype=float))
+        cs = cs * np.ones((c1c2.shape[0],))
+        s1, s2 = self._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
+
+        def pot(c, s):
+            """Field of one electrode (image and gf = 4 if it is below the surface)."""
+            below = self.below_surface(c)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                r = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] - c[:, 2])**2)
+                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] + c[:, 2] - 2 * self.z[-1])**2)
+                u = np.where(below, (1. / r + 1. / ri) / 4.0, 1. / (2.0 * r)) / s
+            # electrode or point at infinity (e.g. pole-pole): no contribution (avoids inf - inf)
+            remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),
+                                                   np.all(np.isfinite(pts), axis=1)))
+            u[remote] = 0.0
+            return u
+
+        # sum of the fields of the electrodes, as in _u_homog
+        u = pot(c1c2[:, :3], s1)
+        if c1c2.shape[1] == 6:
+            u = u - pot(c1c2[:, 3:6], s2)
+        u = cs / np.pi * u
+        if np.any(np.isinf(u)):
+            raise ValueError('Evaluation point at the position of a current electrode')
+        return u
+
+    def _u_homog(self, c1c2, sigma, cs, kernel):
+        """Potential of a homogeneous half-space, with kernel(r) = 1/r (3D) or 2 K0(k r) (Fourier domain)."""
         x, _, z = self.centre_voxels()
         u0 = np.empty((self.nc, c1c2.shape[0]))
+        s1, s2 = self._electrode_sigma(sigma, c1c2.shape[0], c1c2.shape[1] == 6)
         # turn off warning b/c we get a divide by zero that we will fix later
-        np.seterr(divide='ignore')
         if c1c2.shape[1] == 6:
-            # keep track of electrodes below the surface
-            below_surf_c1 = self.below_surface(c1c2[:, :3])
-            below_surf_c2 = self.below_surface(c1c2[:, 3:6])
-            # make sure electrodes are at least at the depth of the first cell center
-            c1c2[:, :3] = self.process_surface_elec(c1c2[:, :3])
-            c1c2[:, 3:6] = self.process_surface_elec(c1c2[:, 3:6])
+            # dipole = difference of the fields of the two electrodes, each with its own treatment of the
+            # singularity (as when the fields are computed per electrode, for the sensitivity)
+            return (self._u_homog(c1c2[:, :3].copy(), s1, cs, kernel) -
+                    self._u_homog(c1c2[:, 3:6].copy(), s2, cs, kernel))
 
-            for i in np.arange(c1c2.shape[0]):
-                pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z - c1c2[i, 2]) ** 2)
-                # norm of negative current electrode and 1st potential electrode
-                nve1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (z - c1c2[i, 5]) ** 2)
-                if below_surf_c1[i] or below_surf_c2[i]:
-                    # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z + c1c2[i, 2]) ** 2)
-                    nveimag1 = np.sqrt((x - c1c2[i, 3]) ** 2 + (z + c1c2[i, 5]) ** 2)
-                    gf = 4.0
-                else:
-                    pveimag1 = np.inf
-                    nveimag1 = np.inf
-                    gf = 2.0
-                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (
-                            1. / pve1 - 1. / nve1 + 1. / pveimag1 - 1. / nveimag1).flatten()
-            # note: this works for electrodes at infinity, numpy recognizes that 1./np.inf is 0
-
-        elif c1c2.shape[1] == 3:
+        np.seterr(divide='ignore')
+        if c1c2.shape[1] == 3:
             # keep track of electrodes below the surface
-            below_surf_c1 = self.below_surface(c1c2)
+            below_surf_c1 = self._with_images(c1c2)
             # make sure electrodes are at least at the depth of the first cell center
             c1c2 = self.process_surface_elec(c1c2)
 
@@ -2935,39 +3259,55 @@ class Grid25FV(BaseFV):
                 pve1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z - c1c2[i, 2]) ** 2)
                 if below_surf_c1[i]:
                     # norm of imaginary positive current electrode and 1st potential electrode
-                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z + c1c2[i, 2]) ** 2)
+                    pveimag1 = np.sqrt((x - c1c2[i, 0]) ** 2 + (z + c1c2[i, 2] - 2 * self.z[-1]) ** 2)
                     gf = 4.0
                 else:
                     pveimag1 = np.inf
                     gf = 2.0
-                u0[:, i] = cs[i] / (sigma * gf * np.pi) * (1. / pve1 + 1. / pveimag1).flatten()
+                u0[:, i] = cs[i] / (s1[i] * gf * np.pi) * (kernel(pve1) + kernel(pveimag1)).flatten()
         else:
             raise ValueError("c1c2 must be either n x 3 or n x 6")
         np.seterr(divide='warn')
 
-        # check for singularities due to the source being on a node
+        # singularities due to a source at the centre of a cell: mean of the finite values of the
+        # neighbouring cells (the two electrodes of a dipole can be in adjacent cells)
         for i in range(c1c2.shape[0]):
-            ind = np.nonzero(np.isinf(u0[:, i]))
-            if ind[0].size > 0:
-                for j in range(ind[0].size):
-                    ix, iy, iz = self.revind(ind[0][j])
-                    if iz == 0:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy, iz + 1), i],
-                                                    u0[self.ind(ix - 1, iy, iz), i]])
-                    elif iz == self.nz-1:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
-                                                    u0[self.ind(ix - 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy, iz - 1), i]])
-                    else:
-                        u0[ind[0][j], i] = np.mean([u0[self.ind(ix + 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy, iz + 1), i],
-                                                    u0[self.ind(ix - 1, iy, iz), i],
-                                                    u0[self.ind(ix, iy, iz - 1), i]])
+            ind = np.nonzero(np.isinf(u0[:, i]))[0]
+            new_values = []
+            for j in ind:
+                ix, _, iz = self.revind(j)
+                nb = [self.ind(ix + dx, 0, iz + dz) for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                      if 0 <= ix + dx < self.nx and 0 <= iz + dz < self.nz]
+                v = u0[nb, i]
+                new_values.append(np.mean(v[np.isfinite(v)]))
+            u0[ind, i] = new_values
 
         return u0
 
-    def optimize_k_g(self, num):
+    def optimize_k_g(self, num, r_min=None, r_max=None):
+        """Optimize wavenumbers and weights of the inverse Fourier transform.
+
+        Parameters
+        ----------
+        num : int
+            Number of wavenumbers.
+        r_min : float, optional
+            Smallest distance for which the transform should be accurate.  Default: smallest cell size / 4.
+        r_max : float, optional
+            Largest distance for which the transform should be accurate.  Default: 4 x grid length.
+
+        Notes
+        -----
+        Weights are normalized such that sum_i g_i K0(k_i r) ~ 1/r, as the default values (approach of
+        SimPEG, least-squares fit at log-spaced distances).
+
+        Calling this method sets auto_kg to False, i.e. the wavenumbers are not optimized automatically
+        for the survey at the next forward modelling.
+        """
+        self._optimize_k_g(num, r_min, r_max)
+        self.auto_kg = False
+
+    def _optimize_k_g(self, num, r_min=None, r_max=None):
         def get_phi(r):
             e = np.ones_like(r)
 
@@ -2985,11 +3325,12 @@ class Grid25FV(BaseFV):
 
             return phi, g
 
-        # find the minimum cell spacing, and the maximum side of the mesh
-        min_r = min(np.r_[self.hx, self.hz])
-        max_r = self.x[-1] - self.x[0]
+        if r_min is None:
+            r_min = min(np.r_[self.hx, self.hz]) / 4
+        if r_max is None:
+            r_max = 4 * (self.x[-1] - self.x[0])
         # generate test points log spaced between these two end members
-        rs = np.logspace(np.log10(min_r / 4), np.log10(max_r * 4), 100)
+        rs = np.logspace(np.log10(r_min), np.log10(r_max), 100)
 
         min_rinv = -np.log10(rs).max()
         max_rinv = -np.log10(rs).min()
@@ -3006,8 +3347,9 @@ class Grid25FV(BaseFV):
             print(f"Estimated transform Error: {out['fun']}")
         # transform the solution back to normal points
         self.k = 10 ** out["x"]
-        # transform has a 2/pi and we want 1/pi, so divide by 2
-        self.g = g_func(self.k) / 2
+        # sum g K0(k r) ~ 1/r; the factor 1/2 is applied in Solver25.solve
+        self.g = g_func(self.k)
+        self._kg_range = (num, r_min, r_max)
 
     def print_info(self, file=None):
         print('    Grid: {0:d} x {1:d} voxels'.format(self.nx, self.nz), file=file)
@@ -3182,10 +3524,141 @@ class Grid25FV(BaseFV):
         # reform A to obtain the final g values
         A = rinv1 * np.real(kv(0, rpos1 * Km) - kv(0, rneg1 * Km) + kv(0, rpos_im1 * Km) - kv(0, rneg_im1 * Km))
         self.g = np.linalg.solve(A.T @ A, A.T @ I).flatten()
+        self.auto_kg = False
         return obj, err
 
 
 # %% Solver
+
+
+class KSource:
+    """Source terms defined for each wavenumber (2.5D modelling).
+
+    Parameters
+    ----------
+    q : ndarray
+        Source terms, n_k x nc x ns.
+    U0 : ndarray, optional
+        Analytic Fourier-domain fields of the reference model, n_k x nc x ns.
+    u0 : ndarray, optional
+        Analytic spatial-domain field of the reference model, nc x ns.
+
+    Notes
+    -----
+    If U0 and u0 are given, the solution is corrected as u = u0 + 1/2 sum_i g_i (U_i - U0_i), so that the
+    error of the inverse Fourier transform applies to the secondary field only.
+
+    Supports slicing of the columns, i.e. q[:, cols], as done for sparse source terms.
+    """
+
+    def __init__(self, q, U0=None, u0=None):
+        self.q = q
+        self.U0 = U0
+        self.u0 = u0
+
+    @property
+    def shape(self):
+        return self.q.shape[1:]
+
+    def __getitem__(self, key):
+        rows, cols = key
+        if rows != slice(None):
+            raise IndexError('KSource: only slicing of columns is supported')
+        if isinstance(cols, (int, np.integer)):
+            cols = [cols]
+        return KSource(self.q[:, :, cols],
+                       None if self.U0 is None else self.U0[:, :, cols],
+                       None if self.u0 is None else self.u0[:, cols])
+
+
+class Solver25:
+    """Solvers for 2.5D modelling, one per wavenumber.
+
+    Parameters
+    ----------
+    solver_par : tuple
+        Solver parameters (see Solver).
+    A : sparse array
+        Base matrix -D M G.
+    sigma : ndarray or float
+        Conductivity model.
+    k : ndarray
+        Wavenumbers.
+    g : ndarray
+        Weights, normalized such that sum_i g_i K0(k_i r) ~ 1/r.
+    verbose : bool, optional
+    """
+
+    def __init__(self, solver_par, A, sigma, k, g, verbose=False, comm=None, n_threads=1):
+        self.k = np.array(k, dtype=float)
+        self.g = np.array(g, dtype=float)
+        self.verbose = verbose
+        self._A = A
+        self.solvers = []
+        for n, k_i in enumerate(self.k):
+            if verbose:
+                print('    Wavenumber {0:d} of {1:d}'.format(n + 1, self.k.size))
+            self.solvers.append(Solver(solver_par, self._L(A, sigma, k_i), verbose=verbose,
+                                       comm=comm, n_threads=n_threads))
+
+    @staticmethod
+    def _L(A, sigma, k):
+        s = sigma * np.ones((A.shape[0],))
+        return (A + (k * k) * sp.diags_array(s, format='csr')).tocsr()
+
+    @property
+    def A(self):
+        """Base matrix -D M G."""
+        return self._A
+
+    def update(self, A, sigma):
+        """Refactorize for a new conductivity model."""
+        self._A = A
+        for s, k_i in zip(self.solvers, self.k):
+            s.A = self._L(A, sigma, k_i)
+
+    def same_kg(self, k, g):
+        return (np.size(k) == self.k.size and np.size(g) == self.g.size and
+                np.allclose(k, self.k, rtol=1e-12, atol=0) and np.allclose(g, self.g, rtol=1e-12, atol=0))
+
+    def solve(self, rhs, verbose=None, return_k=False):
+        """Solve for the potential in the spatial domain, u = 1/2 sum_i g_i U(k_i).
+
+        Parameters
+        ----------
+        rhs : array_like or KSource
+            Source term, the same for all wavenumbers, or one per wavenumber.
+        return_k : bool, optional
+            Also return the fields in the wavenumber domain U(k_i), n_k x nc x ns (used for sensitivity).
+        """
+        if verbose is None:
+            verbose = self.verbose
+        u = None
+        U_k = None
+        for n, s in enumerate(self.solvers):
+            b = rhs.q[n] if isinstance(rhs, KSource) else rhs
+            Un = s.solve(b, verbose=verbose)
+            if return_k:
+                if U_k is None:
+                    U_k = np.empty((self.k.size,) + Un.shape)
+                U_k[n] = Un
+            U = 0.5 * self.g[n] * Un
+            if isinstance(rhs, KSource) and rhs.U0 is not None:
+                U -= 0.5 * self.g[n] * rhs.U0[n]
+            u = U if u is None else u + U
+        if isinstance(rhs, KSource) and rhs.u0 is not None:
+            u += rhs.u0
+        if return_k:
+            return u, U_k
+        return u
+
+    def set_mumps_print_level(self, level):
+        for s in self.solvers:
+            s.set_mumps_print_level(level)
+
+    def print_info(self, file=None):
+        self.solvers[0].print_info(file)
+        print('    2.5D: {0:d} wavenumbers'.format(self.k.size), file=file)
 
 
 class Solver:
@@ -3246,7 +3719,7 @@ class Solver:
                 self.perm = reverse_cuthill_mckee(A)
                 self.inv_perm = np.argsort(self.perm)
 
-                permut = sp.csr_matrix((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
+                permut = sp.csr_array((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
                 A = A @ permut
                 self._A = (A.T @ permut).T
                 if self.verbose:
@@ -3256,7 +3729,7 @@ class Solver:
                 if self.verbose:
                     print("  Computing preconditioning matrix ... ", end="", flush=True)
                 if self.precon == 'diag':
-                    Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                    Ainv = sp.diags_array(1.0 / self.A.diagonal())
                     self.Mpre = sp.linalg.aslinearoperator(Ainv)
                 elif self.precon == 'ilu':
                     try:
@@ -3266,7 +3739,7 @@ class Solver:
                         if self.verbose:
                             print(err)
                             print("Switching to using diagonal of A")
-                        Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                        Ainv = sp.diags_array(1.0 / self.A.diagonal())
                         self.Mpre = sp.linalg.aslinearoperator(Ainv)
                 else:
                     raise ValueError("Unknown preconditioning solver")
@@ -3278,13 +3751,16 @@ class Solver:
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages by default
+            self.solver = self._solve_mumps
             if A is None:
                 return
+            A = _canonical_csr(A)   # see A.setter
+            self._A = A
             if self.ctx.myid == 0:
                 self.ctx.set_centralized_sparse(A)
             if verbose and self.ctx.myid == 0:
                 print("    Analyzing & factorizing matrix A ... ", end="", flush=True)
-            self.ctx.run(job=4)  # Analysis & Factorization
+            self._mumps_factorize(job=4)  # Analysis & Factorization
             if verbose and self.ctx.myid == 0:
                 print("done.")
             self.solver = self._solve_mumps
@@ -3388,7 +3864,7 @@ class Solver:
         if self.ctx is not None and rhs.ndim == 2:
             assert self.do_perm is False
             if self.ctx.myid == 0:
-                if sp.isspmatrix(rhs):
+                if sp.issparse(rhs):
                     x = rhs.toarray(order="F")
                 else:
                     # we must have a numpy array
@@ -3406,7 +3882,7 @@ class Solver:
             return x
         elif self.pardiso is True and rhs.ndim == 2:
             assert self.do_perm is False
-            if sp.isspmatrix(rhs):
+            if sp.issparse(rhs):
                 x = rhs.toarray(order="F")
             else:
                 # we must have a numpy array
@@ -3421,7 +3897,7 @@ class Solver:
         if rhs.ndim == 1:
             rhs = np.atleast_2d(rhs).T
 
-        if sp.isspmatrix(rhs):
+        if sp.issparse(rhs):
             rhs = rhs.toarray()
 
         sz = rhs.shape[1]
@@ -3516,6 +3992,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             else:
                 self.pastix_solver = pypastix.solver(val)
                 self.solver = lambda A, b: self.pastix_solver.solve(b.flatten(), refine=False)
+            return
         elif self.want_umfpack:
             umf_family, A = _get_umf_family(val.tocsc().sorted_indices())
             self.umfpack = um.UmfpackContext(umf_family)
@@ -3531,38 +4008,34 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 return result
 
             self.solver = slv
+            return
         elif self.want_superlu:
             solve = factorized(val.tocsc())
             self.solver = lambda A, b: solve(b.flatten())
+            return
         elif self.ctx is not None:
             # we are using MUMPS
             if val.shape[0] != val.shape[1]:
                 raise RuntimeError("MUMPS: matrix must be square")
+            # values passed to MUMPS when only they change must be in the same order as the
+            # entries given at analysis: use canonical CSR (sorted indices, no duplicates) everywhere
+            val = _canonical_csr(val)
+            self._A = val
             if self.ctx.myid == 0:
                 if not same_struct:
                     self.ctx.set_shape(val.shape[0])
                     self.ctx.set_centralized_sparse(val)
                 else:
                     self.ctx.set_centralized_assembled_values(val.data)
-            if same_struct:
-                if self.verbose:
+            if self.verbose:
+                if same_struct:
                     print("    Factorizing matrix A ... ", end="", flush=True)
-                try:
-                    self.ctx.run(job=2)  # Factorization
-                except:
-                    if self.ctx.id.infog[0] == -9:
-                        if self.verbose:
-                            print(" Exception raised!   Increasing memory space & factorizing matrix A ... ", end="", flush=True)
-                        self.ctx.id.icntl[13] += 20
-                        self.A = val
-                    else:
-                        raise RuntimeError(f"MUMPS: factorization failed with error code {self.ctx.id.infog[0]}")
-            else:
-                if self.verbose:
+                else:
                     print("    Analyzing & factorizing matrix A ... ", end="", flush=True)
-                self.ctx.run(job=4)  # Analysis & Factorization
+            self._mumps_factorize(job=2 if same_struct else 4)
             if self.verbose:
                 print("done.")
+            return
 
         # solveur itératif
         if self.do_perm:
@@ -3571,7 +4044,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             self.perm = reverse_cuthill_mckee(val)
             self.inv_perm = np.argsort(self.perm)
 
-            I = sp.csr_matrix((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
+            I = sp.csr_array((np.ones((self.perm.size,)), (self.perm, np.arange(self.perm.size))))
             val = val @ I
             self._A = (val.T @ I).T
             if self.verbose:
@@ -3581,7 +4054,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             if self.verbose:
                 print("  Computing preconditioning matrix ... ", end="", flush=True)
             if self.precon == 'diag':
-                Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                Ainv = sp.diags_array(1.0 / self.A.diagonal())
                 self.Mpre = sp.linalg.aslinearoperator(Ainv)
             elif self.precon == 'ilu':
                 try:
@@ -3591,7 +4064,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                     if self.verbose:
                         print(err)
                         print("Switching to using diagonal of A")
-                    Ainv = sp.spdiags(1.0 / self.A.diagonal(), 0, self.A.shape[0], self.A.shape[0])
+                    Ainv = sp.diags_array(1.0 / self.A.diagonal())
                     self.Mpre = sp.linalg.aslinearoperator(Ainv)
             else:
                 raise ValueError("Unknown preconditioning solver")
@@ -3599,6 +4072,24 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 print("done.")
         self.solver = lambda A, b: self.it_slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol, maxiter=self.max_it,
                                                M=self.Mpre)
+
+    def _mumps_factorize(self, job, max_retry=5):
+        """Run MUMPS factorization (job=2) or analysis & factorization (job=4).
+
+        If the workspace is too small (error -9), it is increased by 20% and the
+        factorization is attempted again.
+        """
+        for _ in range(max_retry + 1):
+            try:
+                self.ctx.run(job=job)
+                return
+            except RuntimeError:
+                if self.ctx.id.infog[0] != -9:
+                    raise RuntimeError(f"MUMPS: factorization failed with error code {self.ctx.id.infog[0]}")
+                if self.verbose:
+                    print(" workspace too small, increasing ... ", end="", flush=True)
+                self.ctx.id.icntl[13] += 20
+        raise RuntimeError("MUMPS: factorization failed, workspace too small (error -9)")
 
     def _solve_mumps(self, A, b):
         if self.ctx.myid == 0:

@@ -43,9 +43,7 @@ import warnings
 
 import numpy as np
 import scipy.sparse as sp
-import matplotlib
 import matplotlib.pyplot as plt
-default_backend = matplotlib.get_backend()
 
 # test test
 # %%  Define namedtuple for input data
@@ -251,7 +249,7 @@ def calc_WdW(wt, dobs, par):
     # data with % error larger than cutoff have no weight
     dtw[wt.flatten() > par.max_err] = 0.0
 
-    return sp.csr_matrix((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
+    return sp.csr_array((dtw, (np.arange(dobs.size), np.arange(dobs.size))))
 
 
 def df_to_data(df):
@@ -422,6 +420,18 @@ class Inversion:
         """Lower cut-off value for conductivity."""
 
         self.minsupport_e = 0.000001
+        """Small value (epsilon) used in 'ekblom' and 'min. support' weights."""
+
+        self.ekblom_p = 1.0
+        """Exponent of the Ekblom measure, (x^2 + e^2)^(p/2), used with smooth_type 'ekblom'."""
+
+        self.ekblom_smallness_max = 2.0
+        """Upper limit of the weights of the smallness term with smooth_type 'ekblom' (None: no limit).
+        Without limit, cells equal to the reference model get weights of p / minsupport_e."""
+
+        self.minsupport_form = "portniaguine"
+        """Weights for smooth_type 'min. support': 'portniaguine' (Portniaguine & Zhdanov 1999 reweighting,
+        sqrt(2) e / (c^2 + e^2)) or 'general' (IRLS weight rho'(c)/c, 2 e^2 / (c^2 + e^2)^2)."""
 
         self.data_transf = None
         """Function to transform data: 'asinh' ou None."""
@@ -488,15 +498,12 @@ class Inversion:
 
         where `wt` is the weight in %, data is the B-field or the voltage, and 𝜖 is attribute `e` of the class.
 
+        The matplotlib backend is not changed.  Diagnostic figures are created only if `show_plots` or
+        `save_plots` is True; when they are only saved, they are closed once written.
         """
 
         if data_mmr is None and data_ert is None:
             raise ValueError("No data to invert")
-
-        if self.show_plots is False:
-            matplotlib.use("pdf")
-        else:
-            matplotlib.use(default_backend)
 
         dobs = None
         wt = None
@@ -623,7 +630,7 @@ class Inversion:
         if "variance" in self.data_weighting:
             D = calc_WdW(wt, dobs, self)
         elif "*" in self.data_weighting:
-            D = sp.eye(dobs.size)
+            D = sp.eye_array(dobs.size)
         else:
             D = 0.0
 
@@ -718,9 +725,9 @@ class Inversion:
                         tmp2 = np.median(D2[nobs_mmr:])
                         D2[nobs_mmr:] *= tmp1 / tmp2
                     if "*" in self.data_weighting:
-                        D = D @ sp.diags(D2, 0)
+                        D = D @ sp.diags_array(D2)
                     else:
-                        D = D + sp.diags(D2, 0)
+                        D = D + sp.diags_array(D2)
 
                 if self.model_weighting == "jacobian":
                     m_weight = 1 / np.sqrt(np.sum(J * J, axis=0))
@@ -777,6 +784,9 @@ class Inversion:
                     plt.show(block=False)
                     plt.draw()
                     plt.pause(0.1)
+                else:
+                    # only saved: close it (would otherwise be displayed later, e.g. in notebooks)
+                    plt.close(fig)
             if self.verbose:
                 print("done.\n      err = {0:e}, iter = {1:d}".format(err, iter1))
 
@@ -808,7 +818,8 @@ class Inversion:
                 if self.verbose:
                     print("  Computing regularization term")
 
-                xref = 0.0
+                # with reg_var 'model', the regularization applies to m - m_ref (see cglscd)
+                xref = m_ref if self.reg_var == "model" else 0.0
                 if self.param_transf == "conductivity":
                     tmp = sigma
                 elif self.param_transf == "log_conductivity":
@@ -817,7 +828,9 @@ class Inversion:
                     tmp = np.log(1 / sigma)
                 elif self.param_transf == "resistivity":
                     tmp = 1 / sigma
-                WTW, WGx, WGy, WGz = g.calc_reg(m_weight, self, tmp, xref, WGx, WGy, WGz, m_active)
+                # IRLS weights are recomputed from the current model (base weights of 1); the weights
+                # returned are kept for checkpointing only, they must not be fed back (they would compound)
+                WTW, WGx, WGy, WGz = g.calc_reg(m_weight, self, tmp, xref, None, None, None, m_active)
 
             # checkpoint
             if self.checkpointing:
