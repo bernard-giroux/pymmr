@@ -5,7 +5,9 @@ Tests of 2.5D MMR forward modelling (GridMMR with a 2D grid, see docs/mmr25.md).
 Run with:  python3 tests/test_mmr25.py   (or pytest)
 """
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -237,6 +239,40 @@ class TestSensitivity(unittest.TestCase):
             np.testing.assert_allclose(S[c, n:], fd[n:], rtol=0, atol=1e-6 * np.abs(fd[n:]).max())
 
 
+class TestRunJob(unittest.TestCase):
+    """2.5D MMR through run_job.py and a parameter file."""
+
+    def test_fwd_mmr_sens(self):
+        g, sigma, _ = sens_model()
+        c1c2 = np.array([[-80.0, 5.0, 0.0, 70.0, -10.0, 0.0], [-40.0, 0.0, 0.0, 60.0, 0.0, 0.0]])
+        xo = np.array([[a, b, 0.0] for b in (0.0, 15.0) for a in np.arange(-50.0, 51.0, 25.0)])
+        g.set_survey_mmr(c1c2, xo, 1.0)
+        d_ref, S_ref = g.fwd_mod(sigma, calc_sens=True)
+        with tempfile.TemporaryDirectory() as d:
+            g.dc.fv.toVTK({'Conductivity': sigma}, os.path.join(d, 'job_model'))
+            np.savetxt(os.path.join(d, 'job_c1c2.dat'), c1c2)
+            np.savetxt(os.path.join(d, 'job_xo.dat'), xo)
+            with open(os.path.join(d, 'job.par'), 'w') as f:
+                f.write('fwd mmr   # job,\n'
+                        'job       # basename,\n'
+                        'job_model.vtr    # model,\n'
+                        'job_c1c2.dat     # source file,\n'
+                        'job_xo.dat       # measurement file,\n'
+                        '1.0       # source current,\n'
+                        '1         # compute sensitivity,\n'
+                        f'{SOLVER}   # solver name,\n'
+                        '0         # verbose,\n')
+            root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+            env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get('PYTHONPATH', ''))
+            res = subprocess.run([sys.executable, '-m', 'pymmr.run_job', 'job.par'], cwd=d, env=env,
+                                 capture_output=True, text=True, timeout=600)
+            self.assertEqual(res.returncode, 0, res.stderr[-2000:])
+            out = np.loadtxt(os.path.join(d, 'job_mmr.dat'))
+            np.testing.assert_allclose(out[:, 9:12], d_ref, rtol=1e-5, atol=1e-5 * np.abs(d_ref).max())
+            for n in (1, 2):
+                self.assertTrue(os.path.isfile(os.path.join(d, 'job_mmr_sens_dip{0:d}.vtr'.format(n))))
+
+
 class TestPlumbing(unittest.TestCase):
 
     def test_grid(self):
@@ -272,6 +308,36 @@ class TestPlumbing(unittest.TestCase):
         _, d1 = model(c1c2=np.r_[C1C2[:3], inf], xo=xo)
         _, d2 = model(c1c2=np.r_[C1C2[3:], inf], xo=xo)
         np.testing.assert_allclose(d1 - d2, d12, rtol=1e-8, atol=1e-8 * np.abs(d12).max())
+
+    def test_inversion_weights_order(self):
+        # weights of MMR data (all x, then y, then z, in input order) follow the ordering of dobs
+        from pymmr.inversion import DataMMR, Inversion
+        g, sigma, _ = sens_model()
+        xs = np.array([[-40.0, 10.0, 0.0, 40.0, 10.0, 0.0], [-80.0, 0.0, 0.0, 70.0, 0.0, 0.0]] * 2)
+        xo = np.array([[0.0, 30.0, 0.0], [-20.0, 0.0, 0.0], [10.0, 20.0, 0.0], [30.0, -30.0, 0.0]])
+        data = np.arange(12.0).reshape(4, 3) + 1.0
+        wt = (10.0 * np.arange(1, 5)[None, :] + np.arange(3)[:, None]).ravel()   # 10 i + component
+        seen = {}
+
+        def stop(wt_, dobs, par):
+            seen['wt'], seen['dobs'] = wt_.flatten(), dobs.flatten()
+            raise StopIteration
+
+        import pymmr.inversion as pinv
+        save = pinv.calc_WdW
+        pinv.calc_WdW = stop
+        try:
+            inv = Inversion()
+            inv.verbose = False
+            with self.assertRaises(StopIteration):
+                inv.run(g, m0=sigma, m_ref=sigma, data_mmr=DataMMR(xs=xs, xo=xo, data=data, wt=wt,
+                                                                    cs=np.ones(4), date=None))
+        finally:
+            pinv.calc_WdW = save
+        # datum i (1-based), component c: value 3 (i - 1) + c + 1 and weight 10 i + c
+        i = (seen['dobs'] - 1) // 3 + 1
+        c = (seen['dobs'] - 1) % 3
+        np.testing.assert_array_equal(seen['wt'], 10 * i + c)
 
     def test_not_implemented(self):
         g = GridMMR(grid())

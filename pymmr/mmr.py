@@ -868,9 +868,11 @@ class GridMMR:
             basename for output files (1 per dipole).
         """
         x, y, z = self.dc.get_roi_nodes()
-        # grille temporaire pour sauvegarder sens
-        g2 = GridFV((x, y, z))
-        xo = self.xo[self.ind_s, :]
+        # grille temporaire pour sauvegarder sens (2.5D: grid one cell thick along y)
+        g2 = Grid25FV((x, z)) if self.fv.dim == 2.5 else GridFV((x, y, z))
+        # measurement point of each modelled datum (modelling order, see check_acquisition); valid for
+        # pairs of dipoles and points as well as for all combinations
+        xo = np.tile(self.xo_all, (self.xs_u.shape[0], 1))[self.mask]
 
         # make 1 file for each injection dipole
         for ns in range(self.xs_u.shape[0]):

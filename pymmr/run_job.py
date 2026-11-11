@@ -22,7 +22,7 @@ The keywords are :
 - **data mmr** : Input file holding MMR data (see format below)
 - **data dc** : Input file holding DC resistivity data (see format below)
 - **model** : Conductivity model in VTK format (RectilinearGrid).  Conductivity should be in S/m.
-              A rectilinear grid with a single cell along y defines a 2.5D model (DC resistivity only)
+              A rectilinear grid with a single cell along y defines a 2.5D model
 - **source file** : Coordinates in injection dipoles, for forward modelling
 - **measurement file** : Coordinates of measurement dipoles or B-field sensor, for forward modelling
 - **source current** : Intensity of source current in A (file or scalar)
@@ -98,11 +98,14 @@ x : easting
 y : northing
 z : elevation
 
-*** 2.5D DC resistivity modeling ***
+*** 2.5D modeling ***
 If the model file holds a rectilinear grid with a single cell along y, 2.5D modelling is performed: the
-conductivity is invariant along y and the profile lies in the plane y = 0 (y coordinates of electrodes are
-ignored).  Such files are produced by `GridDC.fv.toVTK` for a 2.5D grid.  Forward modelling, sensitivity and
-inversion of DC data are available in 2.5D.
+conductivity is invariant along y.  Such files are produced by `GridDC.fv.toVTK` for a 2.5D grid.  Forward
+modelling, sensitivity and inversion (MMR, DC and joint) are available in 2.5D.
+- DC resistivity: the profile lies in the plane y = 0 (y coordinates of electrodes are ignored).
+- MMR: current electrodes and measurement points can be anywhere along y (their y coordinates are used),
+  e.g. Bx and Bz are zero on the line of the electrodes and are measured off that line.  Electric dipoles at
+  the measurement points (pod dipole) are not available.  See docs/mmr25.md.
 
 *** MMR modeling ***
 It is possible to save ∆V values for predetermined dipoles, in addition to the Bx, By, and Bz values, when
@@ -175,8 +178,6 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False, n_thread
         z = vtk_to_numpy(reader.GetOutput().GetZCoordinates())
         if y.size == 2 and grid_class is not GridFV:
             # a single cell along y: 2.5D model (voxel ordering is the same, x being the fast axis)
-            if grid_class is GridMMR:
-                raise ValueError("2.5D modelling (model with a single cell along y) not available for MMR")
             param = (x, z)
         else:
             param = (x, y, z)
