@@ -2433,6 +2433,11 @@ class Grid25FV(BaseFV):
             self.nex = self.nx * (self.nz - 1)  # number of edges with vector along x
             self.nez = (self.nx - 1) * self.nz  # number of edges with vector along z
             self.ne = self.nex + self.nez       # total number of edges
+            # wavenumber-domain vector fields (2.5D MMR, see build_C_k): the y component of a vector
+            # defined on faces lives at the cell centres, the y component defined on edges at the nodes
+            self.ney = (self.nx - 1) * (self.nz - 1)  # number of (interior) nodes
+            self.nf_k = self.nfx + self.nc + self.nfz  # vector on faces: x, y (centres), z
+            self.ne_k = self.nex + self.ney + self.nez  # vector on edges: x, y (nodes), z
 
             # Divergence & gradient matrices are precomputed because essentially always used
             self.D = self.build_D()
@@ -3049,6 +3054,146 @@ class Grid25FV(BaseFV):
         Gz = sp.coo_array((s, (i, j)))
 
         return sp.vstack((Gx, Gz), format="csr")
+
+    # ------------------------------------------------------------------------------------------------
+    # Wavenumber-domain operators for vector fields (2.5D MMR), see docs/mmr25.md
+    #
+    # Fields are cosine (even in y) or sine (odd in y) transforms, all real:
+    #   vector on faces  [Fx (x-faces, cos), Fy (cell centres, sin), Fz (z-faces, cos)],  nf_k values
+    #   vector on edges  [Ex (x-edges, sin), Ey (nodes, cos),        Ez (z-edges, sin)],  ne_k values
+    # x-edges coincide with z-faces (xc, z node) and z-edges with x-faces (x node, zc).  A derivative
+    # along y maps a cosine coefficient F to the sine coefficient -k F, and a sine coefficient F to the
+    # cosine coefficient +k F.  Only interior faces, edges and nodes are unknowns (zero on the boundary),
+    # as in 3D (GridFV.build_C).
+    # ------------------------------------------------------------------------------------------------
+
+    @staticmethod
+    def _diff_n(h):
+        """Difference between n values at cell centres, divided by h (n-1 values): (n-1) x n."""
+        n = h.size + 1
+        i = np.r_[np.arange(n - 1), np.arange(n - 1)]
+        j = np.r_[np.arange(n - 1), np.arange(1, n)]
+        return sp.coo_array((np.r_[-1.0 / h, 1.0 / h], (i, j)), shape=(n - 1, n)).tocsr()
+
+    @staticmethod
+    def _diff_c(h):
+        """Difference between the n-1 interior nodes (0 on the boundary nodes), divided by h: n x (n-1)."""
+        n = h.size
+        i = np.r_[np.arange(n - 1), np.arange(1, n)]
+        j = np.r_[np.arange(n - 1), np.arange(n - 1)]
+        return sp.coo_array((np.r_[1.0 / h[:-1], -1.0 / h[1:]], (i, j)), shape=(n, n - 1)).tocsr()
+
+    def build_G_k(self, k):
+        """Gradient of a cosine-transformed scalar at the centres, to faces (nf_k x nc).
+
+        Notes
+        -----
+        G_k = [Gx; -k I; Gz].  With M_k = build_M_k(sigma), -D_k M_k G_k = -D M G + k^2 sigma is the
+        operator of 2.5D DC modelling, and J_k = -M_k G_k U_k is the transformed current density
+        (Jy, a sine coefficient, is sigma k U_k).
+        """
+        I = sp.eye_array(self.nc, format='csr')
+        return sp.vstack((self.G[:self.nfx, :], -k * I, self.G[self.nfx:, :]), format='csr')
+
+    def build_D_k(self, k):
+        """Divergence of a vector on faces, to the cell centres (nc x nf_k): D_k = [Dx, k I, Dz].
+
+        Notes
+        -----
+        D_k = -Vc^-1 G_k^T Vf_k, with Vc = volume_voxels() and Vf_k = volume_faces_k().
+        """
+        I = sp.eye_array(self.nc, format='csr')
+        return sp.hstack((self.D[:, :self.nfx], k * I, self.D[:, self.nfx:]), format='csr')
+
+    def build_M_k(self, v, harmon=True):
+        """Average of a variable on faces, the y component (cell centres) being the variable itself.
+
+        Parameters
+        ----------
+        v : ndarray or tuple of 3 ndarray
+            Variable at the centre of voxels, or diagonal terms (v_xx, v_yy, v_zz) of a tensor.
+        harmon : bool, optional
+            Harmonic (True) or arithmetic average on the x and z faces.
+
+        Returns
+        -------
+        sparse array, nf_k x nf_k (diagonal)
+        """
+        if type(v) is tuple:
+            if len(v) != 3:
+                raise ValueError('build_M_k: tensor needs 3 terms (v_xx, v_yy, v_zz)')
+            M = self.build_M((v[0], v[2]), harmon).diagonal()
+            vy = v[1]
+        else:
+            M = self.build_M(v, harmon).diagonal()
+            vy = v
+        vy = vy * np.ones((self.nc,))
+        return sp.diags_array(np.r_[M[:self.nfx], vy, M[self.nfx:]], format='csr')
+
+    def build_C_k(self, k, to_faces=True):
+        """Curl of a transformed vector field.
+
+        Parameters
+        ----------
+        k : float
+            Wavenumber.
+        to_faces : bool, optional
+            If True, curl of a vector on edges, evaluated on faces (nf_k x ne_k); otherwise curl of a
+            vector on faces, evaluated on edges (ne_k x nf_k).
+
+        Notes
+        -----
+        Faces to edges, for A = [Ax (cos), Ay (sin), Az (cos)]:
+            Bx = -k Az - dAy/dz,   By = dAx/dz - dAz/dx,   Bz = dAy/dx + k Ax
+        Edges to faces, for B = [Bx (sin), By (cos), Bz (sin)]:
+            Hx = k Bz - dBy/dz,    Hy = dBx/dz - dBz/dx,   Hz = dBy/dx - k Bx
+        With Ve_k = volume_edges_k() and Vf_k = volume_faces_k(), Ve_k C_f = (Vf_k C_e)^T.
+        """
+        nx, nz = self.nx, self.nz
+        if to_faces:
+            Ix = sp.eye_array(nx - 1, format='csr')
+            Iz = sp.eye_array(nz - 1, format='csr')
+            dBy_dz = sp.kron(self._diff_c(self.hz), Ix)    # nodes -> x-faces
+            dBy_dx = sp.kron(Iz, self._diff_c(self.hx))    # nodes -> z-faces
+            dBx_dz = self.D[:, self.nfx:]                  # x-edges (= z-faces) -> centres
+            dBz_dx = self.D[:, :self.nfx]                  # z-edges (= x-faces) -> centres
+            kx = k * sp.eye_array(self.nfx, format='csr')
+            kz = k * sp.eye_array(self.nfz, format='csr')
+            return sp.block_array([[None, -dBy_dz, kx],
+                                   [dBx_dz, None, -dBz_dx],
+                                   [-kz, dBy_dx, None]], format='csr')
+        else:
+            Ix = sp.eye_array(nx - 1, format='csr')
+            Iz = sp.eye_array(nz - 1, format='csr')
+            dAx_dz = sp.kron(self._diff_n(self.dz), Ix)    # x-faces -> nodes
+            dAz_dx = sp.kron(Iz, self._diff_n(self.dx))    # z-faces -> nodes
+            dAy_dz = self.G[self.nfx:, :]                  # centres -> x-edges (= z-faces)
+            dAy_dx = self.G[:self.nfx, :]                  # centres -> z-edges (= x-faces)
+            kx = k * sp.eye_array(self.nfx, format='csr')
+            kz = k * sp.eye_array(self.nfz, format='csr')
+            return sp.block_array([[None, -dAy_dz, -kz],
+                                   [dAx_dz, None, -dAz_dx],
+                                   [kx, dAy_dx, None]], format='csr')
+
+    def build_L_k(self, k):
+        """Vector Helmholtz operator C_e C_f - G_k D_k, i.e. -lap + k^2 (nf_k x nf_k).
+
+        Notes
+        -----
+        Discrete counterpart of curl curl - grad div, as in 3D MMR modelling (GridMMR._build_A, without
+        the factor 1/mu0).  The components are uncoupled, and Vf_k L_k is symmetric positive definite
+        for k > 0.
+        """
+        return (self.build_C_k(k) @ self.build_C_k(k, to_faces=False) -
+                self.build_G_k(k) @ self.build_D_k(k)).tocsr()
+
+    def volume_faces_k(self):
+        """Dual volumes of the components of a vector on faces (x-faces, cell centres, z-faces)."""
+        return np.r_[self.volume_faces()[:self.nfx], self.volume_voxels(), self.volume_faces()[self.nfx:]]
+
+    def volume_edges_k(self):
+        """Dual volumes of the components of a vector on edges (x-edges, nodes, z-edges)."""
+        return np.r_[np.kron(self.dz, self.hx), np.kron(self.dz, self.dx), np.kron(self.hz, self.dx)]
 
     def below_surface(self, pts):
         """Return indices of electrodes that are not at the surface."""
