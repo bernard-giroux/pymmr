@@ -163,9 +163,10 @@ class GridMMR:
         else:
             raise ValueError('Size of source term must be nsrc x 6')
         for ns in range(tmp.shape[0]):
-            if self.fv.is_inside(tmp[ns, 0], tmp[ns, 1], tmp[ns, 2]) is False or \
-               self.fv.is_inside(tmp[ns, 3], tmp[ns, 4], tmp[ns, 5]) is False:
-                raise ValueError('Source term outside grid')
+            for e in (tmp[ns, :3], tmp[ns, 3:]):
+                # an electrode with non-finite coordinates is at infinity (pole source)
+                if np.all(np.isfinite(e)) and self.fv.is_inside(e[0], e[1], e[2]) is False:
+                    raise ValueError('Source term outside grid')
         self._xs = tmp
         self.acq_checked = False
 
@@ -432,7 +433,7 @@ class GridMMR:
         only once.  Option `keep_solver` allows this, matrix A being factorized
         when the solver is instantiated.
         """
-        if self.fv.nc == self.dc.fv.nc:
+        if self.fv.nc == self.dc.fv.nc and self.fv.dim != 2.5:   # 2.5D: see _setup25
             self._add_air()
 
         if self.xs is None:
@@ -647,7 +648,9 @@ class GridMMR:
     def _setup25(self):
         """Air layers, current electrodes, wavenumbers and inverse transform weights (once per survey)."""
         if self.fv.nc == self.dc.fv.nc:
-            self._add_air()
+            # A_z = 0 at the top: the air must be thick compared with the source-receiver distances,
+            # whatever the size of the top cells (see docs/mmr25.md, section 9)
+            self._add_air(min_thickness=self.dc.fv.z[-1] - self.dc.fv.z[0])
         if self._plan25 is not None and self._k_range == self._survey_range25():
             return
 
@@ -821,10 +824,18 @@ class GridMMR:
             filename = basename+'_mmr_sens_dip'+str(ns+1)
             g2.toVTK(sens_data, filename, metadata=metadata)
 
-    def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3):
-        # add air layers
-        dz_air = calc_padding(self.dc.fv.hz[-1], n_cells=n_crois_cells, factor=factor)
-        dz_air = np.r_[self.fv.hz[-1]+np.zeros((n_const_cells,)), dz_air]
+    def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3, min_thickness=0.0):
+        """Add air layers above the DC grid.
+
+        `n_const_cells` cells of the size of the top cell, then `n_crois_cells` cells growing by
+        `factor`, with more growing cells if needed to reach a total thickness of `min_thickness`.
+        """
+        while True:
+            dz_air = calc_padding(self.dc.fv.hz[-1], n_cells=n_crois_cells, factor=factor)
+            dz_air = np.r_[self.dc.fv.hz[-1]+np.zeros((n_const_cells,)), dz_air]
+            if dz_air.sum() >= min_thickness:
+                break
+            n_crois_cells += 1
         z_air = np.cumsum(dz_air)
         self.fv.z = np.r_[self.dc.fv.z, self.dc.fv.z[-1] + z_air]
 
@@ -1028,8 +1039,18 @@ class VerticalDyke:
 
         Notes
         -----
-        Solution from pages 1187-1188 and thesis of Boggs
+        Solution from pages 1187-1188 and thesis of Boggs.  The expressions are for an electrode on
+        the left of the dyke or within it; an electrode on the right is handled by reflection about
+        the centre of the dyke (rho1 and rho3 swapped; Bz, a component of a pseudovector, changes
+        sign).
         """
+        xo = np.asarray(xo, dtype=float)
+        if xs - self.xd > self.d:
+            xm = 2.0 * self.xd + self.d        # x -> xm - x maps the dyke onto itself
+            mirror = VerticalDyke(self.rho3, self.rho2, self.rho1, self.d, self.xd, self.n_max)
+            xo_m = np.c_[xm - xo[:, 0], xo[:, 1:]]
+            return -mirror.fwd_mod(xo_m, xm - xs, cs)
+
         b = xs - self.xd         # electrode location relative to dyke
         x = xo[:, 0] - self.xd   # x coord of observation pt relative to dyke
         y = xo[:, 1]             # y coord of observation pt
@@ -1103,13 +1124,14 @@ class VerticalDyke:
                 self.k12 * -tmp3 / np.sqrt(y2 + tmp3 * tmp3)
             )
 
-            # TODO double check next equation
+            # Source plus the images transmitted through the dyke, at b - 2nd.  Coefficients obtained
+            # from continuity of Bz at x = d with Bz2 and Bz3 -> 0 for x -> inf (the previous
+            # expression, from the thesis of Boggs, did not satisfy either); checked against the 2.5D
+            # finite-volume solution (tests/test_mmr25.py).
             Bz3 = tmp0 * (
-                self.k13 - (1. - self.k32) * self.k12 * (
-                    np.sum((self.k12 * self.k32) ** self.n * tmp8 / np.sqrt(y2t + tmp8 * tmp8), axis=1) #+
-#                    self.k32 * np.sum((self.k12 * self.k32) ** self.n * tmp7 / np.sqrt(y2t + tmp7 * tmp7), axis=1)
-                )
-                + self.k32 * -tmp6 / np.sqrt(y2 + tmp6 * tmp6)     # sign of tmp6 changed from thesis of Boggs
+                self.k13 - tmp3 / np.sqrt(y2 + tmp3 * tmp3)
+                - (1. + self.k12) * (1. - self.k32) *
+                np.sum((self.k12 * self.k32) ** self.n * tmp8 / np.sqrt(y2t + tmp8 * tmp8), axis=1)
             )
 
         Bz1[np.logical_not(ind1)] = 0.0

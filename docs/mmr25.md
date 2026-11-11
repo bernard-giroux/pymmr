@@ -140,7 +140,8 @@ These are the same relations as used in 3D (`GridMMR._adj`) and in `GridDC._sens
 `GridMMR((x, z))` builds the 2.5D model. Current electrodes and measurement points are given in
 3D (any y), as in 3D modelling. `fwd_mod(sigma)`:
 
-1. Air layers are added above the DC grid (`_add_air`, as in 3D).
+1. Air layers are added above the DC grid (`_add_air`), at least as thick as the earth part of the
+   grid (see section 9).
 2. Once per survey (`_setup25`), the current electrodes are reduced to the unique (x, z) positions
    (an electrode's y only enters through Δy). The wavenumbers come from `select_k(r_min, r_max, n_k)`:
    - r_min is the smallest x–z distance between an electrode and a measurement point, and at
@@ -189,3 +190,91 @@ The same model with h = 10 m, 2.5D vs `GridMMR` 3D (same x grid along y), errors
 | 2.5D − 3D       | 5.3e-3 | 5.3e-2 |        |
 
 Both share the same discretization bias near the electrodes; away from them they agree to about 1%.
+Section 9 shows that this bias comes from the horizontal cell size at the electrodes.
+
+## 9. Validation (phase 4)
+
+Scripts for the numbers below are summarized in `tests/test_mmr25.py` (classes `TestHalfSpace` and
+`TestVerticalDyke`).
+
+### Vertical dyke, Bz off the line
+
+Analytic solution: `mmr.VerticalDyke` (Edwards et al., 1978). The model is a dyke 20 m thick
+(x from 0 to 20 m), infinite in depth and along y, with ρ = (100, 10, 300) Ω·m from left to right. A
+pole is at the surface with its return electrode at infinity (`xs` with `np.inf`). Receivers are at
+x ∈ [−80, 80] m and y = 10, 20, 40, 100 m. The grid has h = 5 m, top cells of 0.25 m, 15 padding
+cells and n_k = 30. Errors are the largest absolute error divided by max |Bz|, for each y:
+
+| source                  | y = 10 | y = 20 | y = 40 | y = 100 |
+|-------------------------|--------|--------|--------|---------|
+| x = −50 (left)          | 2.0e-3 | 1.8e-3 | 2.2e-3 | 2.4e-3  |
+| x = 10 (in the dyke)    | 9.0e-3 | 2.7e-3 | 1.6e-3 | 1.6e-3  |
+| x = 25 (right, at 5 m)  | 1.2e-2 | 3.5e-3 | 1.8e-3 | 1.8e-3  |
+| x = 60 (right)          | 1.5e-3 | 1.2e-3 | 1.6e-3 | 1.2e-3  |
+
+This comparison exposed two errors in `VerticalDyke` (electrode outside the dyke), both now fixed:
+
+- Bz on the far side of the dyke (`Bz3`, flagged "TODO double check") was wrong; it was off by
+  two orders of magnitude next to the dyke. The corrected expression is
+
+      Bz3 = μI/(4πy) [ k13 + f(x − b) − (1 + k12)(1 − k32) Σ_n (k12 k32)^n f(x − b + 2nd) ],
+      f(ξ) = ξ / √(y² + ξ²)
+
+  with x and b measured from the left flank. It is continuous with Bz2 at x = d, vanishes for
+  x → ∞, and reduces to the single contact for k12 = 0 and to zero for a uniform medium. The
+  coefficients were identified from the continuity with Bz2 (fit residual 1e-14 for several
+  resistivity contrasts) and are confirmed by the finite-volume solution above.
+- The expressions assume an electrode on the left of the dyke or within it. An electrode on the
+  right is now handled by reflection about the centre of the dyke: ρ1 and ρ3 are swapped, and Bz,
+  a component of a pseudovector, changes sign.
+
+### Sources of error
+
+- **Electrode depth.** Surface electrodes are placed at the first cell centre, z = −hz/2. With
+  uniform h = 5 m, Bz of the dyke is 2% too large for a source outside the dyke and 10% too large
+  for a source in it. The error is first order in hz. Refining only the top cells fixes it:
+
+  | top cells (m) | 5     | 1     | 0.25  |
+  |---------------|-------|-------|-------|
+  | source left   | 1.023 | 1.005 | 1.000 |
+  | source in dyke| 1.10  | 1.03  | 1.01  |
+
+  (least-squares ratio of computed to analytic Bz at y = 10 m, ρ = (100, 10, 100) Ω·m.)
+- **Air thickness.** The air layers used to be sized from the top cell (4 cells, then 15 cells
+  growing by 1.3), only 55 m with 0.25 m top cells. A_z = 0 at the top of the air was then too
+  close: 2.3% error instead of 0.2% (dyke, y = 10 m). The 2.5D code now adds air at least as thick as the earth part
+  of the grid, padding included. The 3D code is unchanged.
+- **Horizontal cell size at the electrodes.** In the half-space test By is 2% too small everywhere
+  and 4.8% at the receivers closest to an electrode (h = 5 m). This error depends on hx, not hz
+  or the top cells, and is first order. Refining x within 10 m of each electrode (h = 5 m
+  elsewhere) is enough:
+
+  | hx at the electrodes (m) | 5      | 1      | 0.5    | 0.25   |
+  |--------------------------|--------|--------|--------|--------|
+  | By error                 | 4.8e-2 | 1.0e-2 | 6.1e-3 | 4.3e-3 |
+  | Bx error                 | 1.2e-2 | 4.4e-3 | 6.2e-3 | 7.1e-3 |
+  | time (s)                 | 1.1    | 1.6    | 2.1    | 3.1    |
+
+  The same bias is present in 3D (section 8).
+
+Practical rule: refine the grid around the current electrodes, horizontally and at the top. A
+primary/secondary split of B, considered in the plan, is not needed.
+
+### Convergence in wavenumbers and padding
+
+Dyke with ρ = (100, 10, 100) Ω·m, source in the dyke, h = 5 m, top cells 0.25 m, 20 padding cells.
+The wavenumbers span 9e-5 to 120 1/m:
+
+| n_k        | 10     | 15     | 20     | 30     | 40     | 60     |
+|------------|--------|--------|--------|--------|--------|--------|
+| y = 10 m   | 1.4e-1 | 2.9e-2 | 1.2e-2 | 9.0e-3 | 8.7e-3 | 8.6e-3 |
+| y = 40 m   | 6.2e-2 | 1.9e-3 | 4.5e-3 | 1.6e-3 | 1.5e-3 | 1.4e-3 |
+| time (s)   | 0.7    | 1.1    | 1.4    | 2.1    | 2.9    | 4.3    |
+
+The default n_k = 30 is converged: the remaining error is spatial. With n_k = 30, 10, 15, 20 or
+30 padding cells give the same errors (within 4e-4). The air follows the earth padding.
+
+The wavenumber range was also computed with r_min from the 3D electrode–receiver distances instead
+of the x–z distances. That gives a narrower range (k_max 1.5 instead of 6 to 120 1/m) and the same
+errors in these tests. The x–z distance is kept, which is the safe choice for receivers at small
+x–z distances but large Δy.
