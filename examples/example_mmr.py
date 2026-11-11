@@ -9,6 +9,7 @@ sys.path.append("/Users/giroux/GitHub/pymmr")
 sys.path.append("/Users/giroux/GitHub/pymumps")
 
 from pymmr.finite_volume import calc_padding, GridFV
+from pymmr.finite_element import GridFE
 from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, DataMMR
 
@@ -109,7 +110,7 @@ results = inv.run(g, m0=m_ref, m_ref=m_ref, data_mmr=data_mmr, m_active=g.ind_ro
 sigma_inv, data_inv, rms, misfit, smy = results
 
 x, y, z = g.dc.get_roi_nodes()
-g2 = GridFV((x, y, z))
+g2 = GridFE((x, y, z))
 
 fields = {}
 for n, sigma in enumerate(sigma_inv):
