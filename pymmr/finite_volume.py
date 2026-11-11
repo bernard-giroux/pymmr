@@ -3280,7 +3280,7 @@ class Grid25FV(BaseFV):
         """
         return self._u_homog(c1c2.copy(), sigma, cs, lambda r: 2. * k0(k * r))
 
-    def boundary_source(self, c1c2, sigma0, cs, correct_quadrature=True):
+    def boundary_source(self, c1c2, sigma0, cs, correct_quadrature=True, k=None):
         """Source terms of the boundary correction, one per wavenumber.
 
         Parameters
@@ -3295,6 +3295,8 @@ class Grid25FV(BaseFV):
         correct_quadrature : bool, optional
             Keep the analytic fields so that the error of the inverse Fourier transform applies to the
             secondary field only (the solution is exact for the homogeneous half-space).
+        k : array_like, optional
+            Wavenumbers (default: self.k).
 
         Returns
         -------
@@ -3312,9 +3314,10 @@ class Grid25FV(BaseFV):
         """
         L1 = -(self.D @ self.G)
         I = sp.eye_array(self.nc, self.nc, format='csr')
-        q = np.empty((self.k.size, self.nc, c1c2.shape[0]))
+        k_all = self.k if k is None else np.atleast_1d(np.asarray(k, dtype=float))
+        q = np.empty((k_all.size, self.nc, c1c2.shape[0]))
         U0 = np.empty(q.shape) if correct_quadrature else None
-        for i, k in enumerate(self.k):
+        for i, k in enumerate(k_all):
             q[i] = (L1 + (k * k) * I) @ self.compute_U_homog_k(c1c2, 1.0, cs, k)
             if correct_quadrature:
                 U0[i] = self.compute_U_homog_k(c1c2, sigma0, cs, k)
