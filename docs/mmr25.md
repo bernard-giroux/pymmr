@@ -197,7 +197,8 @@ sensitivity.
 The DC data of a joint inversion are computed by `GridDC` with its own wavenumbers. These
 wavenumbers are fitted for an offset of 0 along y between the current and potential electrodes;
 off-line measurements (electrodes of a datum at different y) are modelled with the wavenumbers and
-weights of `KQuadrature`, as for the MMR (forward modelling and sensitivity, see `docs/dc25_offline.md`).
+weights of `KQuadrature`, as for the MMR (forward modelling, sensitivity and inversion, see
+`docs/dc25_offline.md`).
 
 ### Electric dipoles at the receivers (`pod_e`)
 

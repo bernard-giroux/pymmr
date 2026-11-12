@@ -597,6 +597,159 @@ class TestOffLineSensitivity(unittest.TestCase):
         self.assertLess(err.max(), 1e-2)
 
 
+class TestOffLineInversion(unittest.TestCase):
+    """Off-line data in run_job, Inversion.run and joint MMR-ERT inversion (2.5D)."""
+
+    rows = TestOffLineSensitivity.rows
+
+    def grid(self, cls=GridDC):
+        g = TestOffLineSensitivity().grid()
+        g2 = cls((g.fv.x, g.fv.z))
+        g2.set_solver('mumps' if fvm.has_mumps else 'superlu')
+        return g2
+
+    def test_run_job_fwd_dc(self):
+        g = self.grid()
+        g.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        s = TestOffLineSensitivity().sigma(g)
+        v_ref = g.fwd_mod(s)
+        with tempfile.TemporaryDirectory() as d:
+            g.fv.toVTK({'Conductivity': s}, os.path.join(d, 'job_model'))
+            np.savetxt(os.path.join(d, 'job_c1c2.dat'), self.rows[:, :6])
+            np.savetxt(os.path.join(d, 'job_p1p2.dat'), self.rows[:, 6:])
+            with open(os.path.join(d, 'job.par'), 'w') as f:
+                f.write('fwd dc    # job,\n'
+                        'job       # basename,\n'
+                        'job_model.vtr    # model,\n'
+                        'job_c1c2.dat     # source file,\n'
+                        'job_p1p2.dat     # measurement file,\n'
+                        '1.0       # source current,\n'
+                        '{0}   # solver name,\n'
+                        '0         # verbose,\n'.format('mumps' if fvm.has_mumps else 'superlu'))
+            root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+            env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get('PYTHONPATH', ''))
+            res = subprocess.run([sys.executable, '-m', 'pymmr.run_job', 'job.par'], cwd=d, env=env,
+                                 capture_output=True, text=True, timeout=600)
+            self.assertEqual(res.returncode, 0, res.stderr[-2000:])
+            out = np.loadtxt(os.path.join(d, 'job_dc.dat'))
+        np.testing.assert_allclose(out[:, 12], v_ref, rtol=1e-5)
+
+    def test_inversion(self):
+        import warnings
+        from pymmr.inversion import Inversion, DataERT
+        g = self.grid()
+        g.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        xc, zc = g.fv.centre_voxels()[0], g.fv.centre_voxels()[-1]
+        s_true = np.where((np.abs(xc) < 6) & (zc < -2) & (zc > -8), 0.1, 0.01)
+        dobs = g.fwd_mod(s_true)
+        n = dobs.size
+        data = DataERT(c1c2=self.rows[:, :6], p1p2=self.rows[:, 6:], data=dobs, wt=np.ones(n), cs=np.ones(n),
+                       date=None)
+        g = self.grid()
+        inv = Inversion()
+        inv.max_it = 3
+        inv.verbose = False
+        m0 = 0.01 * np.ones(g.fv.nc)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            s_inv, _, rms, _, _ = inv.run(g, m0=m0, m_ref=m0.copy(), data_ert=data)
+        self.assertTrue(g._uses_offline25())
+        self.assertTrue(np.all(np.isfinite(rms)))
+        self.assertLess(rms[-1], 0.5 * rms[0])
+
+    def true_model(self, fv):
+        xc, zc = fv.centre_voxels()[0], fv.centre_voxels()[-1]
+        return np.where((np.abs(xc) < 6) & (zc < -2) & (zc > -8), 0.1, 0.01)
+
+    def test_joint_inversion(self):
+        """Joint MMR (receivers off the line) and off-line ERT data through Inversion.run."""
+        import warnings
+        from pymmr.inversion import Inversion, DataERT, DataMMR
+        from pymmr.mmr import GridMMR
+        xs = np.array([[-20.0, 0.0, 0.0, 20.0, 0.0, 0.0]])
+        xo = np.array([[a, b, 0.0] for b in (4.0, 10.0) for a in np.arange(-15.0, 16.0, 5.0)])
+        gm = self.grid(GridMMR)
+        gm.set_survey_mmr(xs, xo, 1.0)
+        s_true = self.true_model(gm.dc.fv)
+        nd = xo.shape[0]
+        dmmr = DataMMR(xs=np.tile(xs, (nd, 1)), xo=xo, data=gm.fwd_mod(s_true), wt=np.ones(3 * nd),
+                       cs=np.ones(nd), date=None)
+        g = self.grid()
+        g.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        dobs = g.fwd_mod(s_true)
+        n = dobs.size
+        dert = DataERT(c1c2=self.rows[:, :6], p1p2=self.rows[:, 6:], data=dobs, wt=np.ones(n), cs=np.ones(n),
+                       date=None)
+        gm = self.grid(GridMMR)
+        inv = Inversion()
+        inv.max_it = 3
+        inv.verbose = False
+        m0 = 0.01 * np.ones(gm.dc.fv.nc)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            s_inv, d_inv, rms, _, _ = inv.run(gm, m0=m0, m_ref=m0.copy(), data_mmr=dmmr, data_ert=dert)
+        self.assertTrue(gm.dc._uses_offline25())
+        self.assertEqual(d_inv[0].size, 3 * nd + n)     # MMR and ERT data
+        self.assertTrue(np.all(np.isfinite(rms)) and np.all(np.isfinite(s_inv[-1])))
+        self.assertLess(rms[-1], 0.5 * rms[0])
+
+    def test_run_job_inv(self):
+        """Inversion of off-line ERT data through run_job.py (data file written by a fwd dc job)."""
+        import vtk
+        from vtk.util.numpy_support import vtk_to_numpy
+        g = self.grid()
+        s_true = self.true_model(g.fv)
+        solver = 'mumps' if fvm.has_mumps else 'superlu'
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get('PYTHONPATH', ''))
+        with tempfile.TemporaryDirectory() as d:
+            g.fv.toVTK({'Conductivity': s_true}, os.path.join(d, 'true'))
+            g.fv.toVTK({'Conductivity': 0.01 * np.ones(g.fv.nc)}, os.path.join(d, 'start'))
+            np.savetxt(os.path.join(d, 'c1c2.dat'), self.rows[:, :6])
+            np.savetxt(os.path.join(d, 'p1p2.dat'), self.rows[:, 6:])
+            with open(os.path.join(d, 'fwd.par'), 'w') as f:
+                f.write('fwd dc    # job,\nsyn       # basename,\ntrue.vtr  # model,\n'
+                        'c1c2.dat  # source file,\np1p2.dat  # measurement file,\n1.0       # source current,\n'
+                        f'{solver}   # solver name,\n0         # verbose,\n')
+            with open(os.path.join(d, 'inv.par'), 'w') as f:
+                f.write('inv       # job,\nrun       # basename,\nstart.vtr # model,\n'
+                        'syn_dc.dat  # data dc,\n2         # inv max_it,\n'
+                        f'{solver}   # solver name,\n0         # verbose,\n')
+            for par in ('fwd.par', 'inv.par'):
+                res = subprocess.run([sys.executable, '-m', 'pymmr.run_job', par], cwd=d, env=env,
+                                     capture_output=True, text=True, timeout=600)
+                self.assertEqual(res.returncode, 0, res.stderr[-2000:])
+            reader = vtk.vtkXMLRectilinearGridReader()
+            reader.SetFileName(os.path.join(d, 'run_inv.vtr'))
+            reader.Update()
+            cd = reader.GetOutput().GetCellData()
+            names = [cd.GetArrayName(i) for i in range(cd.GetNumberOfArrays())]
+            self.assertIn('iteration 2', names)
+            s2 = vtk_to_numpy(cd.GetArray('iteration 2'))
+        self.assertTrue(np.all(np.isfinite(s2)))
+        # the block is recovered (higher conductivity there than around it)
+        inside = s_true.ravel() > 0.05
+        self.assertGreater(np.median(s2[inside]), 1.2 * np.median(s2[~inside]))
+
+    def test_joint_sensitivity(self):
+        """Joint MMR-ERT (inversion mode): the ERT columns are the off-line GridDC sensitivity."""
+        from pymmr.mmr import GridMMR
+        gm = self.grid(GridMMR)
+        gm.in_inv = True
+        gm.set_survey_mmr(np.array([[-20.0, 0.0, 0.0, 20.0, 0.0, 0.0]] * 2),
+                          np.array([[-5.0, 6.0, 0.0], [10.0, 12.0, 0.0]]), 1.0)
+        gm.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        s = TestOffLineSensitivity().sigma(gm.dc)
+        d, S = gm.fwd_mod(s, calc_sens=True)
+        self.assertTrue(gm.dc._uses_offline25())
+        g = self.grid()
+        g.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        d_dc, S_dc = g.fwd_mod(s, calc_sens=True)
+        n = self.rows.shape[0]
+        np.testing.assert_allclose(d[-n:, 0], d_dc, rtol=1e-10)
+        np.testing.assert_allclose(S[:, -n:], S_dc, rtol=1e-8, atol=1e-10 * np.abs(S_dc).max())
+
+
 class TestMumpsRefactorization(unittest.TestCase):
 
     def test_values_in_different_order(self):

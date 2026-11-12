@@ -106,10 +106,13 @@ z : elevation
 If the model file holds a rectilinear grid with a single cell along y, 2.5D modelling is performed: the
 conductivity is invariant along y.  Such files are produced by `GridDC.fv.toVTK` for a 2.5D grid.  Forward
 modelling, sensitivity and inversion (MMR, DC and joint) are available in 2.5D.
-- DC resistivity: the profile lies in the plane y = 0 (y coordinates of electrodes are ignored).
+- DC resistivity: electrodes can be anywhere along y.  When the current and potential electrodes of a
+  datum are at different y (off-line measurements, e.g. parallel lines), the data are computed with the
+  wavenumbers of KQuadrature (forward modelling, sensitivity and inversion); surveys on a line use the
+  fitted wavenumbers.  See docs/dc25_offline.md.
 - MMR: current electrodes and measurement points can be anywhere along y (their y coordinates are used),
   e.g. Bx and Bz are zero on the line of the electrodes and are measured off that line.  Electric dipoles at
-  the measurement points (pod dipole) are not available.  See docs/mmr25.md.
+  the measurement points (pod dipole) are available.  See docs/mmr25.md.
 
 *** MMR modeling ***
 It is possible to save ∆V values for predetermined dipoles, in addition to the Bx, By, and Bz values, when

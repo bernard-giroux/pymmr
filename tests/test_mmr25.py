@@ -385,7 +385,7 @@ class TestPlumbing(unittest.TestCase):
         g2 = GridMMR(grid())
         g2.set_solver(SOLVER)
         g2.set_survey_mmr(C1C2, xo, 2.0)
-        np.testing.assert_allclose(d, g2.fwd_mod(SIGMA * np.ones((g2.dc.fv.nc,))), rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(d, g2.fwd_mod(SIGMA * np.ones((g2.dc.fv.nc,))), rtol=1e-10, atol=1e-12 * np.abs(d).max())
         # with the sensitivity: (data, sens), data_pod_e (shape expected by run_job)
         (d_s, sens), v_s = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)), calc_sens=True)
         # (round-off: components that are 0 by symmetry differ by ~1e-16 of the data)
