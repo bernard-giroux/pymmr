@@ -266,7 +266,7 @@ def df_to_data(df):
 
     vintage = None
     if "date" in df:
-        vintage = df["date"].to_numpy().reshape(-1, 1)
+        vintage = df["date"].to_numpy()
 
     if "Bx" in df:
         # we have MMR data
@@ -303,13 +303,14 @@ def df_to_data(df):
         if vintage is None:
             return DataMMR(xs=c1c2, xo=xo, data=data, wt=wt, cs=cs, date=None)
         else:
-            data = []
+            # wt: all x, then all y, then all z
+            wt = wt.reshape(3, -1)
+            out = []
             for vin in np.unique(vintage):
                 ind = vintage == vin
-                data.append(
-                    DataMMR(xs=c1c2[ind, :], xo=xo[ind, :], data=data[ind, :], wt=wt[ind, :], cs=cs[ind], date=vin)
-                )
-            return data
+                out.append(DataMMR(xs=c1c2[ind, :], xo=xo[ind, :], data=data[ind, :], wt=wt[:, ind].ravel(),
+                                   cs=cs[ind], date=vin))
+            return out
     elif "V" in df:
         # we have ERT data
         try:
@@ -338,13 +339,12 @@ def df_to_data(df):
         if vintage is None:
             return DataERT(c1c2=c1c2, p1p2=p1p2, data=data, wt=wt, cs=cs, date=None)
         else:
-            data = []
+            out = []
             for vin in np.unique(vintage):
                 ind = vintage == vin
-                data.append(
-                    DataERT(c1c2=c1c2[ind, :], p1p2=p1p2[ind, :], data=data[ind], wt=wt[ind], cs=cs[ind], date=vin)
-                )
-            return data
+                out.append(DataERT(c1c2=c1c2[ind, :], p1p2=p1p2[ind, :], data=data[ind], wt=wt[ind], cs=cs[ind],
+                                   date=vin))
+            return out
     else:
         raise ValueError("Invalid DataFrame file")
 
