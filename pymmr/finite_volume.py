@@ -3355,7 +3355,8 @@ class Grid25FV(BaseFV):
         -----
         Exact solution at the true positions of the electrodes and points (surface electrodes are not
         moved to the depth of the first cell centre and have no image), used as primary field at the
-        measurement electrodes.
+        measurement electrodes.  The distance includes the offset along y between the electrode and
+        the point (the numerical 2.5D solution is computed for an offset of 0, see GridDC).
         """
         c1c2 = np.atleast_2d(np.array(c1c2, dtype=float))
         pts = np.atleast_2d(np.array(pts, dtype=float))
@@ -3366,8 +3367,9 @@ class Grid25FV(BaseFV):
             """Field of one electrode (image and gf = 4 if it is below the surface)."""
             below = self.below_surface(c)
             with np.errstate(divide='ignore', invalid='ignore'):
-                r = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] - c[:, 2])**2)
-                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] + c[:, 2] - 2 * self.z[-1])**2)
+                h2 = (pts[:, 0] - c[:, 0])**2 + (pts[:, 1] - c[:, 1])**2
+                r = np.sqrt(h2 + (pts[:, 2] - c[:, 2])**2)
+                ri = np.sqrt(h2 + (pts[:, 2] + c[:, 2] - 2 * self.z[-1])**2)
                 u = np.where(below, (1. / r + 1. / ri) / 4.0, 1. / (2.0 * r)) / s
             # electrode or point at infinity (e.g. pole-pole): no contribution (avoids inf - inf)
             remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),

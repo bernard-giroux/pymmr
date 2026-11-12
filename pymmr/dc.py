@@ -271,6 +271,33 @@ class GridDC:
         self.p1p2 = p1p2
         self.cs = cs
         self._check_cs()
+        if self.fv.dim == 2.5:
+            self._check_offline25()
+
+    def _check_offline25(self):
+        """Warn if current and potential electrodes of a datum are at different y (2.5D).
+
+        The 2.5D potential is computed for an offset of 0 along y between the current and the potential
+        electrodes: off-line measurements are not modelled (their y is ignored).
+        """
+        if self.c1c2 is None or self.p1p2 is None:
+            return
+        c1c2 = np.atleast_2d(np.asarray(self.c1c2, dtype=float))
+        p1p2 = np.atleast_2d(np.asarray(self.p1p2, dtype=float))
+        if c1c2.shape[0] != p1p2.shape[0]:
+            return
+        dy = np.zeros((c1c2.shape[0],))
+        for ic in range(0, c1c2.shape[1], 3):
+            for ip in range(0, p1p2.shape[1], 3):
+                ok = np.all(np.isfinite(c1c2[:, ic:ic + 3]), axis=1) & np.all(np.isfinite(p1p2[:, ip:ip + 3]), axis=1)
+                with np.errstate(invalid='ignore'):    # electrodes at infinity (masked)
+                    d = np.where(ok, np.abs(p1p2[:, ip + 1] - c1c2[:, ic + 1]), 0.0)
+                dy = np.maximum(dy, d)
+        n = np.count_nonzero(dy > 0.0)
+        if n > 0:
+            warnings.warn("2.5D: {0:d} of {1:d} data have current and potential electrodes at different y (largest "
+                          "offset {2:g} m); off-line measurements are not modelled, these data are computed as if "
+                          "all electrodes were at y = 0".format(n, dy.size, dy.max()), stacklevel=3)
 
     def set_roi(self, roi):
         """Define region of interest for computing sensitivity or for inversion.
