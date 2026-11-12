@@ -224,6 +224,13 @@ half-space; for a two-layer earth (100 Ω·m over 10 Ω·m at 10 m, h = 2.5 m), 
 along x and y at y = 0, 10 and 30 m are within 1.6% of the image series solution, and vertical dipoles
 on the line within 0.1% of `GridDC`. With h = 5 m the error is 16%, as for `GridDC` on the line.
 
+The 3D `pod_e` had the same problem, and worse: in a homogeneous half-space (h = 5 m), vertical dipoles
+were 0.69 to 0.85 times the exact value, and horizontal dipoles 0.26 to 1.25 times (smallest next to
+the current electrodes). With `dc.apply_bc`, the 3D fields for `pod_e` are now solved again with the
+image setting of the DC grid (same factorization) and, with `dc.exact_primary`, the data are Q (u − u0) + u0 at the true
+positions, as in `GridDC`: exact for a half-space, and equal to `GridDC` in a layered earth
+(`tests/test_dc3d.py`, `test_pod_e`).
+
 Usage in the rest of the package (phase 6):
 
 - `run_job.py`: a VTK model one cell thick along y gives a 2.5D model for MMR as for DC (`fwd mmr`,
