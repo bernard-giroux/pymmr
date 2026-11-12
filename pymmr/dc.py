@@ -25,7 +25,8 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.stats.mstats import gmean
 
-from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver, KSource
+from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver, Solver25, KSource
+from pymmr.kquad import KQuadrature, select_k
 
 # TODO: généraliser ROI pour voxels arbitraires
 
@@ -145,6 +146,12 @@ class GridDC:
         self.correct_quadrature = False
         self.exact_primary = True        # 2.5D with apply_bc: analytic primary field at measurement electrodes
         self.local_sigma0 = True         # 2.5D with apply_bc: reference fields use conductivity at electrodes
+        # 2.5D, current and potential electrodes at different y (off-line): 'auto' uses the wavenumbers of
+        # KQuadrature (n_k_offline) when the survey has off-line data, True always, False never (off-line
+        # data are then computed as if all electrodes were at y = 0)
+        self.offline25 = 'auto'
+        self.n_k_offline = 30
+        self._off25 = None               # plan of the off-line modelling (see _plan_offline25)
         self._sigma0 = None              # conductivity of reference model used for boundary correction
         self.keep_c1c2 = True  # keep dipoles for forming RHS term of equation
                                # system, this will be false when computing
@@ -191,6 +198,7 @@ class GridDC:
         self._c1c2 = tmp
         self.electrodes_sorted = False
         self.Q = None  # reset interpolation matrix because electrodes will be sorted
+        self._off25 = None
 
     @property
     def cs(self):
@@ -232,6 +240,7 @@ class GridDC:
         self._p1p2 = tmp
         self.electrodes_sorted = False
         self.Q = None  # reset interpolation matrix because electrodes will be sorted
+        self._off25 = None
 
     @property
     def units(self):
@@ -274,18 +283,17 @@ class GridDC:
         if self.fv.dim == 2.5:
             self._check_offline25()
 
-    def _check_offline25(self):
-        """Warn if current and potential electrodes of a datum are at different y (2.5D).
+    def _offline_dy(self):
+        """Largest offset along y between the current and potential electrodes of each datum (2.5D).
 
-        The 2.5D potential is computed for an offset of 0 along y between the current and the potential
-        electrodes: off-line measurements are not modelled (their y is ignored).
+        Returns None if the survey is not defined.
         """
         if self.c1c2 is None or self.p1p2 is None:
-            return
+            return None
         c1c2 = np.atleast_2d(np.asarray(self.c1c2, dtype=float))
         p1p2 = np.atleast_2d(np.asarray(self.p1p2, dtype=float))
         if c1c2.shape[0] != p1p2.shape[0]:
-            return
+            return None
         dy = np.zeros((c1c2.shape[0],))
         for ic in range(0, c1c2.shape[1], 3):
             for ip in range(0, p1p2.shape[1], 3):
@@ -293,11 +301,33 @@ class GridDC:
                 with np.errstate(invalid='ignore'):    # electrodes at infinity (masked)
                     d = np.where(ok, np.abs(p1p2[:, ip + 1] - c1c2[:, ic + 1]), 0.0)
                 dy = np.maximum(dy, d)
+        return dy
+
+    def _uses_offline25(self):
+        """True if the 2.5D data are computed with the off-line method (see offline25)."""
+        if self.fv.dim != 2.5 or self.offline25 is False:
+            return False
+        if self.offline25 is True:
+            return True
+        dy = self._offline_dy()
+        return dy is not None and bool(np.any(dy > 0.0))
+
+    def _check_offline25(self):
+        """Warn if current and potential electrodes of a datum are at different y and offline25 is False (2.5D).
+
+        The 2.5D potential is then computed for an offset of 0 along y between the current and the potential
+        electrodes: off-line measurements are not modelled (their y is ignored).
+        """
+        if self.offline25 is not False:
+            return
+        dy = self._offline_dy()
+        if dy is None:
+            return
         n = np.count_nonzero(dy > 0.0)
         if n > 0:
             warnings.warn("2.5D: {0:d} of {1:d} data have current and potential electrodes at different y (largest "
-                          "offset {2:g} m); off-line measurements are not modelled, these data are computed as if "
-                          "all electrodes were at y = 0".format(n, dy.size, dy.max()), stacklevel=3)
+                          "offset {2:g} m); off-line measurements are not modelled with offline25 = False, these data "
+                          "are computed as if all electrodes were at y = 0".format(n, dy.size, dy.max()), stacklevel=3)
 
     def set_roi(self, roi):
         """Define region of interest for computing sensitivity or for inversion.
@@ -451,6 +481,12 @@ class GridDC:
 
         if q is None:
             self._check_cs()
+
+        if q is None and self.p1p2 is not None and self._uses_offline25():
+            if calc_sens or calc_J:
+                raise NotImplementedError('2.5D with off-line measurements (offline25): sensitivity and current '
+                                          'density not implemented yet')
+            return self._fwd_offline25(sigma)
 
         if calc_sens is True:
             if not isinstance(self.fv, (GridFV, Grid25FV)):
@@ -995,6 +1031,125 @@ class GridDC:
             if self.verbose and self.fv.comm.rank == 0:
                 print('  Optimizing {0:d} wavenumbers for r in [{1:g}, {2:g}] m'.format(*r_range))
             self.fv._optimize_k_g(*r_range)
+
+    def _plan_offline25(self):
+        """Current electrodes, wavenumbers, interpolation and weights of the off-line modelling (2.5D).
+
+        The 2D fields depend on the (x, z) position of the current electrodes only: one field per unique
+        (x, z) position, for a unit current.  Each datum is the sum of the terms of its pairs of current and
+        potential electrodes (up to 4), each with the weights W(dy) of KQuadrature for the offset dy along y
+        between the two electrodes (see docs/dc25_offline.md).
+        """
+        if self._off25 is not None:
+            return self._off25
+        fv = self.fv
+        c1c2 = np.atleast_2d(self.c1c2)
+        p1p2 = np.atleast_2d(self.p1p2)
+        n = c1c2.shape[0]
+        cs = self.cs * np.ones((n,))
+
+        def unique_xz(e):
+            ok = np.all(np.isfinite(e), axis=1)
+            u, inv = np.unique(e[ok][:, [0, 2]], axis=0, return_inverse=True)
+            ind = -np.ones((e.shape[0],), dtype=int)
+            ind[ok] = inv.ravel()
+            return np.c_[u[:, 0], np.zeros((u.shape[0],)), u[:, 1]], ind
+
+        poles, ind_c = unique_xz(np.vstack((c1c2[:, :3], c1c2[:, 3:6])))
+        pts, ind_p = unique_xz(np.vstack((p1p2[:, :3], p1p2[:, 3:6])))
+
+        pairs = []
+        r_xz, r_3d = [], []
+        for jc, (sc, c0) in enumerate(((1.0, 0), (-1.0, 3))):
+            for jp, (sp_, p0) in enumerate(((1.0, 0), (-1.0, 3))):
+                ic = ind_c[jc * n:(jc + 1) * n]
+                ip = ind_p[jp * n:(jp + 1) * n]
+                rows = np.where((ic >= 0) & (ip >= 0))[0]
+                if rows.size == 0:
+                    continue
+                c = c1c2[rows, c0:c0 + 3]
+                p = p1p2[rows, p0:p0 + 3]
+                d = p - c
+                r_xz.append(np.hypot(d[:, 0], d[:, 2]))
+                r_3d.append(np.linalg.norm(d, axis=1))
+                pairs.append({'rows': rows, 'pole': ic[rows], 'pt': ip[rows], 'w': sc * sp_ * cs[rows],
+                              'c': c, 'p': p, 'dy': d[:, 1]})
+        if not pairs:
+            raise ValueError('2.5D off-line modelling: no pair of finite current and potential electrodes')
+        r_xz = np.concatenate(r_xz)
+        r_xz = r_xz[r_xz > 0]
+        h_min = min(np.min(fv.hx), np.min(fv.hz))
+        r_min = max(r_xz.min() if r_xz.size else h_min, h_min / 2)
+        r_max = max(4 * np.concatenate(r_3d).max(), 100 * r_min)
+        k = select_k(r_min, r_max, self.n_k_offline)
+        kq = KQuadrature(k)
+        for t in pairs:
+            t['W'] = kq.weights(t['dy'], 'even')     # n x n_k
+        pp = fv.process_surface_elec(pts.copy())
+        self._off25 = {'poles': poles, 'k': k, 'pairs': pairs, 'n_data': n,
+                       'Q': fv.linear_interp(pp[:, 0], pp[:, 1], pp[:, 2])}
+        return self._off25
+
+    def _fwd_offline25(self, sigma):
+        """Forward modelling with current and potential electrodes at different y (2.5D).
+
+        For a current electrode and a potential electrode at a distance dy along y, the potential is
+
+            u = sum_i W_i(dy) Q (U_i - U0_i) + u0
+
+        with U_i the 2D field of wavenumber k_i, W_i(dy) the even weights of KQuadrature, Q the interpolation
+        in the x-z plane, U0_i the analytic fields of the boundary correction and u0 the analytic potential at
+        the true positions, dy included (apply_bc and exact_primary; without them, the U_i alone).
+        """
+        if sigma is None:
+            raise RuntimeError('Variable sigma should be given as input.')
+        plan = self._plan_offline25()
+        fv = self.fv
+        poles, k = plan['poles'], plan['k']
+        n_p = poles.shape[0]
+        if self.verbose and fv.comm.rank == 0:
+            print('    Off-line measurements: {0:d} wavenumbers in [{1:g}, {2:g}] 1/m, {3:d} current '
+                  'electrode position(s)'.format(k.size, k[0], k[-1], n_p))
+        exact = self.apply_bc and self.exact_primary
+        sigma0 = None
+        U0 = None
+        if self.apply_bc:
+            sigma0 = self._electrode_sigma(poles, sigma) if self.local_sigma0 else gmean(sigma)
+            src, _ = fv.boundary_source(poles, sigma0, np.ones((n_p,)), correct_quadrature=exact, k=k)
+            q, U0 = src.q, src.U0
+        else:
+            pp = fv.process_surface_elec(poles.copy())
+            q0 = fv.linear_interp(pp[:, 0], pp[:, 1], pp[:, 2]).T.toarray() / fv.volume_voxels()[:, None]
+            q = np.broadcast_to(q0, (k.size,) + q0.shape)
+
+        A, _ = fv.build_A(sigma)
+        par = fv.get_solver_params()
+        Q = plan['Q']
+        QU = np.empty((k.size, Q.shape[0], n_p))
+        for i, k_i in enumerate(k):
+            s = Solver(par, Solver25._L(A, sigma, k_i), verbose=(self.verbose > 1), comm=fv.comm,
+                       n_threads=fv.n_threads)
+            F = s.solve(q[i]).reshape(fv.nc, n_p)
+            if exact:
+                F = F - U0[i]
+            QU[i] = Q @ F
+            del s
+
+        data = np.zeros((plan['n_data'],))
+        for t in plan['pairs']:
+            vals = np.einsum('dk,kd->d', t['W'], QU[:, t['pt'], t['pole']])
+            if exact:
+                s0 = sigma0 if np.isscalar(sigma0) else np.asarray(sigma0).ravel()[t['pole']]
+                vals = vals + fv.u_homog_at(t['c'], t['p'], s0, 1.0, offset_y=True)
+            np.add.at(data, t['rows'], t['w'] * vals)
+        self.u = None
+        data = self._units_scaling * data
+        if self.sort_electrodes and self.electrodes_sorted and self.sort_back is not None:
+            # c1c2 and p1p2 were sorted by a previous call (on-line method)
+            data = data[self.sort_back]
+        if self.verbose and fv.comm.rank == 0:
+            print('End of modelling.')
+        return data
 
     def _sort_electrodes(self):
 
