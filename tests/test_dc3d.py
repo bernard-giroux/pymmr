@@ -170,12 +170,22 @@ class TestMMR(unittest.TestCase):
             g.dc.fv.surface_images = images
             B.append(g.fwd_mod(1e-2 * np.ones(g.dc.nc)))
             self.assertEqual(g.dc.fv.surface_images, images)   # setting restored
-            # air at least as thick as the earth part of the grid, whatever the size of the top cells
-            self.assertGreaterEqual(g.fv.z[-1], g.dc.fv.z[-1] - g.dc.fv.z[0])
         np.testing.assert_allclose(B[0], B[1], rtol=1e-10, atol=1e-10 * np.abs(B[1]).max())
         Bn = normal_field(xs, xo)
         Bn = np.array(Bn)
         np.testing.assert_allclose(B[0][:, :2].T, Bn, rtol=0.15, atol=1e-3 * np.abs(Bn).max())
+
+    def test_air_thickness(self):
+        """Air at least as thick as the earth part of the grid, whatever the size of the top cells."""
+        h, htop = 40.0, 0.25
+        x = padded(np.arange(-80., 80.1, h), h, 4)
+        zt = -np.cumsum(np.r_[np.full(4, htop), htop * 2.0**np.arange(1, 8)])
+        z = padded(np.r_[np.arange(-160., zt[-1] - h / 2, h), zt[::-1], 0.0] + 50.0, h, 6, top=False)
+        g = GridMMR((x, x, z))     # surface at z = 50 m, top cells of 0.25 m: the default air is 55 m
+        g.set_solver(SOLVER)
+        g.set_survey_mmr(xs=np.array([[-40., 0, 50., 40., 0, 50.]]), xo=np.array([[0., 20., 50.]]), cs=1.0)
+        g.fwd_mod(1e-2 * np.ones(g.dc.nc))
+        self.assertGreaterEqual(g.fv.z[-1] - g.dc.fv.z[-1], g.dc.fv.z[-1] - g.dc.fv.z[0])
 
 
 if __name__ == '__main__':
