@@ -43,9 +43,30 @@ time. `correct_quadrature` does not apply: U0_i is always removed in the wavenum
 - `True`: always (e.g. to compare);
 - `False`: never; off-line data are computed as if all electrodes were at y = 0, with a warning.
 
-The number of wavenumbers is `GridDC.n_k_offline`. Sensitivity (`calc_sens`) and current density
-(`calc_J`) are not implemented yet with the off-line method (`NotImplementedError`), so off-line data
-cannot be inverted yet.
+The number of wavenumbers is `GridDC.n_k_offline`. Current density (`calc_J`) is not available with the
+off-line method (`NotImplementedError`): the field depends on y.
+
+## Sensitivity
+
+The source terms of the boundary correction do not depend on σ, so with V_i the field of a unit
+source at the potential electrode (adjoint field; L_i⁻ᵀ = Vc L_i⁻¹ Vc⁻¹, Dᵀ = −Vf G Vc⁻¹):
+
+    d(Q U_i)/d(ln σ) = −[ Dm Gfᵀ (G U_i ∘ m² Vf ∘ G V_i) + k_i² σ Vc U_i ∘ V_i ]
+
+as in `_sens25` for the fitted wavenumbers, with g_i / 2 replaced by W_i(Δy) for each pair of
+electrodes. U0_i and u0 are proportional to 1/σ0, σ0 being the conductivity at the current electrode
+(`local_sigma0`) or the geometric mean of the model, which adds −R d(ln σ0)/d(ln σ), R being their
+contribution to the datum (for each pair, since σ0 depends on its current electrode).
+
+The fields are solved one wavenumber at a time, the current and potential electrodes together (one
+factorization); the products are computed once per unique pair of (x, z) positions (parallel lines
+share them), in chunks.
+
+Tests (`tests/test_dc25.py`, `TestOffLineSensitivity`): against central finite differences, cells at
+the current electrodes, between and below them, dipole–dipole, pole–dipole and pole–pole data
+off the line: 1e-6 (local σ0 or geometric mean); without `apply_bc`, 1e-4, limited by the round-off of
+the finite differences (the error grows as the step decreases). On the line, the sensitivity agrees with
+the fitted wavenumbers within 0.2%. The region of interest (`set_roi`) gives the rows of the full matrix.
 
 ## Accuracy (`tests/test_dc25.py`, `TestOffLineModelling`)
 
@@ -66,6 +87,4 @@ the 3D results converge towards them as the padding along y increases (0.73, 0.8
 
 ## Not yet done
 
-- Sensitivity: in `_sens25`, g_i / 2 becomes W_i(Δy) for each pair of electrodes (up to 4 per datum),
-  plus the derivative of the exact-primary term.
-- Inversion, `run_job` and joint MMR–ERT inversion with off-line ERT data.
+- Inversion, `run_job` and joint MMR–ERT inversion with off-line ERT data (not tested yet).

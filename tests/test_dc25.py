@@ -443,6 +443,7 @@ class TestOffLineModelling(unittest.TestCase):
                 rows.append([-10.0, 0, 0, 0.0, 0, 0, xp, yp, 0, xp + 5.0, yp, 0])
                 rows.append([-10.0, 0, 0, np.inf, np.inf, np.inf, xp, yp, 0, xp, yp + 5.0, 0])
         rows.append([-10.0, 0, 0, np.inf, np.inf, np.inf, 30.0, 20.0, 0, np.inf, np.inf, np.inf])   # pole-pole
+        rows.append([-20.0, -5.0, 0, 0.0, 15.0, 0, 20.0, 5.0, 0, 30.0, -10.0, 0])   # current electrodes at different y
         rows = np.array(rows)
         cls.rows = rows[np.random.default_rng(1).permutation(rows.shape[0])]
 
@@ -520,7 +521,80 @@ class TestOffLineModelling(unittest.TestCase):
     def test_not_implemented(self):
         g = self.grid()
         with self.assertRaises(NotImplementedError):
-            g.fwd_mod(0.01 * np.ones(g.fv.nc), calc_sens=True)
+            g.fwd_mod(0.01 * np.ones(g.fv.nc), calc_J=True)
+
+
+class TestOffLineSensitivity(unittest.TestCase):
+    """Sensitivity of off-line data (offline25), against finite differences."""
+
+    h = 2.0
+    rows = np.array([
+        [-10., 0, 0, 0., 0, 0, 6., 8., 0, 10., 8., 0],
+        [-10., 0, 0, 0., 0, 0, 4., 0., 0, 8., 0., 0],
+        [-6., 0, 0, np.inf, np.inf, np.inf, 2., 5., 0, 2., 9., 0],
+        [-6., 0, 0, np.inf, np.inf, np.inf, 12., 15., 0, np.inf, np.inf, np.inf],
+        [8., 3., 0, 14., 3., 0, -4., 10., 0, 0., 10., 0],
+        [-12., -4., 0, -2., 6., 0, 4., 2., 0, 9., -3., 0],    # current electrodes at different y
+    ])
+
+    def grid(self, rows=None, **kw):
+        h = self.h
+        pad = np.cumsum(calc_padding(h, 10))
+        cx = np.arange(-30, 30 + h / 2, h)
+        cz = np.arange(-16, h / 2, h)
+        g = GridDC((np.r_[cx[0] - pad[::-1], cx, cx[-1] + pad], np.r_[cz[0] - pad[::-1], cz]))
+        g.set_solver('mumps' if fvm.has_mumps else 'superlu')
+        for a, v in kw.items():
+            setattr(g, a, v)
+        rows = self.rows if rows is None else rows
+        g.set_survey_ert(rows[:, :6], rows[:, 6:], 1.5)
+        return g
+
+    def sigma(self, g):
+        return 0.01 * 10**np.random.default_rng(3).uniform(-0.5, 0.5, g.fv.nc)
+
+    def check_fd(self, g, eps, tol):
+        sigma = self.sigma(g)
+        d, J = g.fwd_mod(sigma, calc_sens=True)
+        np.testing.assert_allclose(d, g.fwd_mod(sigma), rtol=1e-12, atol=1e-12 * np.abs(d).max())
+        xc, zc = g.fv.centre_voxels()[0], g.fv.centre_voxels()[-1]
+        # cells at the current electrodes (conductivity of the reference fields), between and below them
+        for xe, ze in ((-10, -1), (-6, -1), (8, -1), (4, -5), (-2, -9)):
+            c = int(np.argmin((xc - xe)**2 + (zc - ze)**2))
+            sp_, sm = sigma.copy(), sigma.copy()
+            sp_[c] *= np.exp(eps)
+            sm[c] *= np.exp(-eps)
+            fd = (g.fwd_mod(sp_) - g.fwd_mod(sm)) / (2 * eps)
+            self.assertLess(np.abs(J[c] - fd).max() / np.abs(fd).max(), tol, msg=f'cell at ({xe}, {ze})')
+
+    def test_fd(self):
+        self.check_fd(self.grid(), 1e-4, 1e-5)
+
+    def test_fd_gmean_sigma0(self):
+        self.check_fd(self.grid(local_sigma0=False), 1e-4, 1e-5)
+
+    def test_fd_no_boundary_correction(self):
+        # larger fields near the point sources: round-off of the finite differences ~1e-5
+        self.check_fd(self.grid(apply_bc=False), 1e-3, 2e-4)
+
+    def test_roi(self):
+        g = self.grid()
+        sigma = self.sigma(g)
+        _, J = g.fwd_mod(sigma, calc_sens=True)
+        g.set_roi((-10., 20., -8., 0.))
+        _, J_roi = g.fwd_mod(sigma, calc_sens=True)
+        np.testing.assert_allclose(J_roi, J[g.ind_roi, :], rtol=1e-10, atol=1e-12 * np.abs(J).max())
+
+    def test_online_agreement(self):
+        """On the line, same sensitivity as the fitted wavenumbers."""
+        rows = self.rows[[1]]
+        rows = np.r_[rows, [[-6., 0, 0, np.inf, np.inf, np.inf, 2., 0, 0, 6., 0, 0]]]
+        J = []
+        for off in (True, False):
+            g = self.grid(rows, offline25=off)
+            J.append(g.fwd_mod(self.sigma(g), calc_sens=True)[1])
+        err = np.linalg.norm(J[0] - J[1], axis=0) / np.linalg.norm(J[1], axis=0)
+        self.assertLess(err.max(), 1e-2)
 
 
 class TestMumpsRefactorization(unittest.TestCase):
