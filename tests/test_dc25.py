@@ -389,6 +389,23 @@ class TestOffLine(unittest.TestCase):
             self.survey(12.0, 12.0)            # all electrodes on the line y = 12 m
             self.survey(12.0, 12.0, pole=True)  # remote electrode at infinity
 
+    def test_offline_as_online(self):
+        """Off-line data are computed as if all electrodes were at y = 0 (exact primary included)."""
+        import warnings
+        x = np.arange(-50.0, 50.1, 2.5)
+        z = np.arange(-30.0, 0.1, 2.5)
+        c1c2 = np.array([[0.0, 0.0, 0.0, np.inf, np.inf, np.inf]] * 3)
+        xp = np.array([10.0, 20.0, 30.0])
+        d = []
+        for yp in (0.0, 10.0):
+            g = GridDC((x, z))
+            p1p2 = np.c_[xp, np.full(3, yp), np.zeros(3), np.full((3, 3), np.inf)]
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                g.set_survey_ert(c1c2, p1p2, 1.0)
+            d.append(g.fwd_mod(0.01 * np.ones(g.fv.nc)))
+        np.testing.assert_allclose(d[1], d[0], rtol=1e-12)
+
 
 class TestMumpsRefactorization(unittest.TestCase):
 

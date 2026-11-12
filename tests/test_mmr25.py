@@ -386,6 +386,11 @@ class TestPlumbing(unittest.TestCase):
         g2.set_solver(SOLVER)
         g2.set_survey_mmr(C1C2, xo, 2.0)
         np.testing.assert_allclose(d, g2.fwd_mod(SIGMA * np.ones((g2.dc.fv.nc,))), rtol=1e-10, atol=1e-12)
+        # with the sensitivity: (data, sens), data_pod_e (shape expected by run_job)
+        (d_s, sens), v_s = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)), calc_sens=True)
+        np.testing.assert_allclose(d_s, d, rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(v_s, v, rtol=1e-10, atol=1e-12)
+        self.assertEqual(sens.shape[1], d.size)
         # new survey without electric dipoles: the previous ones must not be kept
         g.set_survey_mmr(C1C2, xo, 1.0)
         d = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))

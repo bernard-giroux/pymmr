@@ -423,6 +423,10 @@ class GridMMR:
             components Bx, By & Bz (pT)
         sens : ndarray
             Sensitivity matrix if `calc_sens` is True.
+        data_pod_e : ndarray
+            Potential differences of the electric dipoles at the measurement points if `pod_e` was
+            given to `set_survey_mmr` (not in inversion).  The function then returns
+            `data, data_pod_e`, or `(data, sens), data_pod_e` if `calc_sens` is True.
 
         Notes
         -----
@@ -602,6 +606,8 @@ class GridMMR:
             if self.in_inv and self.dc.c1c2 is not None:
                 data = np.r_[data, res_dc[0].reshape(-1, 1)]
                 sens = np.c_[sens, res_dc[1]]
+            if data_pod_e is not None:
+                return (data, sens), data_pod_e
             return data, sens
         else:
             if self.in_inv and self.dc.c1c2 is not None:
@@ -661,6 +667,8 @@ class GridMMR:
         if verbose:
             print('End of modelling.')
         if calc_sens:
+            if data_pod_e is not None:
+                return (data, sens), data_pod_e
             return data, sens
         if data_pod_e is not None:
             return data, data_pod_e
@@ -752,7 +760,7 @@ class GridMMR:
                     if U0 is not None:
                         c = np.c_[poles[t['pole'], 0], t['ys'], poles[t['pole'], 2]]
                         s0 = pod['sigma0'] if np.isscalar(pod['sigma0']) else pod['sigma0'][t['pole']]
-                        vals = vals + self.dc.fv.u_homog_at(c, pts[t['rec']], s0, 1.0)
+                        vals = vals + self.dc.fv.u_homog_at(c, pts[t['rec']], s0, 1.0, offset_y=True)
                     data[t['rows'], n] += sign_end * t['w'] * vals
         return data
 
