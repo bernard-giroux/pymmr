@@ -365,15 +365,17 @@ class TestPlumbing(unittest.TestCase):
 
 @unittest.skipUnless(fvm.has_mumps, 'MUMPS not available')
 class TestOffLine(unittest.TestCase):
-    """Off-line measurements are not modelled in 2.5D: warning when the electrodes of a datum differ in y."""
+    """Off-line measurements: warning only with offline25 = False (data computed as if at y = 0)."""
 
-    def survey(self, y_c, y_p, pole=False):
+    def survey(self, y_c, y_p, pole=False, offline25=False):
         g = GridDC((np.arange(-50.0, 50.1, 5.0), np.arange(-30.0, 0.1, 5.0)))
+        g.offline25 = offline25
         c1c2 = np.array([[-20.0, y_c, 0.0, 20.0, y_c, 0.0], [-10.0, y_c, 0.0, 10.0, y_c, 0.0]])
         if pole:
             c1c2[:, 3:] = np.inf
         p1p2 = np.array([[0.0, y_p, 0.0, 5.0, y_p, 0.0], [-5.0, y_c, 0.0, 0.0, y_c, 0.0]])
         g.set_survey_ert(c1c2, p1p2, 1.0)
+        return g
 
     def test_warning(self):
         with self.assertWarnsRegex(UserWarning, r'1 of 2 data .*largest offset 7 m'):
@@ -388,9 +390,13 @@ class TestOffLine(unittest.TestCase):
             self.survey(0.0, 0.0)
             self.survey(12.0, 12.0)            # all electrodes on the line y = 12 m
             self.survey(12.0, 12.0, pole=True)  # remote electrode at infinity
+            # default ('auto'): off-line data are modelled
+            g = self.survey(0.0, 7.0, offline25='auto')
+            self.assertTrue(g._uses_offline25())
+            self.assertFalse(self.survey(12.0, 12.0, offline25='auto')._uses_offline25())
 
     def test_offline_as_online(self):
-        """Off-line data are computed as if all electrodes were at y = 0 (exact primary included)."""
+        """offline25 = False: off-line data are computed as if all electrodes were at y = 0."""
         import warnings
         x = np.arange(-50.0, 50.1, 2.5)
         z = np.arange(-30.0, 0.1, 2.5)
@@ -399,12 +405,122 @@ class TestOffLine(unittest.TestCase):
         d = []
         for yp in (0.0, 10.0):
             g = GridDC((x, z))
+            g.offline25 = False
             p1p2 = np.c_[xp, np.full(3, yp), np.zeros(3), np.full((3, 3), np.inf)]
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 g.set_survey_ert(c1c2, p1p2, 1.0)
             d.append(g.fwd_mod(0.01 * np.ones(g.fv.nc)))
         np.testing.assert_allclose(d[1], d[0], rtol=1e-12)
+
+
+def layered_potential(rho1, rho2, hl):
+    """Potential of a unit surface current electrode over a two-layer earth (image series), at surface distance r."""
+    kk = (rho2 - rho1) / (rho2 + rho1)
+    nn = np.arange(1, 800)
+
+    def V(r):
+        r = np.atleast_1d(np.abs(np.asarray(r, float)))[:, None]
+        return rho1 / (2 * np.pi) * (1 / r[:, 0] + 2 * np.sum(kk**nn / np.sqrt(r**2 + (2 * nn * hl)**2), axis=1))
+    return V
+
+
+class TestOffLineModelling(unittest.TestCase):
+    """Off-line measurements modelled with the wavenumbers of KQuadrature (offline25)."""
+
+    @classmethod
+    def setUpClass(cls):
+        h = 2.5
+        pad = np.cumsum(calc_padding(h, 20))
+        core = np.arange(-100.0, 100.0 + h / 2, h)
+        cls.x = np.r_[core[0] - pad[::-1], core, core[-1] + pad]
+        z = np.arange(-50.0, h / 2, h)
+        cls.z = np.r_[z[0] - pad[::-1], z]
+        # dipole-dipole and pole-dipole, potential dipoles along x and y, on and off the line, in random order
+        rows = []
+        for yp in (0.0, 10.0, 30.0):
+            for xp in (10.0, 25.0, 50.0):
+                rows.append([-10.0, 0, 0, 0.0, 0, 0, xp, yp, 0, xp + 5.0, yp, 0])
+                rows.append([-10.0, 0, 0, np.inf, np.inf, np.inf, xp, yp, 0, xp, yp + 5.0, 0])
+        rows.append([-10.0, 0, 0, np.inf, np.inf, np.inf, 30.0, 20.0, 0, np.inf, np.inf, np.inf])   # pole-pole
+        rows = np.array(rows)
+        cls.rows = rows[np.random.default_rng(1).permutation(rows.shape[0])]
+
+    def grid(self):
+        g = GridDC((self.x, self.z))
+        g.set_solver('mumps' if fvm.has_mumps else 'superlu')
+        g.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 2.0)
+        return g
+
+    def reference(self, V, scale=False):
+        """Analytic data for a potential V(r) of surface electrodes (current 2 A, units of the grid: mV).
+
+        With scale, also returns the sum of the absolute values of the terms of each datum.
+        """
+        d = np.zeros(self.rows.shape[0])
+        a = np.zeros(self.rows.shape[0])
+        for c0, sc in ((0, 1.0), (3, -1.0)):
+            for p0, sp_ in ((6, 1.0), (9, -1.0)):
+                c, p = self.rows[:, c0:c0 + 3], self.rows[:, p0:p0 + 3]
+                ok = np.all(np.isfinite(c), axis=1) & np.all(np.isfinite(p), axis=1)
+                v = V(np.linalg.norm(p[ok] - c[ok], axis=1))
+                d[ok] += sc * sp_ * v
+                a[ok] += np.abs(v)
+        if scale:
+            return 2.0 * 1e3 * d, 2.0 * 1e3 * a
+        return 2.0 * 1e3 * d
+
+    def test_half_space(self):
+        g = self.grid()
+        self.assertTrue(g._uses_offline25())
+        d = g.fwd_mod(0.01 * np.ones(g.fv.nc))
+        np.testing.assert_allclose(d, self.reference(lambda r: 1 / (2 * np.pi * 0.01 * r)), rtol=1e-8)
+
+    def test_layered(self):
+        g = self.grid()
+        zc = g.fv.centre_voxels()[-1]
+        rho1, rho2, hl = 100.0, 10.0, 10.0
+        d = g.fwd_mod(np.where(zc > -hl, 1 / rho1, 1 / rho2))
+        ref, a = self.reference(layered_potential(rho1, rho2, hl), scale=True)
+        # 2% of the datum, or 0.2% of the sum of its terms when they nearly cancel (dipoles far off the line)
+        err = np.abs(d - ref) / np.maximum(np.abs(ref), 0.1 * a)
+        self.assertLess(err.max(), 0.02)
+
+    def test_online_data(self):
+        """On the line, the off-line method agrees with the fitted wavenumbers."""
+        on = np.abs(self.rows[:, 7]) == 0.0
+        on &= ~np.isfinite(self.rows[:, 10]) | (self.rows[:, 10] == 0.0)
+        rng = np.random.default_rng(0)
+        zc = self.grid().fv.centre_voxels()[-1]
+        sigma = np.where(zc > -10.0, 0.01, 0.1) * 10**rng.uniform(-0.2, 0.2, zc.size)
+        d = []
+        for off in (True, False):
+            g = GridDC((self.x, self.z))
+            g.set_solver('mumps' if fvm.has_mumps else 'superlu')
+            g.offline25 = off
+            g.set_survey_ert(self.rows[on, :6], self.rows[on, 6:], 2.0)
+            d.append(g.fwd_mod(sigma))
+        np.testing.assert_allclose(d[0], d[1], rtol=5e-3)
+
+    def test_plan_parameters(self):
+        """The plan is rebuilt for a new n_k_offline, the current is applied at each call."""
+        g = self.grid()
+        sigma = 0.01 * np.ones(g.fv.nc)
+        d1 = g.fwd_mod(sigma)
+        np.testing.assert_allclose(g.fwd_mod(sigma), d1, rtol=1e-12)  # cached plan (solver round-off)
+        g._off25 = None
+        np.testing.assert_allclose(g.fwd_mod(sigma), d1, rtol=1e-12)  # fresh plan
+        cs = np.linspace(0.5, 3.0, self.rows.shape[0])
+        g.cs = cs
+        np.testing.assert_allclose(g.fwd_mod(sigma), d1 * cs / 2.0, rtol=1e-12)
+        g.n_k_offline = 20
+        g.fwd_mod(sigma)
+        self.assertEqual(g._off25['k'].size, 20)
+
+    def test_not_implemented(self):
+        g = self.grid()
+        with self.assertRaises(NotImplementedError):
+            g.fwd_mod(0.01 * np.ones(g.fv.nc), calc_sens=True)
 
 
 class TestMumpsRefactorization(unittest.TestCase):
