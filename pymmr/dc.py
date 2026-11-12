@@ -484,10 +484,10 @@ class GridDC:
             self._check_cs()
 
         if q is None and self.p1p2 is not None and self._uses_offline25():
-            if calc_sens or calc_J:
-                raise NotImplementedError('2.5D with off-line measurements (offline25): sensitivity and current '
-                                          'density not implemented yet')
-            return self._fwd_offline25(sigma)
+            if calc_J:
+                raise NotImplementedError('2.5D with off-line measurements (offline25): current density not '
+                                          'implemented')
+            return self._fwd_offline25(sigma, calc_sens=calc_sens)
 
         if calc_sens is True:
             if not isinstance(self.fv, (GridFV, Grid25FV)):
@@ -1088,12 +1088,20 @@ class GridDC:
         kq = KQuadrature(k)
         for t in pairs:
             t['W'] = kq.weights(t['dy'], 'even')     # n x n_k
+        # unique (current electrode, potential electrode) positions in the x-z plane (sensitivity)
+        cp = np.vstack([np.c_[t['pole'], t['pt']] for t in pairs])
+        combos, inv = np.unique(cp, axis=0, return_inverse=True)
+        inv = inv.ravel()
+        i0 = 0
+        for t in pairs:
+            t['combo'] = inv[i0:i0 + t['rows'].size]
+            i0 += t['rows'].size
         pp = fv.process_surface_elec(pts.copy())
-        self._off25 = {'poles': poles, 'k': k, 'pairs': pairs, 'n_data': n,
+        self._off25 = {'poles': poles, 'pts': pp, 'k': k, 'pairs': pairs, 'n_data': n, 'combos': combos,
                        'Q': fv.linear_interp(pp[:, 0], pp[:, 1], pp[:, 2])}
         return self._off25
 
-    def _fwd_offline25(self, sigma):
+    def _fwd_offline25(self, sigma, calc_sens=False):
         """Forward modelling with current and potential electrodes at different y (2.5D).
 
         For a current electrode and a potential electrode at a distance dy along y, the potential is
@@ -1103,56 +1111,127 @@ class GridDC:
         with U_i the 2D field of wavenumber k_i, W_i(dy) the even weights of KQuadrature, Q the interpolation
         in the x-z plane, U0_i the analytic fields of the boundary correction and u0 the analytic potential at
         the true positions, dy included (apply_bc and exact_primary; without them, the U_i alone).
+
+        Sensitivity: the source terms do not depend on sigma, so that, with V_i the field of a unit source at
+        the potential electrode (adjoint field, L_i^-T = Vc L_i^-1 Vc^-1 and D^T = -Vf G Vc^-1),
+
+            d(Q U_i)/d(ln sigma) = -[Dm Gf^T (G U_i * m^2 Vf * G V_i) + k_i^2 sigma Vc U_i V_i]
+
+        (as in _sens25, with g_i / 2 replaced by W_i(dy) for each pair of electrodes).  U0_i and u0 depend on
+        sigma through the conductivity sigma0 at the current electrode (local_sigma0) and are proportional to
+        1 / sigma0, which adds -R d(ln sigma0)/d(ln sigma), R being their contribution to the datum.
+        The products are computed once per wavenumber and per unique pair of positions in the x-z plane.
+
+        Returns
+        -------
+        data, or (data, sens) with sens of size n_roi x n_data if calc_sens is True
         """
         if sigma is None:
             raise RuntimeError('Variable sigma should be given as input.')
+        sigma = np.asarray(sigma, dtype=float).ravel()
         plan = self._plan_offline25()
         fv = self.fv
         poles, k = plan['poles'], plan['k']
         n_p = poles.shape[0]
+        n_data = plan['n_data']
         if self.verbose and fv.comm.rank == 0:
             print('    Off-line measurements: {0:d} wavenumbers in [{1:g}, {2:g}] 1/m, {3:d} current '
                   'electrode position(s)'.format(k.size, k[0], k[-1], n_p))
         exact = self.apply_bc and self.exact_primary
-        sigma0 = None
+        sigma0, sigma0_w = None, None
         U0 = None
+        iv = 1.0 / fv.volume_voxels()
         if self.apply_bc:
-            sigma0 = self._electrode_sigma(poles, sigma) if self.local_sigma0 else gmean(sigma)
+            if self.local_sigma0:
+                sigma0, sigma0_w = self._electrode_sigma(poles, sigma, return_weights=True)
+            else:
+                sigma0 = gmean(sigma)
             src, _ = fv.boundary_source(poles, sigma0, np.ones((n_p,)), correct_quadrature=exact, k=k)
             q, U0 = src.q, src.U0
         else:
             pp = fv.process_surface_elec(poles.copy())
-            q0 = fv.linear_interp(pp[:, 0], pp[:, 1], pp[:, 2]).T.toarray() / fv.volume_voxels()[:, None]
+            q0 = fv.linear_interp(pp[:, 0], pp[:, 1], pp[:, 2]).T.toarray() * iv[:, None]
             q = np.broadcast_to(q0, (k.size,) + q0.shape)
+        Q = plan['Q']
+        if calc_sens:
+            # unit sources at the potential electrodes (adjoint fields), the same for all wavenumbers
+            q_r = Q.T.toarray() * iv[:, None]
+            Gf = fv.build_G_faces()
+            M = fv.build_M(sigma)
+            S = M.diagonal()**2 * fv.volume_faces()
+            mass = sigma * fv.volume_voxels()
+            sens = np.zeros((self.ind_roi.size, n_data))
+            combos = plan['combos']
+            chunk = max(1, int(2e7 // max(fv.nf, 1)))
+            # contribution of the reference fields to the data, for each pair (proportional to 1 / sigma0)
+            R = [np.zeros((t['rows'].size,)) for t in plan['pairs']] if exact else None
 
         A, _ = fv.build_A(sigma)
         par = fv.get_solver_params()
-        Q = plan['Q']
-        QU = np.empty((k.size, Q.shape[0], n_p))
+        cs = self.cs * np.ones((n_data,))
+        data = np.zeros((n_data,))
         for i, k_i in enumerate(k):
             s = Solver(par, Solver25._L(A, sigma, k_i), verbose=(self.verbose > 1), comm=fv.comm,
                        n_threads=fv.n_threads)
-            F = s.solve(q[i]).reshape(fv.nc, n_p)
-            if exact:
-                F = F - U0[i]
-            QU[i] = Q @ F
+            rhs = q[i] if not calc_sens else np.c_[q[i], q_r]
+            F = s.solve(rhs).reshape(fv.nc, -1)
             del s
-
-        cs = self.cs * np.ones((plan['n_data'],))
-        data = np.zeros((plan['n_data'],))
-        for t in plan['pairs']:
-            vals = np.einsum('dk,kd->d', t['W'], QU[:, t['pt'], t['pole']])
+            U = F[:, :n_p]
+            QF = Q @ (U - U0[i] if exact else U)
+            for t in plan['pairs']:
+                w = t['sign'] * cs[t['rows']] * t['W'][:, i]
+                np.add.at(data, t['rows'], w * QF[t['pt'], t['pole']])
+            if not calc_sens:
+                continue
+            V = F[:, n_p:]
             if exact:
+                QU0 = Q @ U0[i]
+                for j, t in enumerate(plan['pairs']):
+                    w = t['sign'] * cs[t['rows']] * t['W'][:, i]
+                    R[j] -= w * QU0[t['pt'], t['pole']]
+            GU, GV = fv.G @ U, fv.G @ V
+            for c0 in range(0, combos.shape[0], chunk):
+                cb = combos[c0:c0 + chunk]
+                P = Gf.T @ (GU[:, cb[:, 0]] * S[:, None] * GV[:, cb[:, 1]]) / sigma[:, None]
+                P += (k_i * k_i) * mass[:, None] * U[:, cb[:, 0]] * V[:, cb[:, 1]]
+                P = P[self.ind_roi, :]
+                for t in plan['pairs']:
+                    sel = (t['combo'] >= c0) & (t['combo'] < c0 + chunk)
+                    if not np.any(sel):
+                        continue
+                    rows = t['rows'][sel]
+                    w = t['sign'] * cs[rows] * t['W'][sel, i]
+                    # a datum appears at most once in a pair: no repeated columns
+                    sens[:, rows] -= P[:, t['combo'][sel] - c0] * w
+
+        if exact:
+            for j, t in enumerate(plan['pairs']):
                 s0 = sigma0 if np.isscalar(sigma0) else np.asarray(sigma0).ravel()[t['pole']]
-                vals = vals + fv.u_homog_at(t['c'], t['p'], s0, 1.0, offset_y=True)
-            np.add.at(data, t['rows'], t['sign'] * cs[t['rows']] * vals)
+                u0 = t['sign'] * cs[t['rows']] * fv.u_homog_at(t['c'], t['p'], s0, 1.0, offset_y=True)
+                np.add.at(data, t['rows'], u0)
+                if calc_sens:
+                    # R ~ 1 / sigma0 of the current electrode: d(R)/d(ln sigma) = -R d(ln sigma0)/d(ln sigma)
+                    Rj = R[j] + u0
+                    if sigma0_w is None:
+                        # sigma0: geometric mean of the model
+                        sens[:, t['rows']] -= Rj[None, :] / fv.nc
+                    else:
+                        dl = (sigma0_w[0][t['pole'], :] @ sp.diags_array(sigma)).toarray()
+                        dl = dl / np.asarray(sigma0).ravel()[t['pole']][:, None]
+                        sens[:, t['rows']] -= (Rj[:, None] * dl[:, self.ind_roi]).T
         self.u = None
         data = self._units_scaling * data
+        if calc_sens:
+            sens *= self._units_scaling
         if self.sort_electrodes and self.electrodes_sorted and self.sort_back is not None:
             # c1c2 and p1p2 were sorted by a previous call (on-line method)
             data = data[self.sort_back]
+            if calc_sens:
+                sens = sens[:, self.sort_back]
         if self.verbose and fv.comm.rank == 0:
             print('End of modelling.')
+        if calc_sens:
+            return data, sens
         return data
 
     def _sort_electrodes(self):
