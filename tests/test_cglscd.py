@@ -103,6 +103,33 @@ class TestCglscd(unittest.TestCase):
         Cs = C + RegPreconditioner.SHIFT * C.diagonal().max() * sp.eye_array(C.shape[0])
         np.testing.assert_allclose(Cs @ pre.solve(r, 2.0), r / 2.0, rtol=1e-8, atol=1e-10)
 
+    def test_failure_at_first_solve(self):
+        # solvers that factorize at the first solve (Pardiso): the failure is raised when the preconditioner
+        # is built, and Inversion falls back to Jacobi
+        import types
+        import pymmr.inversion as pinv
+        _, _, C, _, _, _ = problem()
+
+        class FailingSolver:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def solve(self, rhs):
+                raise ValueError('pardiso failed')
+
+        save = pinv.Solver
+        pinv.Solver = FailingSolver
+        try:
+            with self.assertRaises(RuntimeError):
+                RegPreconditioner(C, ('pardiso',))
+            fv = types.SimpleNamespace(get_solver_params=lambda: ('pardiso',), comm=None, n_threads=1)
+            inv = Inversion()
+            inv.verbose = False
+            with self.assertWarns(UserWarning):
+                self.assertIsNone(inv._reg_preconditioner(types.SimpleNamespace(fv=fv), C))
+        finally:
+            pinv.Solver = save
+
     def test_bad_reg_var(self):
         J, D, C, b, dxc, _ = problem()
         with self.assertRaises(ValueError):

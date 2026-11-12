@@ -91,6 +91,14 @@ class RegPreconditioner:
         C = sp.csr_array(CTC)
         C = C + sp.diags_array(np.full(C.shape[0], self.SHIFT * np.abs(C.diagonal()).max()), format='csr')
         self.solver = Solver(solver_par, A=C, comm=comm, n_threads=n_threads)
+        # Some solvers (Pardiso) factorize at the first solve: solve once here so that a failure is raised
+        # now, as RuntimeError, and not within cglscd
+        try:
+            x = self.solve(np.ones((C.shape[0], 1)), 1.0)
+        except Exception as err:
+            raise RuntimeError("solve with the factorized regularization matrix failed: {0}".format(err)) from err
+        if not np.all(np.isfinite(x)):
+            raise RuntimeError("factorization of the regularization matrix gives non-finite values")
 
     @staticmethod
     def direct_solver():
