@@ -116,11 +116,37 @@ class RegPreconditioner:
 
 def _diag_DtDJtJ(J, D):
     """Diagonal of J^T D^T D J, without copy of J if D is diagonal."""
-    d = D.diagonal() if sp.issparse(D) else np.diag(D)
-    if sp.issparse(D) and (D - sp.diags_array(d)).count_nonzero() == 0:
-        return np.einsum('ij,ij,i->j', J, J, d * d)
+    if sp.issparse(D):
+        Dc = sp.coo_array(D)
+        if np.all((Dc.row == Dc.col) | (Dc.data == 0)):
+            d = D.diagonal()
+            return np.einsum('ij,ij,i->j', J, J, d * d)
     DJ = D @ J
     return np.sum(DJ * DJ, axis=0)
+
+
+def jacobian_weights(J, axis=1, rel_tol=1e-10):
+    """Weights 1 / ||J||, along rows (axis=1, data weighting) or columns (axis=0, model weighting).
+
+    Rows or columns with a norm of at most `rel_tol` times the largest one have no sensitivity (e.g. Bx
+    and Bz on the line of the source, zero by symmetry).  Their weight would be infinite: data get a
+    weight of 0 (they carry no information on the model), cells the largest weight of the others.
+
+    Returns
+    -------
+    tuple: w, n_zero
+        w : ndarray
+            Weights.
+        n_zero : int
+            Number of rows or columns without sensitivity.
+    """
+    n = np.sqrt(np.einsum('ij,ij->i' if axis == 1 else 'ij,ij->j', J, J))
+    ok = n > rel_tol * n.max() if n.size > 0 and n.max() > 0 else np.zeros(n.shape, dtype=bool)
+    w = np.zeros(n.shape)
+    w[ok] = 1.0 / n[ok]
+    if axis == 0 and np.any(ok):
+        w[~ok] = w[ok].max()
+    return w, np.count_nonzero(~ok)
 
 
 def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WTWt=0, precond=None):
@@ -233,6 +259,9 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
     if bnrm2 == 0.0:
         bnrm2 = 1.0
     r = gradient(x, zz)
+    if not (np.isfinite(bnrm2) and np.all(np.isfinite(r))):
+        raise ValueError("cglscd: non-finite values in the Gauss-Newton system (Jacobian, data weights, "
+                         "residuals or model)")
     error = np.linalg.norm(r) / bnrm2
 
     it = -1
@@ -775,20 +804,24 @@ class Inversion:
 
             if i == 0:
                 if "jacobian" in self.data_weighting:
-                    D2 = 1 / np.sqrt(np.sum(J * J, axis=1))
+                    D2, n_zero = jacobian_weights(J, axis=1)
+                    if n_zero > 0:
+                        warnings.warn("{0:d} of {1:d} data have no sensitivity to the model (e.g. Bx and Bz on "
+                                      "the line of the source): they get a weight of 0".format(n_zero, D2.size),
+                                      stacklevel=2)
                     if data_ert is not None and data_mmr is not None:
-                        # scaling MMR & ERT parts in joint inversion
+                        # scaling MMR & ERT parts in joint inversion (data with sensitivity only)
                         # TODO compare this with Athanasiou et al. 2007
-                        tmp1 = np.median(D2[:nobs_mmr])
-                        tmp2 = np.median(D2[nobs_mmr:])
-                        D2[nobs_mmr:] *= tmp1 / tmp2
+                        w1, w2 = D2[:nobs_mmr], D2[nobs_mmr:]
+                        if np.any(w1 > 0) and np.any(w2 > 0):
+                            D2[nobs_mmr:] *= np.median(w1[w1 > 0]) / np.median(w2[w2 > 0])
                     if "*" in self.data_weighting:
                         D = D @ sp.diags_array(D2)
                     else:
                         D = D + sp.diags_array(D2)
 
                 if self.model_weighting == "jacobian":
-                    m_weight = 1 / np.sqrt(np.sum(J * J, axis=0))
+                    m_weight, _ = jacobian_weights(J, axis=0)
                     WTW = g.calc_WtW(m_weight, self, m_active)
 
             rms.append(np.sqrt(((d - dobs).T @ D @ (d - dobs)) / dobs.size).item())
