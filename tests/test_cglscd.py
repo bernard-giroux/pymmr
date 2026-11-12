@@ -11,7 +11,7 @@ import scipy.sparse as sp
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from pymmr.finite_volume import calc_padding, has_mumps  # noqa: E402
-from pymmr.inversion import DataMMR, Inversion, RegPreconditioner, cglscd  # noqa: E402
+from pymmr.inversion import DataMMR, Inversion, RegPreconditioner, cglscd, jacobian_weights  # noqa: E402
 
 SOLVER = 'mumps' if has_mumps else 'superlu'
 
@@ -136,10 +136,44 @@ class TestCglscd(unittest.TestCase):
             cglscd(J, np.zeros(C.shape[0]), b, 0.5, C, dxc, D, 10, 1e-9, 'foo')
 
 
+class TestNonFinite(unittest.TestCase):
+
+    def test_jacobian_weights(self):
+        J = np.array([[1.0, 0.0, 2.0], [0.0, 0.0, 0.0], [3.0, 0.0, 4.0], [1e-14, 0.0, 0.0]])
+        w, n = jacobian_weights(J, axis=1)
+        np.testing.assert_allclose(w, [1 / np.sqrt(5.0), 0.0, 0.2, 0.0])
+        self.assertEqual(n, 2)
+        w, n = jacobian_weights(J, axis=0)       # cells: zero column gets the largest weight
+        np.testing.assert_allclose(w, [1 / np.sqrt(10.0), 1 / np.sqrt(10.0), 1 / np.sqrt(20.0)])
+        self.assertEqual(n, 1)
+        w, n = jacobian_weights(np.zeros((3, 2)))
+        np.testing.assert_array_equal(w, 0.0)
+        self.assertEqual(n, 3)
+
+    def test_cglscd_raises(self):
+        J, D, C, b, dxc, _ = problem()
+        d = D.diagonal()
+        d[3] = np.inf
+        for pre in (RegPreconditioner(C), None):
+            with self.assertRaisesRegex(ValueError, 'non-finite'):
+                cglscd(J, np.zeros(C.shape[0]), b, 0.5, C, dxc, sp.diags_array(d), None, 1e-9, 'model', precond=pre)
+
+    @unittest.skipUnless(has_mumps, 'MUMPS not available')
+    def test_mumps_nan_matrix(self):
+        from pymmr.finite_volume import Solver
+        A = sp.csr_array(sp.eye_array(5) * 2.0)
+        A.data[2] = np.nan
+        with self.assertRaisesRegex(RuntimeError, 'non-finite'):
+            Solver(('mumps',), A=A)
+        s = Solver(('mumps',), A=sp.csr_array(sp.eye_array(5) * 2.0))
+        with self.assertRaisesRegex(RuntimeError, 'non-finite'):
+            s.A = A
+
+
 class TestInversion(unittest.TestCase):
     """2.5D MMR inversion: same steps with both preconditioners when cglscd converges."""
 
-    def run_inv(self, **opts):
+    def run_inv(self, full=False, roi=None, **opts):
         from pymmr.mmr import GridMMR
         h = 10.0
         pad = np.cumsum(calc_padding(h, 8))
@@ -160,13 +194,18 @@ class TestInversion(unittest.TestCase):
         dm = DataMMR(xs=xs, xo=xo, data=data, wt=np.ones(3 * data.shape[0]), cs=np.ones(data.shape[0]), date=None)
         g = GridMMR((x, z))
         g.set_solver(SOLVER)
+        m_active = None
+        if roi is not None:
+            g.set_roi(roi)
+            m_active = g.ind_roi
         inv = Inversion()
         inv.max_it = 2
         inv.verbose = False
         for k, v in opts.items():
             setattr(inv, k, v)
         m0 = 0.01 * np.ones(g.dc.fv.nc)
-        return inv.run(g, m0=m0, m_ref=m0, data_mmr=dm)[0][-1]
+        out = inv.run(g, m0=m0, m_ref=m0, data_mmr=dm, m_active=m_active)
+        return out if full else out[0][-1]
 
     def test_same_model(self):
         with warnings.catch_warnings():
@@ -174,6 +213,22 @@ class TestInversion(unittest.TestCase):
             m_reg = self.run_inv()
         m_jac = self.run_inv(precond_cglscd='jacobi', max_it_cglscd=50000)
         np.testing.assert_allclose(np.log(m_reg), np.log(m_jac), atol=1e-5)
+
+    def test_jacobian_data_weighting(self):
+        # receivers on the line of the source: Bx and Bz are 0 whatever the model (zero rows of J)
+        for dw in ('jacobian', 'variance*jacobian', 'variance+jacobian'):
+            with self.assertWarnsRegex(UserWarning, '18 of 54 data have no sensitivity'):
+                S, _, rms, misfit, _ = self.run_inv(full=True, data_weighting=dw, model_weighting='jacobian')
+            self.assertTrue(np.all(np.isfinite(rms)), msg=dw)
+            self.assertTrue(np.all(np.isfinite(S[-1])), msg=dw)
+            self.assertLess(misfit[-1], 0.9 * misfit[0], msg=dw)
+
+    def test_jacobian_model_weighting_roi(self):
+        # with a region of interest, J has one column per active cell
+        S, _, rms, misfit, _ = self.run_inv(full=True, roi=(-60.0, 60.0, -50.0, 0.0), model_weighting='jacobian')
+        self.assertEqual(S[-1].size, 12 * 5)
+        self.assertTrue(np.all(np.isfinite(S[-1])))
+        self.assertLess(misfit[-1], misfit[0])
 
     def test_bad_preconditioner(self):
         with self.assertRaises(ValueError):

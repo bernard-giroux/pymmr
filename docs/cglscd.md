@@ -72,6 +72,31 @@ An iteration costs about 1.5 times more than with Jacobi, for 10 to 50 times few
 With many data (ERT, n_data ≥ 10 000), the number of iterations can approach n_data; it is not
 capped at 1000 by default, unlike before.
 
+## Data and model weighting with the Jacobian
+
+`data_weighting = 'jacobian'` (and `'variance*jacobian'`, `'variance+jacobian'`) weights each datum
+by 1/‖its row of J‖, and `model_weighting = 'jacobian'` each cell by 1/‖its column of J‖
+(`jacobian_weights`). Some data have no sensitivity at all: Bx and Bz at receivers on the line of
+the source are 0 by symmetry, whatever the model (66 of the 297 data of the example). Their weight
+was infinite, the Gauss-Newton system was NaN, and the NaN step gave a NaN model on which MUMPS failed
+with error -9. Rows or columns with a norm of at most 1e-10 times the largest one now get a weight of
+0 (data, with a warning giving their number) or the largest weight of the other cells (cells). In
+joint inversion, the medians that balance the MMR and ERT weights exclude these data.
+
+Example, 6 iterations, misfit and model error as above:
+
+| data weighting      | misfit | model error |
+|---------------------|--------|-------------|
+| `variance`          | 0.0152 | 0.710       |
+| `variance+jacobian` | 0.0156 | 0.721       |
+| `variance*jacobian` | 0.0474 | 0.971       |
+| `jacobian`          | 0.0047 | 0.827       |
+
+Non-finite values are no longer silent: `cglscd` raises `ValueError` if the gradient is not
+finite (it used to return a zero step, and the inversion went on without changing the model), and
+MUMPS factorization raises `RuntimeError` if the matrix has NaN or inf values (instead of error -9
+or -10).
+
 ## Other changes
 
 - The three `reg_var` cases share one loop.

@@ -4227,6 +4227,9 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
         If the workspace is too small (error -9), it is increased by 20% and the
         factorization is attempted again.
         """
+        if self._A is not None and not np.all(np.isfinite(self._A.data)):
+            # MUMPS would fail with a misleading error code (-9 or -10)
+            raise RuntimeError("MUMPS: the matrix has non-finite values (NaN or inf), check the conductivity model")
         for _ in range(max_retry + 1):
             try:
                 self.ctx.run(job=job)
