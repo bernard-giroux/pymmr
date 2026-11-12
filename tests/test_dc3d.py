@@ -187,6 +187,44 @@ class TestMMR(unittest.TestCase):
         g.fwd_mod(1e-2 * np.ones(g.dc.nc))
         self.assertGreaterEqual(g.fv.z[-1] - g.dc.fv.z[-1], g.dc.fv.z[-1] - g.dc.fv.z[0])
 
+    def test_pod_e(self):
+        """Electric dipoles at the receivers: exact in a half-space, same as GridDC in a layered earth."""
+        h = 5.0
+        x = padded(np.arange(-50., 50.1, h), h, 10)
+        z = padded(np.arange(-40., 0.1, h), h, 10, top=False)
+        xs = np.array([-25., 0, 0, 25., 0, 0])
+        xr = np.array([-37., -12., 8., 33.])
+        pod_e = (3.0, 3.0, -10.0)
+        dls = np.diag(pod_e)
+
+        def u(p, sigma):
+            return (1 / np.linalg.norm(p - xs[:3], axis=1) - 1 / np.linalg.norm(p - xs[3:], axis=1)) / (2 * np.pi * sigma)
+
+        for yr in (0.0, 10.0):
+            xo = np.c_[xr, np.full(4, yr), np.zeros(4)]
+            g = GridMMR((x, x, z))
+            g.set_solver(SOLVER)
+            g.set_survey_mmr(xs=xs, xo=xo, cs=1.0, pod_e=pod_e)
+            zc = g.dc.fv.centre_voxels()[2]
+            for layered in (False, True):
+                sigma = np.where(zc > -10.0, 1e-2, 1e-1) if layered else 1e-2 * np.ones(g.dc.nc)
+                B, v = g.fwd_mod(sigma)
+                for n in range(3):
+                    if layered:
+                        gd = GridDC((x, x, z))
+                        gd.set_solver(SOLVER)
+                        gd.set_survey_ert(np.tile(xs, (4, 1)), np.c_[xo, xo + dls[n]], 1.0)
+                        ref = gd.fwd_mod(sigma)
+                    else:
+                        ref = g.dc._units_scaling * (u(xo, 1e-2) - u(xo + dls[n], 1e-2))
+                    np.testing.assert_allclose(v[:, n], ref, rtol=1e-3 if layered else 1e-6,
+                                               err_msg=f'y {yr} layered {layered} component {n}')
+            # MMR data unchanged by the electric dipoles
+            g2 = GridMMR((x, x, z))
+            g2.set_solver(SOLVER)
+            g2.set_survey_mmr(xs=xs, xo=xo, cs=1.0)
+            np.testing.assert_allclose(B, g2.fwd_mod(sigma), rtol=1e-10, atol=1e-12 * np.abs(B).max())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -551,10 +551,7 @@ class GridMMR:
         data[:, 2] = (Qz @ Bz).T.flatten()
 
         if self.Q_pod_e is not None:
-            data_pod_e = np.empty((no * q.shape[1], self.xo_all.shape[1]))
-            for n in range(3):
-                data_pod_e[:, n] = (self.Q_pod_e[n] @ u_dc).T.flatten()
-            data_pod_e = self.dc._units_scaling * data_pod_e[self.ind_back, :]
+            data_pod_e = self.dc._units_scaling * self._pod_e3d(sigma, u_dc)[self.ind_back, :]
         else:
             data_pod_e = None
 
@@ -1055,13 +1052,53 @@ class GridMMR:
         Qz = sp.vstack(Qz)
         return Qx, Qy, Qz
 
+    def _pod_e3d(self, sigma, u_dc):
+        """Potential differences of the electric dipoles at the measurement points (pod_e), 3D.
+
+        The DC fields used for B have no surface images and no analytic primary field (see fwd_mod);
+        the potentials need both, as in GridDC (vertical dipoles are 15 to 30% too small and
+        horizontal dipoles near the electrodes up to 4 times too small without them, in a half-space).
+        With apply_bc, the fields are solved again with the image setting of the DC grid (same matrix,
+        already factorized), and the data are Q (u - u0) + u0 at the true positions of the dipole ends.
+
+        Returns
+        -------
+        ndarray
+            n_sources * n_receivers x 3, sources in the order of xs_u (before ind_back)
+        """
+        dc = self.dc
+        no = self.xo_all.shape[0]
+        ns_src = self.xs_u.shape[0]
+        out = np.zeros((no * ns_src, 3))
+        if dc.apply_bc and isinstance(dc.fv, GridFV):
+            # fields with images; dc.c1c2_u is xs_u and keep_c1c2 is True here (set by fwd_mod)
+            dc._boundary_correction(sigma)
+            u = dc.fv.solve(dc.q.toarray())
+            F = u - dc.u0
+        else:
+            F = u_dc
+        for n in range(3):
+            if self.pod_p1p2[n] is None:
+                continue
+            v = self.Q_pod_e[n] @ F
+            if F is not u_dc:
+                p1p2 = self.pod_p1p2[n]
+                for ns in range(ns_src):
+                    c = np.tile(self.xs_u[ns, :], (no, 1))
+                    s0 = dc._sigma0 if np.isscalar(dc._sigma0) else np.tile(dc._sigma0[ns], (no, 1))
+                    v[:, ns] += (dc.fv.u_homog_at(c, p1p2[:, :3], s0, self.cs_u[ns]) -
+                                 dc.fv.u_homog_at(c, p1p2[:, 3:6], s0, self.cs_u[ns]))
+            out[:, n] = v.T.flatten()
+        return out
+
     def _build_Q_pod_e(self):
         Q = [None, None, None]
 
         for n in range(3):
             # make sure electrodes are at least at the depth of the first cell center
+            # (on a copy: the true positions are needed for the primary field, see _pod_e3d)
             if self.pod_p1p2[n] is not None:
-                p1p2 = self.pod_p1p2[n]
+                p1p2 = self.pod_p1p2[n].copy()
                 p1p2[:, :3] = self.dc.fv.process_surface_elec(p1p2[:, :3])
                 p1p2[:, 3:6] = self.dc.fv.process_surface_elec(p1p2[:, 3:6])
 
