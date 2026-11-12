@@ -45,6 +45,8 @@ import numpy as np
 import scipy.sparse as sp
 import matplotlib.pyplot as plt
 
+from pymmr.finite_volume import Solver, has_mumps, has_pardiso, has_pastix, has_umfpack
+
 
 # %%  Define namedtuple for input data
 
@@ -55,29 +57,80 @@ DataERT = namedtuple("DataERT", "c1c2 p1p2 data wt cs date")
 # %% Some functions
 
 
-def _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta):
-    """Utility function for cglscd."""
-    z = M * r  # calcul du gradient modifié
-    rho = (r.T @ z).item()
-    if it == 0:
-        p = z.copy()
-    else:
-        beta_k = rho / rho_1  # calcul du coefficient beta_k
-        p = z + beta_k * p
+class RegPreconditioner:
+    """Preconditioner of `cglscd`: factorization of the regularization matrix C.
 
-    q = D @ (J @ p)
-    alpha_k = rho / (q.T @ q + beta * (p.T @ CTC @ p)).item()  # calcul du pas
-    x += alpha_k * p  # calcul de la descente
-    zz -= alpha_k * q
-    return x, zz, rho, p
-
-
-def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WTWt=0):
-    """Compute perturbation with a conjugate-gradient least-squares algorithm.
+    The Gauss-Newton matrix is J^T D^2 J + beta C, and J^T D^2 J has a rank of at most n_data.  With
+    (beta C)^-1 as preconditioner, the preconditioned matrix is the identity plus a matrix of rank n_data
+    or less, and CG converges in about n_data + 1 iterations whatever the conditioning.  C does not
+    depend on beta: it is factorized once and the preconditioner is applied as C^-1 r / beta.
 
     Parameters
     ----------
-    J : sparse matrix
+    CTC : sparse matrix
+        Regularization matrix (CTC = C.T @ C), symmetric positive (semi-)definite.
+    solver_par : tuple, optional
+        Solver parameters (`BaseFV.get_solver_params`).  An iterative solver is replaced by the first
+        direct solver available among MUMPS, Pardiso, UMFPACK, PaStiX and SuperLU.
+    comm : MPI Communicator, optional
+        For MUMPS.
+    n_threads : int, optional
+        Number of threads.
+
+    Notes
+    -----
+    C is singular without smallness term (al_s = 0): a shift of `SHIFT` times its largest diagonal
+    term is added (without effect on the solution, and on the convergence if C is not singular).
+    """
+
+    SHIFT = 1e-6
+
+    def __init__(self, CTC, solver_par=None, comm=None, n_threads=1):
+        if solver_par is None or callable(solver_par[0]):
+            solver_par = (self.direct_solver(),)
+        C = sp.csr_array(CTC)
+        C = C + sp.diags_array(np.full(C.shape[0], self.SHIFT * np.abs(C.diagonal()).max()), format='csr')
+        self.solver = Solver(solver_par, A=C, comm=comm, n_threads=n_threads)
+        # Some solvers (Pardiso) factorize at the first solve: solve once here so that a failure is raised
+        # now, as RuntimeError, and not within cglscd
+        try:
+            x = self.solve(np.ones((C.shape[0], 1)), 1.0)
+        except Exception as err:
+            raise RuntimeError("solve with the factorized regularization matrix failed: {0}".format(err)) from err
+        if not np.all(np.isfinite(x)):
+            raise RuntimeError("factorization of the regularization matrix gives non-finite values")
+
+    @staticmethod
+    def direct_solver():
+        """Name of the preferred direct solver available (SuperLU as last resort)."""
+        for name, ok in (("mumps", has_mumps), ("pardiso", has_pardiso), ("umfpack", has_umfpack),
+                         ("pastix", has_pastix)):
+            if ok:
+                return name
+        return "superlu"
+
+    def solve(self, r, beta):
+        """Return (beta C)^-1 r."""
+        return np.asarray(self.solver.solve(r.ravel())).reshape(-1, 1) / beta
+
+
+def _diag_DtDJtJ(J, D):
+    """Diagonal of J^T D^T D J, without copy of J if D is diagonal."""
+    d = D.diagonal() if sp.issparse(D) else np.diag(D)
+    if sp.issparse(D) and (D - sp.diags_array(d)).count_nonzero() == 0:
+        return np.einsum('ij,ij,i->j', J, J, d * d)
+    DJ = D @ J
+    return np.sum(DJ * DJ, axis=0)
+
+
+def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WTWt=0, precond=None):
+    """Compute perturbation with a preconditioned conjugate-gradient least-squares algorithm.
+
+    Minimizes  1/2 ||D (b - J x)||^2 + 1/2 beta R(x), i.e. solves (J^T D^2 J + beta C) x = J^T D^2 b - ...
+
+    Parameters
+    ----------
+    J : ndarray
         Jacobian matrix.
     x : array_like
         initial solution.
@@ -91,18 +144,23 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
         m - m_ref.
     D : sparse matrix
         Data weighting matrix.
-    max_it : int
-        Max number of iterations.
+    max_it : int or None
+        Max number of iterations.  If None: 2 n_data + 100 with a `RegPreconditioner`, 1000 otherwise.
     tol : float
-        tolerance.
+        Tolerance on the norm of the gradient, relative to its value for x = 0.
     reg_var : str
-        Regularization variable: 'model', 'model perturbation', 'time-lapse'.
+        Regularization variable:
+        - 'model': R(x) = (x + dxc)^T C (x + dxc)
+        - 'model perturbation': R(x) = x^T C x
+        - 'time-lapse': R(x) = x^T C x, plus the term alpha WTWt dxc in the gradient
     P : array_like
         Constraint array to fix solution (0: fixed, 1: free).
     alpha : float
         Time-lapse regularization factor.
     WTWt : sparse matrix
         Time-lapse regularization matrix.
+    precond : RegPreconditioner, optional
+        Factorization of `CTC`.  If None, the diagonal of J^T D^2 J + beta C is used (Jacobi).
 
     Returns
     -------
@@ -117,7 +175,7 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
     Notes
     -----
 
-    This algorithm is described in
+    The algorithm (with Jacobi preconditioning) is described in
 
     @article{article,
     author = {Günther, Thomas and Rücker, Carsten and Spitzer, Klaus},
@@ -129,92 +187,79 @@ def cglscd(J, x, b, beta, CTC, dxc, D, max_it, tol, reg_var, P=None, alpha=0, WT
     journal = {Geophysical Journal International},
     doi = {10.1111/j.1365-246X.2006.03011.x}
     }
+
+    Without preconditioning by C, the tolerance of 1e-9 can take more than 10 000 iterations, and
+    stopping early degrades the model (the regularization part of the step converges last).
     """
-    it = 0
+    if reg_var == "model":
+        def reg(x_):
+            return beta * (CTC @ (x_ + dxc))
+    elif reg_var == "model perturbation":
+        def reg(x_):
+            return beta * (CTC @ x_)
+    elif reg_var == "time-lapse":
+        tl = alpha * (WTWt @ dxc.reshape(-1, 1))
+
+        def reg(x_):
+            return beta * (CTC @ x_) + tl
+    else:
+        raise ValueError("Wrong value for reg_var: " + str(reg_var))
+
+    if max_it is None:
+        max_it = 2 * J.shape[0] + 100 if precond is not None else 1000
 
     x = x.reshape(-1, 1)
     dxc = dxc.reshape(-1, 1)
-
-    if P is None:
-        P = np.ones(x.shape)
-    else:
-        P = P.reshape(-1, 1)
-
+    P = np.ones(x.shape) if P is None else P.reshape(-1, 1)
     x *= P
 
-    M = np.sum(J * J, axis=0) + beta * CTC.diagonal()
-    M[M == 0] = np.finfo(float).eps
-    M = 1 / M.reshape(-1, 1)
+    if precond is None:
+        M = _diag_DtDJtJ(J, D) + beta * CTC.diagonal()
+        M[M == 0] = np.finfo(float).eps
+        M = 1 / M.reshape(-1, 1)
 
-    zz = D @ (b - J @ x)  # initialisation du gradient
+        def apply_prec(r_):
+            return M * r_
+    else:
+        def apply_prec(r_):
+            return P * precond.solve(r_, beta)
 
-    p = 0.0
-    if reg_var == "model":
-        r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x + dxc))
-        b1 = (((D * D) @ b).T @ J).T - beta * CTC @ dxc
-        bnrm2 = np.linalg.norm(b1)
-        if bnrm2 == 0.0:
-            bnrm2 = 1.0
-        error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
+    def gradient(x_, zz_):
+        return P * ((zz_.T @ D) @ J).T - P * reg(x_)
 
-        if error < tol:
-            return x, error, it
+    b = b.reshape(-1, 1)
+    zz = D @ (b - J @ x)                                 # weighted data residual
+    bnrm2 = np.linalg.norm((((D @ (D @ b)).T @ J).T - reg(np.zeros(x.shape))))   # gradient for x = 0
+    if bnrm2 == 0.0:
+        bnrm2 = 1.0
+    r = gradient(x, zz)
+    error = np.linalg.norm(r) / bnrm2
 
-        rho_1 = 1.0
-        for it in np.arange(max_it):
-            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
-            r = P * (((zz.T @ D) @ J).T - beta * CTC @ (x + dxc))  # gradient
-            error = np.linalg.norm(r) / bnrm2
-            if error <= tol:
-                break
-            rho_1 = rho
-
-    elif reg_var == "model perturbation":
-        r = P * ((zz.T @ D) @ J).T - beta * CTC @ x
-        b1 = (((D * D) @ b).T @ J).T
-        bnrm2 = np.linalg.norm(b1)
-        if bnrm2 == 0.0:
-            bnrm2 = 1.0
-        error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
-
-        if error < tol:
-            return x, error, it
-
-        rho_1 = 1.0
-        for it in np.arange(max_it):
-            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
-            r = P * (((zz.T @ D) @ J).T - beta * CTC @ x)  # gradient
-            error = np.linalg.norm(r) / bnrm2
-            if error <= tol:
-                break
-            rho_1 = rho
-
-    elif reg_var == "time-lapse":
-        r = P * (((zz.T @ D) @ J).T - alpha * WTWt @ dxc - CTC @ x)
-        b1 = (((D * D) @ b).T @ J).T - alpha * WTWt @ dxc
-        bnrm2 = np.linalg.norm(b1)
-        if bnrm2 == 0.0:
-            bnrm2 = 1.0
-        error = np.linalg.norm(r) / bnrm2  # initialisation de l'erreur
-
-        if error < tol:
-            return x, error, it
-
-        rho_1 = 1.0
-        for it in np.arange(max_it):
-            x, zz, rho, p = _calc_descent(x, zz, p, M, J, D, CTC, r, it, rho_1, beta)
-            r = P * (((zz.T @ D) @ J).T - alpha * WTWt @ dxc - CTC @ x)  # calcul du gradient
-            error = np.linalg.norm(r) / bnrm2
-            if error <= tol:
-                break
-            rho_1 = rho
-
+    it = -1
+    rho_1 = 1.0
+    p = None
     if error > tol:
-        warnings.warn(
-            "cglscd: convergence not achieved after {0:d} it (tol = {1:3.2e}, error = {2:5.4e}).".format(
-                max_it, tol, error
+        for it in range(max_it):
+            z = apply_prec(r)
+            rho = (r.T @ z).item()
+            p = z if it == 0 else z + (rho / rho_1) * p
+            q = D @ (J @ p)
+            alpha_k = rho / (q.T @ q + beta * (p.T @ (CTC @ p))).item()
+            x += alpha_k * p
+            zz -= alpha_k * q
+            r = gradient(x, zz)
+            error = np.linalg.norm(r) / bnrm2
+            if error <= tol:
+                break
+            rho_1 = rho
+
+        if error > tol:
+            warnings.warn(
+                "cglscd: convergence not achieved after {0:d} it (tol = {1:3.2e}, error = {2:5.4e}).".format(
+                    it + 1, tol, error
+                ),
+                stacklevel=2,
             )
-        )
 
     return x, error, it + 1
 
@@ -404,11 +449,15 @@ class Inversion:
         self.model_weighting = "distance"
         """Model weighting method: 'distance', 'jacobian'."""
 
-        self.max_it_cglscd = 1000
-        """Maximum number of iterations in cglscd."""
+        self.max_it_cglscd = None
+        """Maximum number of iterations in cglscd (None: 2 n_data + 100, or 1000 with 'jacobi')."""
 
         self.tol_cglscd = 1.0e-9
         """Tolerance for cglscd."""
+
+        self.precond_cglscd = "regularization"
+        """Preconditioner of cglscd: 'regularization' (factorization of the regularization matrix, see
+        `RegPreconditioner`) or 'jacobi' (diagonal of the Gauss-Newton matrix)."""
 
         self.max_step_size = 10
         """Maximum perturbation step."""
@@ -568,6 +617,8 @@ class Inversion:
             print("    Model weighting: " + self.model_weighting)
             if self.model_weighting == "distance":
                 print("      Distance weighting β: {0:g}".format(self.beta_dw))
+            print("    cglscd: preconditioner " + self.precond_cglscd + ", tol {0:g}, max_it {1}".format(
+                self.tol_cglscd, self.max_it_cglscd if self.max_it_cglscd is not None else "auto"))
             print("    Conductivity bounds: {0:g} < 𝜎 < {1:g}".format(self.sigma_min, self.sigma_max))
             g.fv.solver_A.print_info()
             if self.checkpointing:
@@ -648,6 +699,11 @@ class Inversion:
         beta = self.beta
 
         checkpt_loaded = False
+
+        if self.precond_cglscd not in ("regularization", "jacobi"):
+            raise ValueError("precond_cglscd must be 'regularization' or 'jacobi'")
+        precond = None
+        precond_of = None    # WTW factorized in precond
 
         for i in range(self.max_it):
             if self.start_from_chkpt and checkpt_loaded is False:
@@ -745,6 +801,11 @@ class Inversion:
             if self.verbose:
                 print("    Computing perturbation with cglscd ... ", end="", flush=True)
 
+            if self.precond_cglscd == "regularization" and precond_of is not WTW:
+                # WTW changes only with IRLS weights (or model weighting at the 1st iteration)
+                precond = self._reg_preconditioner(g, WTW)
+                precond_of = WTW
+
             s, err, iter1 = cglscd(
                 J,
                 np.zeros(xt.shape),
@@ -757,6 +818,7 @@ class Inversion:
                 max_it=self.max_it_cglscd,
                 tol=self.tol_cglscd,
                 reg_var=self.reg_var,
+                precond=precond,
             )
             if self.show_plots or self.save_plots:
                 fig, ax = plt.subplots(3, 3, figsize=(9, 9))
@@ -870,6 +932,20 @@ class Inversion:
             os.remove(self.basename + "_chkpt.pkl")
 
         return sigma_inv, data_inv, rms, misfit, smy
+
+    def _reg_preconditioner(self, g, WTW):
+        """Factorize the regularization matrix for cglscd (falls back to Jacobi if it fails)."""
+        if self.verbose:
+            print("    Factorizing regularization matrix ... ", end="", flush=True)
+        try:
+            precond = RegPreconditioner(WTW, g.fv.get_solver_params(), comm=g.fv.comm, n_threads=g.fv.n_threads)
+        except RuntimeError as err:
+            warnings.warn("cglscd: factorization of the regularization matrix failed ({0}), "
+                          "using Jacobi preconditioning".format(err), stacklevel=2)
+            precond = None
+        if self.verbose:
+            print("done.")
+        return precond
 
     def _line_search(self, s, d, dobs, g, D, xc, sigma, m_active):
         if self.verbose:
