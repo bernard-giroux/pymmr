@@ -170,6 +170,8 @@ class TestMMR(unittest.TestCase):
             g.dc.fv.surface_images = images
             B.append(g.fwd_mod(1e-2 * np.ones(g.dc.nc)))
             self.assertEqual(g.dc.fv.surface_images, images)   # setting restored
+            # air at least as thick as the earth part of the grid, whatever the size of the top cells
+            self.assertGreaterEqual(g.fv.z[-1], g.dc.fv.z[-1] - g.dc.fv.z[0])
         np.testing.assert_allclose(B[0], B[1], rtol=1e-10, atol=1e-10 * np.abs(B[1]).max())
         Bn = normal_field(xs, xo)
         Bn = np.array(Bn)
