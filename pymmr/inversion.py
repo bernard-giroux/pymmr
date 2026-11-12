@@ -821,7 +821,9 @@ class Inversion:
                         D = D + sp.diags_array(D2)
 
                 if self.model_weighting == "jacobian":
-                    m_weight, _ = jacobian_weights(J, axis=0)
+                    # J has one column per active cell, calc_WtW takes one weight per cell of the grid
+                    m_weight = np.ones(m_ref.shape)
+                    m_weight[m_active], _ = jacobian_weights(J, axis=0)
                     WTW = g.calc_WtW(m_weight, self, m_active)
 
             rms.append(np.sqrt(((d - dobs).T @ D @ (d - dobs)) / dobs.size).item())

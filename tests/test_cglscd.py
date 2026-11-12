@@ -173,7 +173,7 @@ class TestNonFinite(unittest.TestCase):
 class TestInversion(unittest.TestCase):
     """2.5D MMR inversion: same steps with both preconditioners when cglscd converges."""
 
-    def run_inv(self, full=False, **opts):
+    def run_inv(self, full=False, roi=None, **opts):
         from pymmr.mmr import GridMMR
         h = 10.0
         pad = np.cumsum(calc_padding(h, 8))
@@ -194,13 +194,17 @@ class TestInversion(unittest.TestCase):
         dm = DataMMR(xs=xs, xo=xo, data=data, wt=np.ones(3 * data.shape[0]), cs=np.ones(data.shape[0]), date=None)
         g = GridMMR((x, z))
         g.set_solver(SOLVER)
+        m_active = None
+        if roi is not None:
+            g.set_roi(roi)
+            m_active = g.ind_roi
         inv = Inversion()
         inv.max_it = 2
         inv.verbose = False
         for k, v in opts.items():
             setattr(inv, k, v)
         m0 = 0.01 * np.ones(g.dc.fv.nc)
-        out = inv.run(g, m0=m0, m_ref=m0, data_mmr=dm)
+        out = inv.run(g, m0=m0, m_ref=m0, data_mmr=dm, m_active=m_active)
         return out if full else out[0][-1]
 
     def test_same_model(self):
@@ -218,6 +222,13 @@ class TestInversion(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(rms)), msg=dw)
             self.assertTrue(np.all(np.isfinite(S[-1])), msg=dw)
             self.assertLess(misfit[-1], 0.9 * misfit[0], msg=dw)
+
+    def test_jacobian_model_weighting_roi(self):
+        # with a region of interest, J has one column per active cell
+        S, _, rms, misfit, _ = self.run_inv(full=True, roi=(-60.0, 60.0, -50.0, 0.0), model_weighting='jacobian')
+        self.assertEqual(S[-1].size, 12 * 5)
+        self.assertTrue(np.all(np.isfinite(S[-1])))
+        self.assertLess(misfit[-1], misfit[0])
 
     def test_bad_preconditioner(self):
         with self.assertRaises(ValueError):
