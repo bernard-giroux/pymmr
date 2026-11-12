@@ -443,6 +443,7 @@ class TestOffLineModelling(unittest.TestCase):
                 rows.append([-10.0, 0, 0, 0.0, 0, 0, xp, yp, 0, xp + 5.0, yp, 0])
                 rows.append([-10.0, 0, 0, np.inf, np.inf, np.inf, xp, yp, 0, xp, yp + 5.0, 0])
         rows.append([-10.0, 0, 0, np.inf, np.inf, np.inf, 30.0, 20.0, 0, np.inf, np.inf, np.inf])   # pole-pole
+        rows.append([-20.0, -5.0, 0, 0.0, 15.0, 0, 20.0, 5.0, 0, 30.0, -10.0, 0])   # current electrodes at different y
         rows = np.array(rows)
         cls.rows = rows[np.random.default_rng(1).permutation(rows.shape[0])]
 
@@ -533,6 +534,7 @@ class TestOffLineSensitivity(unittest.TestCase):
         [-6., 0, 0, np.inf, np.inf, np.inf, 2., 5., 0, 2., 9., 0],
         [-6., 0, 0, np.inf, np.inf, np.inf, 12., 15., 0, np.inf, np.inf, np.inf],
         [8., 3., 0, 14., 3., 0, -4., 10., 0, 0., 10., 0],
+        [-12., -4., 0, -2., 6., 0, 4., 2., 0, 9., -3., 0],    # current electrodes at different y
     ])
 
     def grid(self, rows=None, **kw):
