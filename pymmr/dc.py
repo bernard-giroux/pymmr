@@ -208,6 +208,7 @@ class GridDC:
     @cs.setter
     def cs(self, val):
         self._cs = val
+        self._off25 = None
 
     @property
     def p1p2(self):
@@ -1039,14 +1040,16 @@ class GridDC:
         (x, z) position, for a unit current.  Each datum is the sum of the terms of its pairs of current and
         potential electrodes (up to 4), each with the weights W(dy) of KQuadrature for the offset dy along y
         between the two electrodes (see docs/dc25_offline.md).
+
+        The plan depends on the electrodes (reset by the c1c2 and p1p2 setters) and on n_k_offline (checked
+        here); the current intensity is applied in _fwd_offline25.
         """
-        if self._off25 is not None:
+        if self._off25 is not None and self._off25['k'].size == self.n_k_offline:
             return self._off25
         fv = self.fv
         c1c2 = np.atleast_2d(self.c1c2)
         p1p2 = np.atleast_2d(self.p1p2)
         n = c1c2.shape[0]
-        cs = self.cs * np.ones((n,))
 
         def unique_xz(e):
             ok = np.all(np.isfinite(e), axis=1)
@@ -1072,7 +1075,7 @@ class GridDC:
                 d = p - c
                 r_xz.append(np.hypot(d[:, 0], d[:, 2]))
                 r_3d.append(np.linalg.norm(d, axis=1))
-                pairs.append({'rows': rows, 'pole': ic[rows], 'pt': ip[rows], 'w': sc * sp_ * cs[rows],
+                pairs.append({'rows': rows, 'pole': ic[rows], 'pt': ip[rows], 'sign': sc * sp_,
                               'c': c, 'p': p, 'dy': d[:, 1]})
         if not pairs:
             raise ValueError('2.5D off-line modelling: no pair of finite current and potential electrodes')
@@ -1135,13 +1138,14 @@ class GridDC:
             QU[i] = Q @ F
             del s
 
+        cs = self.cs * np.ones((plan['n_data'],))
         data = np.zeros((plan['n_data'],))
         for t in plan['pairs']:
             vals = np.einsum('dk,kd->d', t['W'], QU[:, t['pt'], t['pole']])
             if exact:
                 s0 = sigma0 if np.isscalar(sigma0) else np.asarray(sigma0).ravel()[t['pole']]
                 vals = vals + fv.u_homog_at(t['c'], t['p'], s0, 1.0, offset_y=True)
-            np.add.at(data, t['rows'], t['w'] * vals)
+            np.add.at(data, t['rows'], t['sign'] * cs[t['rows']] * vals)
         self.u = None
         data = self._units_scaling * data
         if self.sort_electrodes and self.electrodes_sorted and self.sort_back is not None:

@@ -502,6 +502,21 @@ class TestOffLineModelling(unittest.TestCase):
             d.append(g.fwd_mod(sigma))
         np.testing.assert_allclose(d[0], d[1], rtol=5e-3)
 
+    def test_plan_parameters(self):
+        """The plan is rebuilt for a new n_k_offline, the current is applied at each call."""
+        g = self.grid()
+        sigma = 0.01 * np.ones(g.fv.nc)
+        d1 = g.fwd_mod(sigma)
+        np.testing.assert_allclose(g.fwd_mod(sigma), d1, rtol=1e-12)  # cached plan (solver round-off)
+        g._off25 = None
+        np.testing.assert_allclose(g.fwd_mod(sigma), d1, rtol=1e-12)  # fresh plan
+        cs = np.linspace(0.5, 3.0, self.rows.shape[0])
+        g.cs = cs
+        np.testing.assert_allclose(g.fwd_mod(sigma), d1 * cs / 2.0, rtol=1e-12)
+        g.n_k_offline = 20
+        g.fwd_mod(sigma)
+        self.assertEqual(g._off25['k'].size, 20)
+
     def test_not_implemented(self):
         g = self.grid()
         with self.assertRaises(NotImplementedError):
