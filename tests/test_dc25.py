@@ -597,6 +597,85 @@ class TestOffLineSensitivity(unittest.TestCase):
         self.assertLess(err.max(), 1e-2)
 
 
+class TestOffLineInversion(unittest.TestCase):
+    """Off-line data in run_job, Inversion.run and joint MMR-ERT inversion (2.5D)."""
+
+    rows = TestOffLineSensitivity.rows
+
+    def grid(self, cls=GridDC):
+        g = TestOffLineSensitivity().grid()
+        g2 = cls((g.fv.x, g.fv.z))
+        g2.set_solver('mumps' if fvm.has_mumps else 'superlu')
+        return g2
+
+    def test_run_job_fwd_dc(self):
+        g = self.grid()
+        g.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        s = TestOffLineSensitivity().sigma(g)
+        v_ref = g.fwd_mod(s)
+        with tempfile.TemporaryDirectory() as d:
+            g.fv.toVTK({'Conductivity': s}, os.path.join(d, 'job_model'))
+            np.savetxt(os.path.join(d, 'job_c1c2.dat'), self.rows[:, :6])
+            np.savetxt(os.path.join(d, 'job_p1p2.dat'), self.rows[:, 6:])
+            with open(os.path.join(d, 'job.par'), 'w') as f:
+                f.write('fwd dc    # job,\n'
+                        'job       # basename,\n'
+                        'job_model.vtr    # model,\n'
+                        'job_c1c2.dat     # source file,\n'
+                        'job_p1p2.dat     # measurement file,\n'
+                        '1.0       # source current,\n'
+                        '{0}   # solver name,\n'
+                        '0         # verbose,\n'.format('mumps' if fvm.has_mumps else 'superlu'))
+            root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+            env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get('PYTHONPATH', ''))
+            res = subprocess.run([sys.executable, '-m', 'pymmr.run_job', 'job.par'], cwd=d, env=env,
+                                 capture_output=True, text=True, timeout=600)
+            self.assertEqual(res.returncode, 0, res.stderr[-2000:])
+            out = np.loadtxt(os.path.join(d, 'job_dc.dat'))
+        np.testing.assert_allclose(out[:, 12], v_ref, rtol=1e-5)
+
+    def test_inversion(self):
+        import warnings
+        from pymmr.inversion import Inversion, DataERT
+        g = self.grid()
+        g.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        xc, zc = g.fv.centre_voxels()[0], g.fv.centre_voxels()[-1]
+        s_true = np.where((np.abs(xc) < 6) & (zc < -2) & (zc > -8), 0.1, 0.01)
+        dobs = g.fwd_mod(s_true)
+        n = dobs.size
+        data = DataERT(c1c2=self.rows[:, :6], p1p2=self.rows[:, 6:], data=dobs, wt=np.ones(n), cs=np.ones(n),
+                       date=None)
+        g = self.grid()
+        inv = Inversion()
+        inv.max_it = 3
+        inv.verbose = False
+        m0 = 0.01 * np.ones(g.fv.nc)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            s_inv, _, rms, _, _ = inv.run(g, m0=m0, m_ref=m0.copy(), data_ert=data)
+        self.assertTrue(g._uses_offline25())
+        self.assertTrue(np.all(np.isfinite(rms)))
+        self.assertLess(rms[-1], 0.5 * rms[0])
+
+    def test_joint_sensitivity(self):
+        """Joint MMR-ERT (inversion mode): the ERT columns are the off-line GridDC sensitivity."""
+        from pymmr.mmr import GridMMR
+        gm = self.grid(GridMMR)
+        gm.in_inv = True
+        gm.set_survey_mmr(np.array([[-20.0, 0.0, 0.0, 20.0, 0.0, 0.0]] * 2),
+                          np.array([[-5.0, 6.0, 0.0], [10.0, 12.0, 0.0]]), 1.0)
+        gm.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        s = TestOffLineSensitivity().sigma(gm.dc)
+        d, S = gm.fwd_mod(s, calc_sens=True)
+        self.assertTrue(gm.dc._uses_offline25())
+        g = self.grid()
+        g.set_survey_ert(self.rows[:, :6], self.rows[:, 6:], 1.0)
+        d_dc, S_dc = g.fwd_mod(s, calc_sens=True)
+        n = self.rows.shape[0]
+        np.testing.assert_allclose(d[-n:, 0], d_dc, rtol=1e-10)
+        np.testing.assert_allclose(S[:, -n:], S_dc, rtol=1e-8, atol=1e-10 * np.abs(S_dc).max())
+
+
 class TestMumpsRefactorization(unittest.TestCase):
 
     def test_values_in_different_order(self):

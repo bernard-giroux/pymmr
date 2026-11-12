@@ -85,6 +85,23 @@ method (same values with the fitted wavenumbers on the line, 30 or 60 wavenumber
 the 3D results converge towards them as the padding along y increases (0.73, 0.80 and 0.91 of the
 2.5D value with 78 m, 416 m and 2 km of padding): the 3D grid cannot hold a conductor infinite along y.
 
-## Not yet done
+## Inversion, `run_job` and joint inversion
 
-- Inversion, `run_job` and joint MMR–ERT inversion with off-line ERT data (not tested yet).
+No change was needed: `Inversion.run` sets the survey with `set_survey_ert` and calls
+`fwd_mod(sigma, calc_sens=True)`, `run_job` passes the coordinates of the electrodes as they are, and the
+joint 2.5D MMR–ERT inversion computes the ERT data and sensitivity with `GridDC.fwd_mod`. Tests
+(`tests/test_dc25.py`, `TestOffLineInversion`): forward modelling through `run_job`, a few Gauss–Newton
+iterations, and the ERT columns of the joint sensitivity equal to those of `GridDC`.
+
+Example: two parallel lines 10 m apart (h = 2.5 m), in-line dipole–dipole on each line and cross-line
+pole–dipole (213 data, 113 off-line), conductive 2D block (0.1 S/m in 0.01 S/m), 5 Gauss–Newton
+iterations from a homogeneous model. Model error: distance between the final and true models (log σ),
+relative to the starting model.
+
+| method                          | RMS (iterations 1 to 5)        | model error |
+|---------------------------------|--------------------------------|-------------|
+| off-line (`offline25 = 'auto'`) | 20.1, 4.1, 3.0, 2.2, 1.6       | 0.60        |
+| y ignored (`offline25 = False`) | 116, 53, 47, 48, 48            | 3.70        |
+
+Joint inversion with MMR receivers off the line (y = 5 and 15 m) and the same ERT data: RMS 13.4, 5.2,
+4.2 in 3 iterations.
