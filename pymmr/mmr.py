@@ -1059,7 +1059,8 @@ class GridMMR:
         the potentials need both, as in GridDC (vertical dipoles are 15 to 30% too small and
         horizontal dipoles near the electrodes up to 4 times too small without them, in a half-space).
         With apply_bc, the fields are solved again with the image setting of the DC grid (same matrix,
-        already factorized), and the data are Q (u - u0) + u0 at the true positions of the dipole ends.
+        already factorized), and the data are Q (u - u0) + u0 at the true positions of the dipole ends
+        if dc.exact_primary is True, Q u otherwise (as in GridDC._get_data).
 
         Returns
         -------
@@ -1070,18 +1071,21 @@ class GridMMR:
         no = self.xo_all.shape[0]
         ns_src = self.xs_u.shape[0]
         out = np.zeros((no * ns_src, 3))
+        exact = False
         if dc.apply_bc and isinstance(dc.fv, GridFV):
             # fields with images; dc.c1c2_u is xs_u and keep_c1c2 is True here (set by fwd_mod)
             dc._boundary_correction(sigma)
-            u = dc.fv.solve(dc.q.toarray())
-            F = u - dc.u0
+            F = dc.fv.solve(dc.q)
+            exact = dc._uses_exact_primary()
+            if exact:
+                F = F - dc.u0
         else:
             F = u_dc
         for n in range(3):
             if self.pod_p1p2[n] is None:
                 continue
             v = self.Q_pod_e[n] @ F
-            if F is not u_dc:
+            if exact:
                 p1p2 = self.pod_p1p2[n]
                 for ns in range(ns_src):
                     c = np.tile(self.xs_u[ns, :], (no, 1))

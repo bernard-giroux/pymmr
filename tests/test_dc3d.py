@@ -219,6 +219,15 @@ class TestMMR(unittest.TestCase):
                         ref = g.dc._units_scaling * (u(xo, 1e-2) - u(xo + dls[n], 1e-2))
                     np.testing.assert_allclose(v[:, n], ref, rtol=1e-3 if layered else 1e-6,
                                                err_msg=f'y {yr} layered {layered} component {n}')
+            # dc.exact_primary = False: same as GridDC with the same setting
+            g.dc.exact_primary = False
+            _, v = g.fwd_mod(sigma)
+            g.dc.exact_primary = True
+            gd = GridDC((x, x, z))
+            gd.set_solver(SOLVER)
+            gd.exact_primary = False
+            gd.set_survey_ert(np.tile(xs, (4, 1)), np.c_[xo, xo + dls[2]], 1.0)
+            np.testing.assert_allclose(v[:, 2], gd.fwd_mod(sigma), rtol=1e-6)
             # MMR data unchanged by the electric dipoles
             g2 = GridMMR((x, x, z))
             g2.set_solver(SOLVER)
