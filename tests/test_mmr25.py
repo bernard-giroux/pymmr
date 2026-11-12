@@ -262,6 +262,9 @@ class TestRunJob(unittest.TestCase):
                         '1.0       # source current,\n'
                         '1         # compute sensitivity,\n'
                         f'{SOLVER}   # solver name,\n'
+                        '500       # cglscd max_it,\n'
+                        '1e-8      # cglscd tol,\n'
+                        'jacobi    # cglscd preconditioner,\n'
                         '0         # verbose,\n')
             root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
             env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get('PYTHONPATH', ''))
@@ -272,6 +275,19 @@ class TestRunJob(unittest.TestCase):
             np.testing.assert_allclose(out[:, 9:12], d_ref, rtol=1e-5, atol=1e-5 * np.abs(d_ref).max())
             for n in (1, 2):
                 self.assertTrue(os.path.isfile(os.path.join(d, 'job_mmr_sens_dip{0:d}.vtr'.format(n))))
+
+    def test_cglscd_keywords(self):
+        # 'cglscd preconditioner' must not be read as the 'precon' keyword of the iterative solvers
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get('PYTHONPATH', ''))
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'job.par'), 'w') as f:
+                f.write('inv   # job,\n'
+                        'ilu   # cglscd preconditioner,\n')
+            res = subprocess.run([sys.executable, '-m', 'pymmr.run_job', 'job.par'], cwd=d, env=env,
+                                 capture_output=True, text=True, timeout=600)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn('cglscd preconditioner must be', res.stderr)
 
 
 class TestPlumbing(unittest.TestCase):

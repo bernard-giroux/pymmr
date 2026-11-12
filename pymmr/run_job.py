@@ -28,6 +28,10 @@ The keywords are :
 - **source current** : Intensity of source current in A (file or scalar)
 - **beta** : Regularization factor
 - **inv max_it** : Maximum number of inversion iterations
+- **cglscd max_it** : Maximum number of iterations of cglscd (2 n_data + 100 by default, 1000 with jacobi)
+- **cglscd tol** : Tolerance of cglscd (1e-9 by default)
+- **cglscd preconditioner** : Preconditioner of cglscd, "regularization" (default, factorization of the
+                              regularization matrix with a direct solver) or "jacobi"
 - **solver name** : Choice of solver
 - **solver max_it** : Maximum number of iteration for iterative solvers
 - **solver atol** : Target absolute tolerance for iterative solvers
@@ -274,6 +278,17 @@ if __name__ == "__main__":
                     basename = value
                 elif "model" in keyword.lower():
                     model_file = value
+                elif 'cglscd' in keyword.lower():    # before 'precon'
+                    if 'max_it' in keyword.lower():
+                        inv.max_it_cglscd = int(value)
+                    elif 'tol' in keyword.lower():
+                        inv.tol_cglscd = float(value)
+                    elif 'precon' in keyword.lower():
+                        if value not in ('regularization', 'jacobi'):
+                            raise ValueError('cglscd preconditioner must be regularization or jacobi')
+                        inv.precond_cglscd = value
+                    else:
+                        raise ValueError('Unknown keyword: ' + keyword)
                 elif 'solver' in keyword.lower() and 'name' in keyword.lower():
                     if value in ('bicgstab', 'gmres', 'lgmres'):
                         mod = importlib.import_module('scipy.sparse.linalg')
