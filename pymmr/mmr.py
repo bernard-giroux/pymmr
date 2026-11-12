@@ -437,7 +437,9 @@ class GridMMR:
         when the solver is instantiated.
         """
         if self.fv.nc == self.dc.fv.nc and self.fv.dim != 2.5:   # 2.5D: see _setup25
-            self._add_air()
+            # A_z = 0 at the top: the air must be thick compared with the source-receiver distances,
+            # whatever the size of the top cells (see docs/mmr25.md, section 9)
+            self._add_air(min_thickness=self.dc.fv.z[-1] - self.dc.fv.z[0])
 
         if self.xs is None:
             raise ValueError('Source term undefined')

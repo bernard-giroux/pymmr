@@ -126,7 +126,8 @@ class TestVerticalDyke(unittest.TestCase):
         d = self.g.fwd_mod(self.sigma)
         bz = self.vd.fwd_mod(self.xo, xs)
         # air at least as thick as the earth part of the grid, whatever the size of the top cells
-        self.assertGreaterEqual(self.g.fv.z[-1], self.g.dc.fv.z[-1] - self.g.dc.fv.z[0])
+        self.assertGreaterEqual(self.g.fv.z[-1] - self.g.dc.fv.z[-1],
+                                self.g.dc.fv.z[-1] - self.g.dc.fv.z[0])
         for b in self.yr:
             s = self.xo[:, 1] == b
             err = np.abs(d[s, 2] - bz[s]).max() / np.abs(bz[s]).max()

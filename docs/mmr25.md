@@ -283,7 +283,9 @@ This comparison exposed two errors in `VerticalDyke` (electrode outside the dyke
 - **Air thickness.** The air layers used to be sized from the top cell (4 cells, then 15 cells
   growing by 1.3), only 55 m with 0.25 m top cells. A_z = 0 at the top of the air was then too
   close: 2.3% error instead of 0.2% (dyke, y = 10 m). The 2.5D code now adds air at least as thick as the earth part
-  of the grid, padding included. The 3D code is unchanged.
+  of the grid, padding included, and so does the 3D code. In 3D (half-space of section 8, h = 10 m,
+  top cells of 0.25 m), the air goes from 55 m to 2.8 km and the By error from 20% to 15% (least-squares
+  ratio 0.82 to 0.92); the rest is the horizontal cell size at the electrodes (below). Time: 34 to 46 s.
 - **Horizontal cell size at the electrodes.** In the half-space test By is 2% too small everywhere
   and 4.8% at the receivers closest to an electrode (h = 5 m). This error depends on hx, not hz
   or the top cells, and is first order. Refining x within 10 m of each electrode (h = 5 m
