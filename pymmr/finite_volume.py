@@ -3337,7 +3337,7 @@ class Grid25FV(BaseFV):
             s1 = s2 = s.reshape(n)
         return s1, s2
 
-    def u_homog_at(self, c1c2, pts, sigma, cs):
+    def u_homog_at(self, c1c2, pts, sigma, cs, offset_y=False):
         """3D potential of a homogeneous half-space, source of row i evaluated at point of row i.
 
         Parameters
@@ -3350,6 +3350,10 @@ class Grid25FV(BaseFV):
             Conductivity, scalar or one value per current electrode (n x 2 for dipoles, n for poles).
         cs : ndarray
             Current intensity, n.
+        offset_y : bool
+            Include the offset along y between the electrode and the point in the distance.  False
+            (GridDC): the distance is in the x-z plane, consistent with the numerical 2.5D solution,
+            computed for an offset of 0.  True (pod_e of GridMMR): true 3D distance.
 
         Notes
         -----
@@ -3366,8 +3370,11 @@ class Grid25FV(BaseFV):
             """Field of one electrode (image and gf = 4 if it is below the surface)."""
             below = self.below_surface(c)
             with np.errstate(divide='ignore', invalid='ignore'):
-                r = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] - c[:, 2])**2)
-                ri = np.sqrt((pts[:, 0] - c[:, 0])**2 + (pts[:, 2] + c[:, 2] - 2 * self.z[-1])**2)
+                h2 = (pts[:, 0] - c[:, 0])**2
+                if offset_y:
+                    h2 = h2 + (pts[:, 1] - c[:, 1])**2
+                r = np.sqrt(h2 + (pts[:, 2] - c[:, 2])**2)
+                ri = np.sqrt(h2 + (pts[:, 2] + c[:, 2] - 2 * self.z[-1])**2)
                 u = np.where(below, (1. / r + 1. / ri) / 4.0, 1. / (2.0 * r)) / s
             # electrode or point at infinity (e.g. pole-pole): no contribution (avoids inf - inf)
             remote = np.logical_not(np.logical_and(np.all(np.isfinite(c), axis=1),

@@ -15,6 +15,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from pymmr.finite_volume import calc_padding, has_mumps  # noqa: E402
+from pymmr.dc import GridDC  # noqa: E402
 from pymmr.mmr import GridMMR, VerticalDyke, normal_field  # noqa: E402
 
 SIGMA = 0.01
@@ -356,16 +357,81 @@ class TestPlumbing(unittest.TestCase):
         c = (seen['dobs'] - 1) % 3
         np.testing.assert_array_equal(seen['wt'], 10 * i + c)
 
-    def test_not_implemented(self):
+    def test_pod_e(self):
+        # electric dipoles at the measurement points (off the line of the source), half-space:
+        # potential of surface electrodes I / (2 pi sigma r), at any depth
         g = GridMMR(grid())
         g.set_solver(SOLVER)
-        g.set_survey_mmr(C1C2, receivers(), 1.0, pod_e=(1.0, 0.0, 0.0))
-        with self.assertRaises(NotImplementedError):
-            g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))
+        xo = receivers()
+        pod_e = (2.0, 3.0, -1.0)
+        g.set_survey_mmr(C1C2, xo, 2.0, pod_e=pod_e)
+        d, v = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))
+        self.assertEqual(d.shape, (xo.shape[0], 3))
+        self.assertEqual(v.shape, (xo.shape[0], 3))
+
+        def u(p):
+            r1 = np.linalg.norm(p - C1C2[:3], axis=1)
+            r2 = np.linalg.norm(p - C1C2[3:], axis=1)
+            return 2.0 * (1.0 / r1 - 1.0 / r2) / (2.0 * np.pi * SIGMA) * g.dc._units_scaling
+
+        for n in range(3):
+            dl = np.zeros(3)
+            dl[n] = pod_e[n]
+            ref = u(xo) - u(xo + dl)
+            # homogeneous half-space: only the secondary field is interpolated, it is close to 0
+            err = np.abs(v[:, n] - ref).max() / np.abs(ref).max()
+            self.assertLess(err, 1e-3, msg='component {0:d}'.format(n))
+        # MMR data unchanged by the electric dipoles
+        g2 = GridMMR(grid())
+        g2.set_solver(SOLVER)
+        g2.set_survey_mmr(C1C2, xo, 2.0)
+        np.testing.assert_allclose(d, g2.fwd_mod(SIGMA * np.ones((g2.dc.fv.nc,))), rtol=1e-10, atol=1e-12)
+        # with the sensitivity: (data, sens), data_pod_e (shape expected by run_job)
+        (d_s, sens), v_s = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)), calc_sens=True)
+        np.testing.assert_allclose(d_s, d, rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(v_s, v, rtol=1e-10, atol=1e-12)
+        self.assertEqual(sens.shape[1], d.size)
         # new survey without electric dipoles: the previous ones must not be kept
-        g.set_survey_mmr(C1C2, receivers(), 1.0)
+        g.set_survey_mmr(C1C2, xo, 1.0)
         d = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))
-        self.assertEqual(d.shape, (receivers().shape[0], 3))
+        self.assertEqual(d.shape, (xo.shape[0], 3))
+
+    def test_pod_e_layered(self):
+        # two-layer earth (invariant along y): potential of surface electrodes by the image series,
+        # function of the horizontal distance only (any offset along y)
+        rho1, rho2, hl = 100.0, 10.0, 10.0
+        kk = (rho2 - rho1) / (rho2 + rho1)
+        nn = np.arange(1, 600)
+
+        def V(r):
+            r = np.abs(np.asarray(r, float))[:, None]
+            return rho1 / (2 * np.pi) * (1 / r[:, 0] + 2 * np.sum(kk**nn / np.sqrt(r**2 + (2 * nn * hl)**2), axis=1))
+
+        def u(p):
+            return V(np.linalg.norm(p - C1C2[:3], axis=1)) - V(np.linalg.norm(p - C1C2[3:], axis=1))
+
+        x, z = grid(2.5)
+        zc = 0.5 * (z[1:] + z[:-1])
+        sigma = np.repeat(np.where(zc > -hl, 1 / rho1, 1 / rho2), x.size - 1)
+        xr = np.arange(-40.0, 41.0, 10.0)
+        xo = np.array([[a, b, 0.0] for b in (0.0, 10.0, 30.0) for a in xr])
+        g = GridMMR((x, z))
+        g.set_solver(SOLVER)
+        g.set_survey_mmr(C1C2, xo, 1.0, pod_e=(2.0, 3.0, -10.0))
+        _, v = g.fwd_mod(sigma)
+        v = v / g.dc._units_scaling
+        for n, dl in ((0, [2.0, 0.0, 0.0]), (1, [0.0, 3.0, 0.0])):
+            ref = u(xo) - u(xo + dl)
+            ok = np.abs(ref) > 1e-6 * np.abs(ref).max()
+            self.assertLess(np.abs(v[ok, n] / ref[ok] - 1).max(), 0.02, msg='component {0:d}'.format(n))
+        # vertical dipoles on the line: same as GridDC
+        on = xo[:, 1] == 0.0
+        gd = GridDC((x, z))
+        gd.set_solver(SOLVER)
+        gd.set_survey_ert(np.tile(C1C2, (xr.size, 1)), np.c_[xo[on], xo[on] + [0.0, 0.0, -10.0]], np.ones(xr.size))
+        ddc = gd.fwd_mod(sigma) / gd._units_scaling
+        ok = np.abs(ddc) > 1e-6 * np.abs(ddc).max()
+        np.testing.assert_allclose(v[on, 2][ok], ddc[ok], rtol=5e-3)
 
 
 if __name__ == '__main__':

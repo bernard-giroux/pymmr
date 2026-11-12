@@ -423,6 +423,10 @@ class GridMMR:
             components Bx, By & Bz (pT)
         sens : ndarray
             Sensitivity matrix if `calc_sens` is True.
+        data_pod_e : ndarray
+            Potential differences of the electric dipoles at the measurement points if `pod_e` was
+            given to `set_survey_mmr` (not in inversion).  The function then returns
+            `data, data_pod_e`, or `(data, sens), data_pod_e` if `calc_sens` is True.
 
         Notes
         -----
@@ -602,6 +606,8 @@ class GridMMR:
             if self.in_inv and self.dc.c1c2 is not None:
                 data = np.r_[data, res_dc[0].reshape(-1, 1)]
                 sens = np.c_[sens, res_dc[1]]
+            if data_pod_e is not None:
+                return (data, sens), data_pod_e
             return data, sens
         else:
             if self.in_inv and self.dc.c1c2 is not None:
@@ -617,8 +623,6 @@ class GridMMR:
 
     def _fwd_mod25(self, sigma, keep_solver, calc_sens=False):
         """Forward modelling in 2.5D, returns data (and sensitivity) as fwd_mod."""
-        if self.pod_p1p2 is not None:
-            raise NotImplementedError('Electric dipoles at measurement points (pod_e) not available in 2.5D')
         sigma = np.asarray(sigma, dtype=float).ravel() * np.ones((self.dc.fv.nc,))
 
         if self.in_inv and self.dc.c1c2 is not None:
@@ -632,13 +636,17 @@ class GridMMR:
             print('  {0:d} current electrodes, {1:d} wavenumbers in [{2:g}, {3:g}] 1/m'.format(
                 poles.shape[0], self.k.size, self.k[0], self.k[-1]))
             print('  Computing DC fields ... ', end='', flush=True)
-        U, M_k, dc_solvers = self._dc_fields25(sigma, poles, keep_solvers=calc_sens)
+        U, M_k, dc_solvers, pod = self._dc_fields25(sigma, poles, keep_solvers=calc_sens,
+                                                    pod_fields=self._plan25['pod'] is not None)
         if verbose:
             print('done.\n  Solving MMR systems ... ', end='', flush=True)
         Bk = self._mmr_fields25(U, M_k, keep_solver)
         if verbose:
             print('done.')
         data = self._units_scaling * self._transform25(Bk)
+        data_pod_e = None
+        if self._plan25['pod'] is not None:
+            data_pod_e = self.dc._units_scaling * self._pod_e25(pod)[self.ind_back, :]
         if calc_sens:
             if verbose:
                 print('  Computing sensitivity ... ', end='', flush=True)
@@ -659,7 +667,11 @@ class GridMMR:
         if verbose:
             print('End of modelling.')
         if calc_sens:
+            if data_pod_e is not None:
+                return (data, sens), data_pod_e
             return data, sens
+        if data_pod_e is not None:
+            return data, data_pod_e
         return data
 
     def _setup25(self):
@@ -694,11 +706,63 @@ class GridMMR:
             p = ic[NS]
             sel = p >= 0
             dy = self.xo_all[NR[sel], 1] - self.xs_u[NS[sel], col]
-            terms.append({'rows': np.where(sel)[0], 'rec': NR[sel], 'pole': p[sel],
+            terms.append({'rows': np.where(sel)[0], 'rec': NR[sel], 'pole': p[sel], 'ys': self.xs_u[NS[sel], col],
                           'w': sign * self.cs_u[NS[sel]],
                           'W_even': self._kq.weights(dy, 'even'), 'W_odd': self._kq.weights(dy, 'odd')})
-        self._plan25 = {'poles': poles, 'terms': terms, 'n_data': n_s * no}
+        self._plan25 = {'poles': poles, 'terms': terms, 'n_data': n_s * no, 'pod': self._plan_pod25(terms)}
         self.Q = self._build_Q(self.xo_all)
+
+    def _plan_pod25(self, terms):
+        """Interpolation matrices and weights of the electric dipoles at the measurement points (pod_e).
+
+        For each component (dipole along x, y or z) with a non-zero length: for each end of the dipoles,
+        the interpolation matrix of the DC fields (x-z plane, electrodes at least at the depth of the
+        first cell centre, as in 3D) and, for each term of _plan25, the even weights for the distance
+        along y between that end and the current electrode.
+        """
+        if self.pod_p1p2 is None:
+            return None
+        fv = self.dc.fv
+        pod = [None, None, None]
+        for n in range(3):
+            p1p2 = self.pod_p1p2[n]
+            if p1p2 is None:
+                continue
+            ends = []
+            for c0 in (0, 3):
+                p = fv.process_surface_elec(p1p2[:, c0:c0 + 3].copy())
+                Q = fv.linear_interp(p[:, 0], p[:, 1], p[:, 2])
+                W = [self._kq.weights(p1p2[t['rec'], c0 + 1] - t['ys'], 'even') for t in terms]
+                ends.append((Q, W))
+            pod[n] = ends
+        return pod
+
+    def _pod_e25(self, pod):
+        """Potential differences at the electric dipoles of the measurement points, n_data x 3 (V,
+        modelling order).
+
+        The potential of a current electrode at a point is sum_k W_k(dy) Q U_k.  With the analytic
+        fields U0_k (dc.exact_primary), it is sum_k W_k(dy) Q (U_k - U0_k) + u0, with u0 the analytic
+        potential at the true positions (dy included), as GridDC does on the line.
+        """
+        U, U0 = pod['U'], pod['U0']
+        poles = self._plan25['poles']
+        data = np.zeros((self._plan25['n_data'], 3))
+        for n, ends in enumerate(self._plan25['pod']):
+            if ends is None:
+                continue
+            pts_end = (self.pod_p1p2[n][:, :3], self.pod_p1p2[n][:, 3:6])
+            for sign_end, (Q, W), pts in zip((1.0, -1.0), ends, pts_end):
+                F = U if U0 is None else U - U0
+                QU = np.stack([Q @ F[i] for i in range(self.k.size)])       # n_k x n_obs x n_poles
+                for t, Wt in zip(self._plan25['terms'], W):
+                    vals = np.einsum('dk,kd->d', Wt, QU[:, t['rec'], t['pole']])
+                    if U0 is not None:
+                        c = np.c_[poles[t['pole'], 0], t['ys'], poles[t['pole'], 2]]
+                        s0 = pod['sigma0'] if np.isscalar(pod['sigma0']) else pod['sigma0'][t['pole']]
+                        vals = vals + self.dc.fv.u_homog_at(c, pts[t['rec']], s0, 1.0, offset_y=True)
+                    data[t['rows'], n] += sign_end * t['w'] * vals
+        return data
 
     def _survey_range25(self):
         """(n_k, r_min, r_max) for the selection of the wavenumbers.
@@ -719,9 +783,18 @@ class GridMMR:
         r_max = max(4.0 * np.sqrt(dx**2 + dy**2 + dz**2).max(), 100.0 * r_min)
         return (int(self.n_k), float(r_min), float(r_max))
 
-    def _dc_fields25(self, sigma, poles, keep_solvers=False):
-        """DC fields U_k of unit current electrodes (n_k x nc x n_poles), M_k of the DC grid, and the
-        solvers of each wavenumber (None unless keep_solvers)."""
+    def _dc_fields25(self, sigma, poles, keep_solvers=False, pod_fields=False):
+        """DC fields U_k of unit current electrodes (n_k x nc x n_poles), M_k of the DC grid, the
+        solvers of each wavenumber (None unless keep_solvers), and the DC fields for the electric
+        dipoles at the measurement points (dict, None unless pod_fields).
+
+        With the boundary correction, the fields used for B have no image of the surface electrodes
+        (`surface_images`), but the potentials need it, as in GridDC (vertical dipoles at the
+        measurement points are 20 to 30% too small without it): the fields for pod_e are then
+        computed with the setting of the DC grid, with the same factorizations.  With
+        `dc.exact_primary`, the dict also holds the analytic fields U0_k and the conductivity sigma0
+        of the reference fields, so that only the secondary field is interpolated (see _pod_e25).
+        """
         fv = self.dc.fv
         A, _ = fv.build_A(sigma)
         n_p = poles.shape[0]
@@ -739,22 +812,37 @@ class GridMMR:
             finally:
                 fv.surface_images = images
             q = src.q
+            pod = None
+            if pod_fields:
+                pod = {'sigma0': sigma0, 'U0': None}
+                exact = self.dc.exact_primary
+                if images != self.surface_images or exact:
+                    src_pod, _ = fv.boundary_source(poles, sigma0, cs, correct_quadrature=exact, k=self.k)
+                    if exact:
+                        pod['U0'] = src_pod.U0
+                    if images != self.surface_images:
+                        q = np.concatenate((q, src_pod.q), axis=2)     # n_k x nc x 2 n_poles
         else:
             p = fv.process_surface_elec(poles.copy())
             q0 = (fv.linear_interp(p[:, 0], p[:, 1], p[:, 2]).T.toarray() /
                   fv.volume_voxels()[:, None])
             q = np.broadcast_to(q0, (self.k.size,) + q0.shape)
+            pod = {'sigma0': None, 'U0': None} if pod_fields else None
 
-        U = np.empty((self.k.size, fv.nc, n_p))
+        U = np.empty((self.k.size, fv.nc, q.shape[2]))
         par = fv.get_solver_params()
         solvers = [] if keep_solvers else None
         for i, k in enumerate(self.k):
             s = Solver(par, Solver25._L(A, sigma, k), verbose=(self.verbose > 1),
                        comm=fv.comm, n_threads=fv.n_threads)
-            U[i] = s.solve(q[i]).reshape(fv.nc, n_p)
+            U[i] = s.solve(q[i]).reshape(fv.nc, q.shape[2])
             if keep_solvers:
                 solvers.append(s)
-        return U, fv.build_M_k(sigma), solvers
+        if U.shape[2] > n_p:
+            U, pod['U'] = U[:, :, :n_p], U[:, :, n_p:]
+        elif pod is not None:
+            pod['U'] = U
+        return U, fv.build_M_k(sigma), solvers, pod
 
     def _mmr_fields25(self, U, M_k, keep_solver):
         """Transformed B (T) at the measurement points: 3 x n_k x n_obs x n_poles (Bx, By, Bz)."""

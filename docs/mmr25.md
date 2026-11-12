@@ -194,8 +194,35 @@ sensitivity.
 5. Inverse transform: Bx, Bz with the sine weights and By with the cosine weights. The dipole data
    are the sum over its electrodes, each weighted by ±I.
 
-The DC data of a joint inversion are computed by `GridDC` with its own wavenumbers. Not yet
-available in 2.5D: electric dipoles at the receivers (`pod_e`).
+The DC data of a joint inversion are computed by `GridDC` with its own wavenumbers. These
+wavenumbers are fitted for an offset of 0 along y between the current and potential electrodes:
+`GridDC` in 2.5D does not model off-line measurements (the y of the electrodes is ignored), and
+warns when the electrodes of a datum are at different y. With a pole at x = 0 and a potential
+electrode at x = 10 m, the computed potential is 1.41 times the true one at y = 10 m and 3.16 times
+at y = 30 m.
+
+### Electric dipoles at the receivers (`pod_e`)
+
+`set_survey_mmr(..., pod_e=(dx, dy, dz))` adds dipoles of length dx, dy, dz along x, y, z at each
+receiver; `fwd_mod` then returns `(data, data_pod_e)`, as in 3D (forward modelling only). The
+receivers are usually off the line of the source, so the potentials need the offset along y. They
+are computed from the DC fields U_k of the MMR wavenumbers with the even weights of `KQuadrature`:
+the potential of a current electrode at a point is
+
+    u = Σ_i W_i^even(Δy) Q (U_k_i − U0_k_i) + u0
+
+with Q the interpolation in the x-z plane (electrodes at least at the depth of the first cell
+centre, as in 3D), U0_k the analytic fields of the boundary correction and u0 the analytic potential
+at the true positions, Δy included (`dc.apply_bc` and `dc.exact_primary`; without them, the U_k
+alone). As in `GridDC`, the fields used for the potentials include the image of the surface
+electrodes, unlike those used for B (`surface_images`): without it, vertical dipoles are 20 to 30%
+too small. These fields share the factorizations of the MMR fields (one more right-hand side per
+electrode).
+
+Accuracy (`tests/test_mmr25.py`, `test_pod_e`, `test_pod_e_layered`): exact for a homogeneous
+half-space; for a two-layer earth (100 Ω·m over 10 Ω·m at 10 m, h = 2.5 m), dipoles of 2 and 3 m
+along x and y at y = 0, 10 and 30 m are within 1.6% of the image series solution, and vertical dipoles
+on the line within 0.1% of `GridDC`. With h = 5 m the error is 16%, as for `GridDC` on the line.
 
 Usage in the rest of the package (phase 6):
 
