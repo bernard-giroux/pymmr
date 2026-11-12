@@ -133,7 +133,8 @@ import pandas as pd
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy  # pyright: ignore[reportMissingImports]
 
-from pymmr.finite_volume import GridFV, Grid25FV
+from pymmr.finite_volume import Grid25FV
+from pymmr.finite_element import GridFE
 from pymmr.dc import GridDC
 from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, df_to_data
@@ -147,7 +148,7 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False, n_thread
     Parameters
     ----------
     grid_class : class
-        Class for building grid (must be derived from GridFV)
+        Class for building grid (must be derived from GridFV or GridFE)
     filename : string
         Name of VTK file
     comm : MPI Communicator, optional
@@ -161,7 +162,7 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False, n_thread
         - instance of the grid
         - conductivity (if return_sigma is True)
     """
-    if grid_class not in (GridDC, GridMMR, GridFV):
+    if grid_class not in (GridDC, GridMMR, GridFE):
         raise ValueError("Grid class '{}' not valid".format(grid_class))
 
     extension = filename.split(".")[-1]
@@ -173,7 +174,7 @@ def build_from_vtk(grid_class, filename, comm=None, return_sigma=False, n_thread
         x = vtk_to_numpy(reader.GetOutput().GetXCoordinates())
         y = vtk_to_numpy(reader.GetOutput().GetYCoordinates())
         z = vtk_to_numpy(reader.GetOutput().GetZCoordinates())
-        if y.size == 2 and grid_class is not GridFV:
+        if y.size == 2 and grid_class is not GridFE:
             # a single cell along y: 2.5D model (voxel ordering is the same, x being the fast axis)
             if grid_class is GridMMR:
                 raise ValueError("2.5D modelling (model with a single cell along y) not available for MMR")
@@ -506,7 +507,7 @@ if __name__ == "__main__":
             if g.fv.dim == 2.5:
                 g2 = Grid25FV((x, z))   # written as a grid one cell thick along y
             else:
-                g2 = GridFV((x, y, z))
+                g2 = GridFE((x, y, z))
 
             fields = {}
             for i in range(len(S_save)):

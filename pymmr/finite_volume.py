@@ -488,6 +488,7 @@ class GridFV(BaseFV):
         self.z = z
         self.dim = 3
         self.surface_images = True   # see compute_u_homog
+        print("Dans finite volume")
 
     def ind(self, i, j, k, component=None):
         """

@@ -5,13 +5,24 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
+from pathlib import Path
+
 sys.path.append("/Users/giroux/GitHub/pymmr")
 sys.path.append("/Users/giroux/GitHub/pymumps")
 
-from pymmr.finite_volume import calc_padding, GridFV
+# Dossier racine du dépôt : parent du dossier examples
+racine = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(racine))
+
+# from pymmr.finite_volume import calc_padding, GridFV
 from pymmr.finite_element import GridFE
 from pymmr.mmr import GridMMR
 from pymmr.inversion import Inversion, DataMMR
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+os.chdir(ROOT / "examples")
 
 # os.chdir('/Users/giroux/GitHub/pymmr/examples')
 
@@ -21,11 +32,11 @@ x = np.arange(-60.0 * 16, 60.01 * 16, 60)
 y = np.arange(-60.0 * 16, 60.01 * 16, 60)
 z = np.arange(-60.0 * 16, 0.01, 60)
 
-pad = np.cumsum(calc_padding(60.0, 10))
+# pad = np.cumsum(calc_padding(60.0, 10))
 
-x = np.r_[x[0] - pad[::-1], x, x[-1] + pad]
-y = np.r_[y[0] - pad[::-1], y, y[-1] + pad]
-z = np.r_[z[0] - pad, z]
+# x = np.r_[x[0] - pad[::-1], x, x[-1] + pad]
+# y = np.r_[y[0] - pad[::-1], y, y[-1] + pad]
+# z = np.r_[z[0] - pad, z]
 
 g = GridMMR((x, y, z))
 g.verbose = True

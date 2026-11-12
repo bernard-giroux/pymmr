@@ -25,6 +25,42 @@ Main reference:
 }
 
 """
+
+import os
+from pathlib import Path
+
+os.environ["PETSC_DIR"] = r"C:\Users\obour\GitHub\petsc"
+os.environ["PETSC_ARCH"] = "arch-msvc-intelmpi-mkl"
+os.environ["MKL_THREADING_LAYER"] = "SEQUENTIAL"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
+_dll_directories = [
+    Path(r"C:\Users\obour\GitHub\fenicsx-install\bin"),
+    Path(r"C:\Users\obour\GitHub\petsc\arch-msvc-intelmpi-mkl\lib"),
+    Path(r"C:\Program Files (x86)\Intel\oneAPI\mkl\2026.1\bin"),
+    Path(r"C:\Program Files (x86)\Intel\oneAPI\compiler\2026.1\bin"),
+    Path(r"C:\Program Files (x86)\Intel\oneAPI\mpi\2021.18\bin"),
+    Path(
+        r"C:\Program Files (x86)\Intel\oneAPI"
+        r"\mpi\2021.18\opt\mpi\libfabric\bin"
+    ),
+]
+
+_dll_handles = [
+    os.add_dll_directory(str(directory))
+    for directory in _dll_directories
+    if directory.is_dir()
+]
+
+# Toujours charger PETSc avant DOLFINx
+from petsc4py import PETSc
+
+if not PETSc.Sys.hasExternalPackage("mkl_pardiso"):
+    raise RuntimeError("Le PETSc chargé ne contient pas MKL PARDISO.")
+
+
+
 import copy
 from typing import Iterable
 
@@ -32,9 +68,37 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.special import legendre_p_all
 
+import os
+import sys
+
+# Dossier racine du dépôt : parent du dossier examples
+racine = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(racine))
+
 from pymmr.dc import GridDC
-from pymmr.finite_volume import calc_padding, GridFV, MeshFV, Solver
+# from pymmr.finite_volume import calc_padding, GridFV, MeshFV, Solver
+from pymmr.finite_element import GridFE, MeshFE, Solver
 from pymmr.legendre import p_prime
+from dolfinx import fem, mesh, io
+from mpi4py import MPI
+from dolfinx.fem.petsc import LinearProblem
+# from dolfinx.io import XDMFFile
+from dolfinx.io import gmsh as gmshio
+from dolfinx.plot import vtk_mesh
+import dolfinx.mesh as dmesh
+import dolfinx.cpp.mesh
+import gmsh
+import pyvista as pv
+import matplotlib.pyplot as plt
+import basix.ufl
+from petsc4py import PETSc
+import time
+import ufl
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+os.chdir(ROOT / "examples")
 
 # %% class GridMMR
 
@@ -75,9 +139,9 @@ class GridMMR:
             raise ValueError('GridDC: param_fv must have 3 elements')
 
         if param_fv[0].ndim == 1:
-            self.fv = GridFV(param_fv, comm=comm, n_threads=n_threads)
+            self.fv = GridFE(param_fv, comm=comm, n_threads=n_threads)
         else:
-            self.fv = MeshFV(param_fv, comm=comm, n_threads=n_threads)
+            self.fv = MeshFE(param_fv, comm=comm, n_threads=n_threads)
 
         self.dc = GridDC(param_fv, units='mV', comm=comm, n_threads=n_threads)
         self.dc.verbose = 0
@@ -404,175 +468,419 @@ class GridMMR:
         only once.  Option `keep_solver` allows this, matrix A being factorized
         when the solver is instantiated.
         """
-        if self.fv.nc == self.dc.fv.nc:
-            self._add_air()
 
-        if self.xs is None:
-            raise ValueError('Source term undefined')
+        # Matrice d'interpolation Q (Pas sûre qu'elle me sert)
+        # Densité de courrant J
+        # Champ magnétique B
 
-        if self.xo is None:
-            raise ValueError('Measurement points undefined')
+        self.Q = fem.functionspace(self.fv.domain, ("DG", 0)) # Créer un espace de fonction constante (ordre 0)
+        self.V_space = fem.functionspace(self.fv.domain, ("Lagrange", 1)) # Créer un espace de fonction linéaire (ordre 1)
+        self.sigma = fem.Function(self.Q) # Sigma fonction de Q
+        self.sigma.x.array[:] = sigma # Fond de 1000 Ohm-m (0.001 S/m)
+        self.b = fem.petsc.assemble_vector(fem.form(fem.Constant(self.fv.domain, 0.0) * ufl.TestFunction(self.V_space) * ufl.dx))
+        self.u, self.v = ufl.TrialFunction(self.V_space), ufl.TestFunction(self.V_space) # Fonction de solution et de poid
+        self.a = self.sigma * ufl.dot(ufl.grad(self.u), ufl.grad(self.v)) * ufl.dx # Weak form (intégrale)
+        self.a_form = fem.form(self.a) # Change la forme pour l'assemblage en matrice
 
-        if self.verbose and self.fv.comm.rank == 0:
-            print('\nForward modelling - Magnetometric resistivity')
-            self.dc.print_info()
-            if self.fv.solver_A is not None:
-                self.fv.solver_A.print_info()
+        # Un seul point de référence pour fixer la constante du potentiel.
+        dof_coordinates = self.V_space.tabulate_dof_coordinates()
 
-        if calc_sens and not isinstance(self.dc.fv, GridFV):
-            # tetrahedral meshes lack the face operators used for the sensitivity
-            raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
+        reference_point = np.array([
+            0.0,
+            0.0,
+            -self.DIMZ,
+        ])
 
-        if not self.acq_checked:
-            self.check_acquisition()
+        distance_to_reference = np.linalg.norm(
+            dof_coordinates - reference_point,
+            axis=1,
+        )
 
-        if self.in_inv and self.dc.c1c2 is not None:
-            # joint inversion
-            res_dc = self.dc.fwd_mod(sigma, calc_sens=calc_sens)
+        reference_dof = int(np.argmin(distance_to_reference))
 
-        c1c2_u_save = copy.copy(self.dc.c1c2_u)
-        cs12_u_save = copy.copy(self.dc.cs12_u)
-        self.dc.c1c2_u = self.xs_u
-        self.dc.cs12_u = self.cs_u
-        self.dc.sort_electrodes = False
+        self.dof_ground = np.array(
+            [reference_dof],
+            dtype=np.int32,
+        )
 
-        if self.verbose and self.fv.comm.rank == 0:
-            print('  Computing interpolation matrices ... ', end='', flush=True)
-        Qx, Qy, Qz = self._build_Q(self.xo_all)
-        if self.pod_p1p2 is not None:
-            self.Q_pod_e = self._build_Q_pod_e()
-        if self.verbose and self.fv.comm.rank == 0:
-            print('done.')
-        self.Q = Qx, Qy, Qz
+        self.bc_ground = fem.dirichletbc(
+            fem.Constant(self.domain, PETSc.ScalarType(0.0)),
+            self.dof_ground,
+            self.V_space,
+        )
 
-        # get current density from forward DC modeling
-        if self.verbose and self.fv.comm.rank == 0:
-            print('  Computing current density ... ', end='', flush=True)
-        # The image of surface electrodes (moved to the first cell centre) improves DC data, but the MMR
-        # field computed from the current density is less accurate with it: not used here (DC data of a
-        # joint inversion, computed above, still use it)
-        # (the voltages returned by this call are not used: no analytic primary field either)
-        images = getattr(self.dc.fv, 'surface_images', None)
-        exact_primary = self.dc.exact_primary
-        if images is not None:
-            self.dc.fv.surface_images = False
-        self.dc.exact_primary = False
+        if self.domain.comm.rank == 0:
+            print(
+                "Point de référence du potentiel :",
+                dof_coordinates[reference_dof],
+            )
+
+        self.A = None
+        print("Début assemblage de la matrice...", flush=True)
+        self.assemble_system_matrix()
+        print("Assemblage terminé", flush=True) # Assembler la matrice de système
+        self.uh = fem.Function(self.V_space) # Matrice de solution (initialisé)
+
+        self.A = fem.petsc.assemble_matrix(self.a_form, bcs=[self.bc_ground])
+        self.A.assemble()
+
+
+        """Injecte +I à A et -I à B sur les nœuds les plus proches."""
+        with self.b.localForm() as b_loc:
+            b_loc.set(0.0)
+
+        coordinates = self.V_space.tabulate_dof_coordinates()
+
+        def nearest_dof(position: np.ndarray) -> tuple[int, float]:
+            distances = np.linalg.norm(
+                coordinates - position,
+                axis=1,
+            )
+
+            dof = int(np.argmin(distances))
+            distance = float(distances[dof])
+
+            return dof, distance
+          
+
+        dof_A, distance_A = nearest_dof(self.dc.c1c2[0, :3])
+        dof_B, distance_B = nearest_dof(self.dc.c1c2[1, :3])
+
+        if dof_A == dof_B:
+            raise RuntimeError(
+                "Les deux électrodes ont été associées au même degré de liberté."
+            )
+
+        self.b.setValueLocal(
+            dof_A,
+            PETSc.ScalarType(+self.cs),
+            addv=PETSc.InsertMode.ADD_VALUES,
+        )
+
+        self.b.setValueLocal(
+            dof_B,
+            PETSc.ScalarType(-self.cs),
+            addv=PETSc.InsertMode.ADD_VALUES,
+        )
+
+        self.b.assemblyBegin()
+        self.b.assemblyEnd()
+
+        self.b.ghostUpdate(
+            addv=PETSc.InsertMode.ADD_VALUES,
+            mode=PETSc.ScatterMode.REVERSE,
+        )
+
+        fem.petsc.apply_lifting(
+            self.b,
+            [self.a_form],
+            bcs=[[self.bc_ground]],
+        )
+
+        self.b.ghostUpdate(
+            addv=PETSc.InsertMode.ADD_VALUES,
+            mode=PETSc.ScatterMode.REVERSE,
+        )
+
+        fem.petsc.set_bc(
+            self.b,
+            [self.bc_ground],
+        )
+
+        self.b.assemblyBegin()
+        self.b.assemblyEnd()
+
+        if self.domain.comm.rank == 0:
+            print(
+                f"Électrode A : dof={dof_A}, "
+                f"distance={distance_A:.3f} m, "
+                f"position={coordinates[dof_A]}"
+            )
+            print(
+                f"Électrode B : dof={dof_B}, "
+                f"distance={distance_B:.3f} m, "
+                f"position={coordinates[dof_B]}"
+            )
+
+        solver = PETSc.KSP().create(self.domain.comm)
+        solver.setOperators(self.A)
+
+        solver_name = 'pardiso'
+
+        pc = solver.getPC()
+
+        if solver_name == "cg_hypre":
+            solver.setType("cg")
+            pc.setType("hypre")
+            pc.setHYPREType("boomeramg")
+
+        elif solver_name == "pardiso":
+
+            solver.setType("preonly")
+            pc.setType("lu")
+            pc.setFactorSolverType("mkl_pardiso")
+
+        elif solver_name == "cluster_pardiso":
+
+            solver.setType("preonly")
+            pc.setType("lu")
+            pc.setFactorSolverType("mkl_cpardiso")
+
+        elif solver_name == "mumps":
+            solver.setType("preonly")
+            pc.setType("lu")
+            pc.setFactorSolverType("mumps")
+
+        elif solver_name == "direct_lu":
+            solver.setType("preonly")
+            pc.setType("lu")
+
+        elif solver_name == "AMG":
+            solver.setType("cg")
+            pc.setType("gamg")
+            solver.setTolerances(rtol=1e-8, max_it=2000)
+
+        else:
+            raise ValueError(f"Unknown solver_name: {solver_name}")
+
+        solver.setTolerances(rtol=1e-10, atol=1e-12, max_it=5000)
+
+        self.b.assemblyBegin()
+        self.b.assemblyEnd()
+
         try:
-            _, Jdc = self.dc.fwd_mod(sigma, calc_J=True)
-        finally:
-            if images is not None:
-                self.dc.fv.surface_images = images
-            self.dc.exact_primary = exact_primary
-        u_dc = self.dc.u.copy()
+            print("Début de la résolution PARDISO...", flush=True)
+            solver.solve(self.b, self.uh.x.petsc_vec)
+        except PETSc.Error as e:
+            raise RuntimeError(
+                f"PETSc failed with solver '{solver_name}'. "
+                "Si c'est 'pardiso', PETSc n'est probablement pas compilé avec MKL PARDISO."
+            ) from e
 
-        if self.verbose and self.fv.comm.rank == 0:
-            print('done.')
+        self.uh.x.scatter_forward()
 
-        Jx = Jdc[:self.dc.fv.nfx, :]
-        Jy = Jdc[self.dc.fv.nfx:(self.dc.fv.nfx+self.dc.fv.nfy), :]
-        Jz = Jdc[(self.dc.fv.nfx+self.dc.fv.nfy):, :]
+        reason = solver.getConvergedReason()
+        its = solver.getIterationNumber()
 
-        if self.verbose and self.fv.comm.rank == 0:
-            print('  Solving MMR system')
+        if self.domain.comm.rank == 0:
+            print(f"Solver: {solver_name}")
+            print(f"Iterations: {its}")
+            print(f"Convergence reason: {reason}")
 
-        # create MMR source term from Jdc (J is 0 in air)
-        q = np.zeros((self.fv.nf, self.xs_u.shape[0]))
-        for i in range(self.xs_u.shape[0]):
-            # q[(self.fv.nfx-self.dc.fv.nfx):self.fv.nfx, i] = Jx[:, i]
-            # q[(self.fv.nfx+self.fv.nfy-self.dc.fv.nfy):(self.fv.nfx+self.fv.nfy), i] = Jy[:, i]
-            # q[(self.fv.nfx+self.fv.nfy+self.fv.nfz-self.dc.fv.nfz):, i] = Jz[:, i]
+        if reason < 0:
+            raise RuntimeError(f"Solver failed with PETSc reason {reason}")
 
-            q[:self.dc.fv.nfx, i] = Jx[:, i]
-            q[self.fv.nfx:(self.fv.nfx+self.dc.fv.nfy), i] = Jy[:, i]
-            q[(self.fv.nfx+self.fv.nfy):(self.fv.nfx+self.fv.nfy+self.dc.fv.nfz), i] = Jz[:, i]
 
-        if self.fv.solver_A is None or keep_solver is False:
-            self.fv.solver_A = Solver(self.fv.get_solver_params(), self._build_A(), verbose=(self.verbose>1))
-        if self.fv.solver_A.A is None:
-            self.fv.solver_A.A = self._build_A()
-        if self.verbose and self.fv.comm.rank == 0:
-            total_memory_bytes = self.fv.solver_A.A.data.nbytes + \
-                                 self.fv.solver_A.A.indptr.nbytes + \
-                                 self.fv.solver_A.A.indices.nbytes
+        # On calcule la densité de courant J = -sigma * grad(u)
+        num_cells = self.domain.topology.index_map(self.domain.topology.dim).size_local
+        W_smooth = fem.functionspace(self.domain, ("DG", 0, (self.domain.geometry.dim,)))
+        j_smooth = fem.Function(W_smooth)
+        j_expr = fem.Expression(-self.sigma * ufl.grad(self.uh), W_smooth.element.interpolation_points, comm=self.domain.comm)
+        j_smooth.interpolate(j_expr)
+        J = j_smooth.x.array.reshape(-1, 3)[:num_cells]
 
-            print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576), flush=True)
-        self.u = self.fv.solver_A.solve(q)
+        # Run after mesh generation, before gmsh.finalize().
+        # box_tag is the volume tag returned by gmsh.model.occ.addBox(...).
 
-        B = self.C_f @ self.u
-        Bx = self._units_scaling * B[:self.fv.nex, :]
-        By = self._units_scaling * B[self.fv.nex:(self.fv.nex+self.fv.ney), :]
-        Bz = self._units_scaling * B[(self.fv.nex+self.fv.ney):, :]
+        faces = self.fv.model.getBoundary(
+        [(3, self.fv.volume_tag)],
+        oriented=False,
+        recursive=False
+        )
 
-        no = self.xo_all.shape[0]
-        data = np.empty((no*q.shape[1], self.xo_all.shape[1]))
-        data[:, 0] = (Qx @ Bx).T.flatten()
-        data[:, 1] = (Qy @ By).T.flatten()
-        data[:, 2] = (Qz @ Bz).T.flatten()
+        tags_list = []
+        coords_list = []
 
-        if self.Q_pod_e is not None:
-            data_pod_e = np.empty((no * q.shape[1], self.xo_all.shape[1]))
-            for n in range(3):
-                data_pod_e[:, n] = (self.Q_pod_e[n] @ u_dc).T.flatten()
-            data_pod_e = self.dc._units_scaling * data_pod_e[self.ind_back, :]
-        else:
-            data_pod_e = None
+        for dim, face_tag in faces:
+            tags, coords, _ = gmsh.model.mesh.getNodes(
+            dim=dim,
+            tag=face_tag,
+            includeBoundary=True,
+            returnParametricCoord=False
+            )
 
-        if not self.in_inv:
-            data = data[self.ind_back, :]
-        else:
-            self.dc.sort_electrodes = True
-            data = self.data_to_obs(data, False)
+        tags_list.append(tags)
+        coords_list.append(coords.reshape(-1, 3))
 
-        if calc_sens:
-            if self.verbose and self.fv.comm.rank == 0:
-                print('  Computing sensitivity')
-                print('    Computing adjoint terms ... ', end='', flush=True)
+        # Remove duplicates from nodes shared by adjacent faces.
+        surface_tags, indices = np.unique(
+        np.concatenate(tags_list),
+        return_index=True
+        )
+        surface_xyz = np.vstack(coords_list)[indices]
 
-            q = self._adj()
-            M = self.dc.fv.build_M(sigma)
-            q_a = self.dc.fv.D @ M @ q
-            t = np.max(np.abs(q_a), axis=0)
-            q_a /= np.tile(t, (q_a.shape[0], 1))
+        z_top = 0.0  # Adapt to your box
+        mask = np.isclose(surface_xyz[:, 2], z_top)
 
-            if self.verbose and self.fv.comm.rank == 0:
-                print('    Solving DC adjoint problem ... ', end='', flush=True)
-            self.dc.fwd_mod(calc_J=False, q=q_a)
-            if self.verbose and self.fv.comm.rank == 0:
-                print('done.')
+        top_tags = surface_tags[mask]
+        top_xyz = surface_xyz[mask]
 
-            q2 = self.dc.u * np.tile(t, (self.dc.u.shape[0], 1))
 
-            if self.verbose and self.fv.comm.rank == 0:
-                print('    Assembling matrices ... ', end='', flush=True)
-            sens = np.empty((self.dc.ind_roi.size, self.nobs_mmr*3))
-            # d(m_f)/d(ln sigma_i) = m_f^2 w_fi / sigma_i, times face volumes from the adjoint (see _adj)
-            S = sp.diags_array(M.diagonal()**2 * self.dc.fv.volume_faces())
-            Dm = sp.diags_array(1.0/sigma)
+        # if self.fv.nc == self.dc.fv.nc:
+        #     self._add_air()
 
-            Gf = self.dc.fv.build_G_faces()
-            for ns in range(self.xs_u.shape[0]):
-                self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2, Gf)
+        # if self.xs is None:
+        #     raise ValueError('Source term undefined')
 
-            if self.verbose and self.fv.comm.rank == 0:
-                print('done.')
+        # if self.xo is None:
+        #     raise ValueError('Measurement points undefined')
 
-        if self.verbose and self.fv.comm.rank == 0:
-            print('End of modelling.')
+        # if self.verbose and self.fv.comm.rank == 0:
+        #     print('\nForward modelling - Magnetometric resistivity')
+        #     self.dc.print_info()
+        #     if self.fv.solver_A is not None:
+        #         self.fv.solver_A.print_info()
 
-        self.dc.c1c2_u = c1c2_u_save
-        self.dc.cs12_u = cs12_u_save
-        if calc_sens:
-            if self.in_inv and self.dc.c1c2 is not None:
-                data = np.r_[data, res_dc[0].reshape(-1, 1)]
-                sens = np.c_[sens, res_dc[1]]
-            return data, sens
-        else:
-            if self.in_inv and self.dc.c1c2 is not None:
-                data = np.r_[data, res_dc.reshape(-1, 1)]
-            if data_pod_e is not None:
-                return data, data_pod_e
-            else:
-                return data
+        # if calc_sens and not isinstance(self.dc.fv, GridFE):
+        #     # tetrahedral meshes lack the face operators used for the sensitivity
+        #     raise NotImplementedError('Sensitivity computation implemented only for 3D rectilinear grids')
+
+        # if not self.acq_checked:
+        #     self.check_acquisition()
+
+        # if self.in_inv and self.dc.c1c2 is not None:
+        #     # joint inversion
+        #     res_dc = self.dc.fwd_mod(sigma, calc_sens=calc_sens)
+
+        # c1c2_u_save = copy.copy(self.dc.c1c2_u)
+        # cs12_u_save = copy.copy(self.dc.cs12_u)
+        # self.dc.c1c2_u = self.xs_u
+        # self.dc.cs12_u = self.cs_u
+        # self.dc.sort_electrodes = False
+
+        # if self.verbose and self.fv.comm.rank == 0:
+        #     print('  Computing interpolation matrices ... ', end='', flush=True)
+        # Qx, Qy, Qz = self._build_Q(self.xo_all)
+        # if self.pod_p1p2 is not None:
+        #     self.Q_pod_e = self._build_Q_pod_e()
+        # if self.verbose and self.fv.comm.rank == 0:
+        #     print('done.')
+        # self.Q = Qx, Qy, Qz
+
+        # # get current density from forward DC modeling
+        # if self.verbose and self.fv.comm.rank == 0:
+        #     print('  Computing current density ... ', end='', flush=True)
+        # # The image of surface electrodes (moved to the first cell centre) improves DC data, but the MMR
+        # # field computed from the current density is less accurate with it: not used here (DC data of a
+        # # joint inversion, computed above, still use it)
+        # # (the voltages returned by this call are not used: no analytic primary field either)
+        # images = getattr(self.dc.fv, 'surface_images', None)
+        # exact_primary = self.dc.exact_primary
+        # if images is not None:
+        #     self.dc.fv.surface_images = False
+        # self.dc.exact_primary = False
+        # try:
+        #     _, Jdc = self.dc.fwd_mod(sigma, calc_J=True)
+        # finally:
+        #     if images is not None:
+        #         self.dc.fv.surface_images = images
+        #     self.dc.exact_primary = exact_primary
+        # u_dc = self.dc.u.copy()
+
+        # if self.verbose and self.fv.comm.rank == 0:
+        #     print('done.')
+
+        # Jx = Jdc[:self.dc.fv.nfx, :]
+        # Jy = Jdc[self.dc.fv.nfx:(self.dc.fv.nfx+self.dc.fv.nfy), :]
+        # Jz = Jdc[(self.dc.fv.nfx+self.dc.fv.nfy):, :]
+
+        # if self.verbose and self.fv.comm.rank == 0:
+        #     print('  Solving MMR system')
+
+        # # create MMR source term from Jdc (J is 0 in air)
+        # q = np.zeros((self.fv.nf, self.xs_u.shape[0]))
+        # for i in range(self.xs_u.shape[0]):
+        #     q[:self.dc.fv.nfx, i] = Jx[:, i]
+        #     q[self.fv.nfx:(self.fv.nfx+self.dc.fv.nfy), i] = Jy[:, i]
+        #     q[(self.fv.nfx+self.fv.nfy):(self.fv.nfx+self.fv.nfy+self.dc.fv.nfz), i] = Jz[:, i]
+
+        # if self.fv.solver_A is None or keep_solver is False:
+        #     self.fv.solver_A = Solver(self.fv.get_solver_params(), self._build_A(), verbose=(self.verbose>1))
+        # if self.fv.solver_A.A is None:
+        #     self.fv.solver_A.A = self._build_A()
+        # if self.verbose and self.fv.comm.rank == 0:
+        #     total_memory_bytes = self.fv.solver_A.A.data.nbytes + \
+        #                          self.fv.solver_A.A.indptr.nbytes + \
+        #                          self.fv.solver_A.A.indices.nbytes
+
+        #     print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576), flush=True)
+        # self.u = self.fv.solver_A.solve(q)
+
+        # B = self.C_f @ self.u
+        # Bx = self._units_scaling * B[:self.fv.nex, :]
+        # By = self._units_scaling * B[self.fv.nex:(self.fv.nex+self.fv.ney), :]
+        # Bz = self._units_scaling * B[(self.fv.nex+self.fv.ney):, :]
+
+        # no = self.xo_all.shape[0]
+        # data = np.empty((no*q.shape[1], self.xo_all.shape[1]))
+        # data[:, 0] = (Qx @ Bx).T.flatten()
+        # data[:, 1] = (Qy @ By).T.flatten()
+        # data[:, 2] = (Qz @ Bz).T.flatten()
+
+        # if self.Q_pod_e is not None:
+        #     data_pod_e = np.empty((no * q.shape[1], self.xo_all.shape[1]))
+        #     for n in range(3):
+        #         data_pod_e[:, n] = (self.Q_pod_e[n] @ u_dc).T.flatten()
+        #     data_pod_e = self.dc._units_scaling * data_pod_e[self.ind_back, :]
+        # else:
+        #     data_pod_e = None
+
+        # if not self.in_inv:
+        #     data = data[self.ind_back, :]
+        # else:
+        #     self.dc.sort_electrodes = True
+        #     data = self.data_to_obs(data, False)
+
+        # if calc_sens:
+        #     if self.verbose and self.fv.comm.rank == 0:
+        #         print('  Computing sensitivity')
+        #         print('    Computing adjoint terms ... ', end='', flush=True)
+
+        #     q = self._adj()
+        #     M = self.dc.fv.build_M(sigma)
+        #     q_a = self.dc.fv.D @ M @ q
+        #     t = np.max(np.abs(q_a), axis=0)
+        #     q_a /= np.tile(t, (q_a.shape[0], 1))
+
+        #     if self.verbose and self.fv.comm.rank == 0:
+        #         print('    Solving DC adjoint problem ... ', end='', flush=True)
+        #     self.dc.fwd_mod(calc_J=False, q=q_a)
+        #     if self.verbose and self.fv.comm.rank == 0:
+        #         print('done.')
+
+        #     q2 = self.dc.u * np.tile(t, (self.dc.u.shape[0], 1))
+
+        #     if self.verbose and self.fv.comm.rank == 0:
+        #         print('    Assembling matrices ... ', end='', flush=True)
+        #     sens = np.empty((self.dc.ind_roi.size, self.nobs_mmr*3))
+        #     # d(m_f)/d(ln sigma_i) = m_f^2 w_fi / sigma_i, times face volumes from the adjoint (see _adj)
+        #     S = sp.diags_array(M.diagonal()**2 * self.dc.fv.volume_faces())
+        #     Dm = sp.diags_array(1.0/sigma)
+
+        #     Gf = self.dc.fv.build_G_faces()
+        #     for ns in range(self.xs_u.shape[0]):
+        #         self._fill_jacobian(ns, sens, u_dc, Dm, S, q, q2, Gf)
+
+        #     if self.verbose and self.fv.comm.rank == 0:
+        #         print('done.')
+
+        # if self.verbose and self.fv.comm.rank == 0:
+        #     print('End of modelling.')
+
+        # self.dc.c1c2_u = c1c2_u_save
+        # self.dc.cs12_u = cs12_u_save
+        # if calc_sens:
+        #     if self.in_inv and self.dc.c1c2 is not None:
+        #         data = np.r_[data, res_dc[0].reshape(-1, 1)]
+        #         sens = np.c_[sens, res_dc[1]]
+        #     return data, sens
+        # else:
+        #     if self.in_inv and self.dc.c1c2 is not None:
+        #         data = np.r_[data, res_dc.reshape(-1, 1)]
+        #     if data_pod_e is not None:
+        #         return data, data_pod_e
+        #     else:
+        #         return data
 
     def calc_WtW(self, wt, par, m_active, WGx=None, WGy=None, WGz=None, WS=None):
         return self.dc.calc_WtW(wt, par, m_active, WGx, WGy, WGz, WS)
