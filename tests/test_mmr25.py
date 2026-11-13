@@ -15,7 +15,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from pymmr.finite_volume import calc_padding, has_mumps  # noqa: E402
-from pymmr.dc import GridDC  # noqa: E402
+from pymmr.dc import GridDC, VerticalDyke as DCDyke  # noqa: E402
 from pymmr.mmr import GridMMR, VerticalDyke, normal_field  # noqa: E402
 
 SIGMA = 0.01
@@ -397,6 +397,45 @@ class TestPlumbing(unittest.TestCase):
         d = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))
         self.assertEqual(d.shape, (xo.shape[0], 3))
 
+    def test_pod_e_contacts(self):
+        """Electric dipoles with ends on a contact of a dyke and a current electrode on the other contact:
+        same as GridDC (contact_interp), on and off the line, and close to the analytic solution; B does
+        not depend on dc.contact_interp."""
+        h = 1.0
+        pad = np.cumsum(calc_padding(h, 25))
+        x = np.arange(-30.0, 40.0 + h / 2, h)
+        z = np.arange(-30.0, h / 2, h)
+        x, z = np.r_[x[0] - pad[::-1], x, x[-1] + pad], np.r_[z[0] - pad[::-1], z]
+        rho = (100.0, 1000.0, 50.0)
+        xs = np.array([[-20.0, 0, 0, 10.0, 0, 0]])
+        xr = np.arange(-5.0, 8.0, 2.0)                   # dipole ends from -5 to 8, on the contact at 0
+        for yr in (0.0, 3.0):
+            xo = np.c_[xr, np.full(xr.size, yr), np.zeros(xr.size)]
+            B = []
+            for ci in (True, False):
+                g = GridMMR((x, z))
+                g.set_solver(SOLVER)
+                g.dc.contact_interp = ci
+                g.set_survey_mmr(xs, xo, 1.0, pod_e=(1.0, 1.0, 0.0))
+                xc = g.dc.fv.centre_voxels()[0]
+                sigma = np.where(xc < 0, 1 / rho[0], np.where(xc < 10, 1 / rho[1], 1 / rho[2]))
+                b, v = g.fwd_mod(sigma)
+                B.append(b)
+                gd = GridDC((x, z))
+                gd.set_solver(SOLVER)
+                gd.contact_interp = ci
+                gd.set_survey_ert(np.tile(xs, (xr.size, 1)), np.c_[xo, xo + [1.0, 0, 0]], 1.0)
+                # different wavenumbers on the line (GridDC: 11 fitted, GridMMR: KQuadrature)
+                np.testing.assert_allclose(v[:, 0], gd.fwd_mod(sigma), rtol=5e-3, err_msg=f'y {yr} contact {ci}')
+                if yr == 0.0:
+                    va = 1e3 * DCDyke(*rho, 10.0).fwd_mod(np.tile(xs, (xr.size, 1)), np.c_[xo, xo + [1.0, 0, 0]])
+                    err = np.abs(v[:, 0] / va - 1).max()
+                    if ci:
+                        self.assertLess(err, 0.01)
+                    else:
+                        self.assertGreater(err, 1.0)
+            np.testing.assert_allclose(B[0], B[1], rtol=1e-10, atol=1e-10 * np.abs(B[1]).max())
+
     def test_pod_e_layered(self):
         # two-layer earth (invariant along y): potential of surface electrodes by the image series,
         # function of the horizontal distance only (any offset along y)
@@ -425,12 +464,10 @@ class TestPlumbing(unittest.TestCase):
             ref = u(xo) - u(xo + dl)
             ok = np.abs(ref) > 1e-6 * np.abs(ref).max()
             self.assertLess(np.abs(v[ok, n] / ref[ok] - 1).max(), 0.02, msg='component {0:d}'.format(n))
-        # vertical dipoles on the line: same as GridDC (linear interpolation, as for pod_e: the lower ends are
-        # on the layer boundary, where GridDC.contact_interp changes the interpolation)
+        # vertical dipoles on the line: same as GridDC (lower ends on the layer boundary)
         on = xo[:, 1] == 0.0
         gd = GridDC((x, z))
         gd.set_solver(SOLVER)
-        gd.contact_interp = False
         gd.set_survey_ert(np.tile(C1C2, (xr.size, 1)), np.c_[xo[on], xo[on] + [0.0, 0.0, -10.0]], np.ones(xr.size))
         ddc = gd.fwd_mod(sigma) / gd._units_scaling
         ok = np.abs(ddc) > 1e-6 * np.abs(ddc).max()
