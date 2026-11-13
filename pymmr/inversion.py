@@ -424,6 +424,48 @@ def df_to_data(df):
 
 
 class Inversion:
+    """Gauss-Newton (or quasi-Newton) inversion of MMR data, ERT data, or both jointly.
+
+    Set the options as attributes of an instance, then call `run` with a grid, a starting model, a
+    reference model and the data.  The grid defines the problem:
+
+    - `GridMMR` with `data_mmr`, and optionally `data_ert` for a joint inversion;
+    - `GridDC` with `data_ert` only.
+
+    A grid built from two coordinate arrays `(x, z)` gives a 2.5D inversion, and three arrays `(x, y, z)` a
+    3D one.
+
+    At each iteration, `run`
+
+    1. computes the data and the Jacobian (forward modelling with sensitivity; with 'Quasi-Newton', the
+       Jacobian is computed once and then updated with Broyden's formula);
+    2. solves the Gauss-Newton system (J^T D^2 J + beta C) s = J^T D^2 (dobs - d) - (regularization
+       gradient) for the step `s` with `cglscd`, where D is the data weighting matrix (`data_weighting`)
+       and C the regularization matrix (`smooth_type`, `alx`, `aly`, `alz`, `als`, `model_weighting`, `reg_var`);
+    3. limits the step to `max_step_size` and scales it with a line search;
+    4. updates the model in the working variable `param_transf`, keeping the conductivity within
+       [`sigma_min`, `sigma_max`];
+    5. divides `beta` by `beta_cooling`, down to `beta_min`.
+
+    The inversion stops after `max_it` iterations.  With `checkpointing`, the state is saved after each
+    iteration in `basename`_chkpt.pkl, and `start_from_chkpt` resumes from that file.
+
+    The model is in S/m, B-field data in pT and voltages in mV, and the data errors (`wt` of `DataMMR`
+    and `DataERT`) are in %.  See `run` for the data weights.
+
+    Examples
+    --------
+    >>> g = GridMMR((x, z))
+    >>> g.set_solver('mumps')
+    >>> inv = Inversion()
+    >>> inv.max_it = 4
+    >>> inv.beta = 100.0
+    >>> sigma_inv, data_inv, rms, misfit, smy = inv.run(g, m0=m0, m_ref=m0, data_mmr=data_mmr)
+
+    See also `examples/example_mmr25.py`, `examples/example_joint.py`, and `docs/cglscd.md` for the
+    solution of the Gauss-Newton system.
+    """
+
     def __init__(self):
         self.method = "Gauss-Newton"
         """Algorithm: 'Gauss-Newton', 'Quasi-Newton'."""
