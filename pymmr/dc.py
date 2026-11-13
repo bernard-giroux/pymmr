@@ -571,7 +571,8 @@ class GridDC:
             self.u = np.empty((self.fv.nc, self.q.shape[1]))
             self.u[:, :c1c2.shape[0]] = self.fv.solve(self.q[:, :c1c2.shape[0]])
 
-        if self.p1p2 is None:
+        if self.p1p2 is None or q is not None:
+            # user-supplied source terms (e.g. MMR adjoint): no data
             data = None
         else:
             data = self._units_scaling * self._get_data()
@@ -606,6 +607,7 @@ class GridDC:
 
             # terms from the reference fields (exact primary field at the measurement electrodes)
             R = self._reference_term_matrix()
+            contact = self._contact_sens_setup(sigma, c1c2.shape[0]) if self._contact() else None
 
             # items = [(n, c1c2, Dm, S, Gf) for n in range(self.c1c2.shape[0])]
             # with Pool() as pool:
@@ -630,6 +632,8 @@ class GridDC:
                 sens[:, n], _ = self._fill_jacobian(n, c1c2, Dm, S, Gf)
                 if R is not None:
                     sens[:, n] += self._units_scaling * self._sigma0_term(n, R, sigma)[self.ind_roi]
+                if contact is not None:
+                    sens[:, n] += self._units_scaling * self._contact_sens_term(n, contact)[self.ind_roi]
 
             if self.sort_electrodes and self.sort_back is not None:
                 sens = sens[:, self.sort_back]
@@ -870,8 +874,8 @@ class GridDC:
             ind = self.ind_c1c2 == ns
             if self._contact():
                 # see Grid25FV.flux_interp; linear interpolation kept for the reference fields
-                Q1, c1 = self.fv.flux_interp(p1p2[ind, 0], p1p2[ind, 2], self._sigma_model)
-                Q2, c2 = self.fv.flux_interp(p1p2[ind, 3], p1p2[ind, 5], self._sigma_model)
+                Q1, c1 = self._flux(p1p2[ind, :3])
+                Q2, c2 = self._flux(p1p2[ind, 3:6])
                 self._Qc.append({'c1': c1, 'c2': c2,
                                  'L1': self.fv.linear_interp(p1p2[ind, 0], p1p2[ind, 1], p1p2[ind, 2]),
                                  'L2': self.fv.linear_interp(p1p2[ind, 3], p1p2[ind, 4], p1p2[ind, 5])})
@@ -882,13 +886,21 @@ class GridDC:
             self.Q.append(Q)
 
     def _contact(self):
-        """True if conductivity contrasts at the electrodes are accounted for (contact_interp, 2.5D)."""
-        return self.contact_interp and isinstance(self.fv, Grid25FV) and self._sigma_model is not None
+        """True if conductivity contrasts at the electrodes are accounted for (contact_interp, rectilinear grids)."""
+        return self.contact_interp and isinstance(self.fv, (GridFV, Grid25FV)) and self._sigma_model is not None
+
+    def _flux(self, pts, sigma=None, derivatives=False):
+        """flux_interp of the grid at points pts (n x 3)."""
+        sigma = self._sigma_model if sigma is None else sigma
+        pts = np.atleast_2d(pts)
+        if self.fv.dim == 2.5:
+            return self.fv.flux_interp(pts[:, 0], pts[:, 2], sigma, derivatives=derivatives)
+        return self.fv.flux_interp(pts[:, 0], pts[:, 1], pts[:, 2], sigma, derivatives=derivatives)
 
     def _elec_interp(self, x, y, z):
         """Interpolation matrix at electrodes (flux_interp with contact_interp, linear_interp otherwise)."""
         if self._contact():
-            return self.fv.flux_interp(x, z, self._sigma_model)[0]
+            return self._flux(np.c_[np.atleast_1d(x), np.atleast_1d(y), np.atleast_1d(z)])[0]
         return self.fv.linear_interp(x, y, z)
 
     def _build_q(self):
@@ -944,7 +956,15 @@ class GridDC:
         self._sigma0_w = None
         self._refs = None
 
-        if isinstance(self.fv, GridFV):
+        if isinstance(self.fv, GridFV) and self._contact():
+            # reference model around each current electrode (see GridFV.contact_reference), q = A(sigma_ref) u0
+            model = ref_model if self.local_sigma0 else avg_cond
+            n_e = 2 if c1c2.shape[1] == 6 else 1
+            self._refs = [self.fv.contact_reference(c1c2[:, 3*j:3*j+3], model) for j in range(n_e)]
+            self._sigma0 = None
+            q, self.u0 = self.fv.contact_source(c1c2, self._refs, cs)
+            self.q = sp.csr_array(q)
+        elif isinstance(self.fv, GridFV):
             if self.local_sigma0:
                 # reference fields with the conductivity at each current electrode
                 self._sigma0, self._sigma0_w = self._electrode_sigma(c1c2, ref_model, return_weights=True)
@@ -1626,47 +1646,64 @@ class GridDC:
         exact = self._uses_exact_primary()
         p12 = fv.process_surface_elec(self.p12_u.copy())
         c = {'exact': exact, 'n_poles': n_poles}
-        _, c['c_r'], c['cells_r'], c['dW_r'], c['dc_r'] = fv.flux_interp(p12[:, 0], p12[:, 2], sigma,
-                                                                          derivatives=True)
+        _, c['c_r'], c['cells_r'], c['dW_r'], c['dc_r'] = self._flux(p12, sigma, derivatives=True)
         # adjoint fields (unit sources at the measurement electrodes), spatial domain
         c['w'] = self.u[:, n_poles:]
         if not exact:
             if not self.apply_bc:
                 # point sources distributed with the weights of flux_interp (see _build_q)
                 c12 = fv.process_surface_elec(self.c12_u.copy())
-                _, _, c['cells_s'], c['dW_s'], _ = fv.flux_interp(c12[:, 0], c12[:, 2], sigma, derivatives=True)
+                _, _, c['cells_s'], c['dW_s'], _ = self._flux(c12, sigma, derivatives=True)
             return c
         ref = self._refs[0]
         Lr = fv.linear_interp(p12[:, 0], p12[:, 1], p12[:, 2])
         n_r = p12.shape[0]
-        # P - Q u0 (n_poles x n_r) and its derivatives with respect to ln sa and ln sb of each pole
+        # P - Q u0 (n_poles x n_r), and for each pole: cells defining its reference model, derivatives of
+        # P - Q u0 with respect to their ln sigma (m x n_r), and derivatives of the data through the source
+        # term (adjoint, A^-T = Vc A^-1 Vc^-1)
         R = np.zeros((n_poles, n_r))
-        dRa = np.zeros((n_poles, n_r))
-        dRb = np.zeros((n_poles, n_r))
-        # derivative of the data with respect to ln sa through the source term q_k (adjoint, A^-T = Vc A^-1 Vc^-1)
-        Tq = np.zeros((n_poles, n_r))
-        U = self.U_k
-        k, g = fv.solver_A.k, fv.solver_A.g
+        ref_cells, dR, Tq = [], [], []
         vc = fv.volume_voxels()
         Gf = fv.build_G_faces()
         for ip in range(n_poles):
             pole = self.c12_u[ip]
             if not np.all(np.isfinite(pole)):
+                ref_cells.append(np.zeros((0,), dtype=np.int64))
+                dR.append(np.zeros((0, n_r)))
+                Tq.append(np.zeros((0, n_r)))
                 continue
             cs = self.cs_u[ip]
             # measurement electrodes at the position of the pole (not in the same data): no contribution
             pts = self.p12_u.copy()
             pts[np.all(pts == pole, axis=1)] = np.inf
-            P, dPa, dPb = self._contact_primary(ip, pts, derivatives=True)
-            u0, du0a, du0b = fv._ref_field(pole, ref, ip, cs, kernel=lambda r: 1. / r, derivatives=True)
+            P, *dP = self._contact_primary(ip, pts, derivatives=True)
+            if fv.dim == 2.5:
+                u0, *du0 = fv._ref_field(pole, ref, ip, cs, kernel=lambda r: 1. / r, derivatives=True)
+                cells = np.array([ref.ia[ip], ref.ib[ip]])
+            else:
+                u0, *du0 = fv._ref_field(pole, ref, ip, cs, derivatives=True)
+                cells = fv.ref_cells(ref, ip)
             R[ip] = P - Lr @ u0
-            dRa[ip] = dPa - Lr @ du0a
-            dRb[ip] = dPb - Lr @ du0b
-            if not ref.homogeneous:
-                dq = fv.contact_source_derivative(pole, ref, ip, cs, k, Gf=Gf)
-                for i in range(k.size):
-                    Tq[ip] += 0.5 * g[i] * ((vc * dq[i]) @ U[i][:, n_poles:])
-        c.update({'R': R, 'dRa': dRa, 'dRb': dRb, 'Tq': Tq})
+            m = int(np.sum(cells >= 0))
+            ref_cells.append(cells[:m])
+            dR.append(np.array([dP[j] - Lr @ du0[j] for j in range(m)]))
+            T = np.zeros((m, n_r))
+            # 2.5D: q_k depends on the ratios of the conductivities only (no term for a homogeneous reference);
+            # 3D: the reference potential term of the source (see GridFV._ref_rhs) is proportional to u0
+            if not ref.homogeneous or fv.dim != 2.5:
+                if fv.dim == 2.5:
+                    # q_k depends on sa / sb only
+                    U = self.U_k
+                    k, g = fv.solver_A.k, fv.solver_A.g
+                    dq = fv.contact_source_derivative(pole, ref, ip, cs, k, Gf=Gf)
+                    for i in range(k.size):
+                        T[0] += 0.5 * g[i] * ((vc * dq[i]) @ U[i][:, n_poles:])
+                    T[1] = -T[0]
+                else:
+                    dq = fv.contact_source_derivatives(pole, ref, ip, cs, Gf=Gf)
+                    T = (vc * dq[:m]) @ c['w']
+            Tq.append(T)
+        c.update({'R': R, 'ref_cells': ref_cells, 'dR': dR, 'Tq': Tq})
         return c
 
     def _contact_sens_term(self, n, c):
@@ -1699,17 +1736,14 @@ class GridDC:
             return tmp
         ref = self._refs[0]
         for sp_, ip in poles:
-            if ref.ia[ip] < 0:
-                continue
+            cells = c['ref_cells'][ip]
             for sr, r in rcv:
-                ta = sp_ * sr * (c['Tq'][ip, r] + c['c_r'][r] * c['dRa'][ip, r])
-                tb = sp_ * sr * (-c['Tq'][ip, r] + c['c_r'][r] * c['dRb'][ip, r])
+                t = sp_ * sr * (c['Tq'][ip][:, r] + c['c_r'][r] * c['dR'][ip][:, r])
                 if ref.homogeneous:
-                    # sa = sb = geometric mean of the model
-                    tmp += (ta + tb) / fv.nc
+                    # conductivity of the reference model: geometric mean of the model
+                    tmp += t.sum() / fv.nc
                 else:
-                    tmp[ref.ia[ip]] += ta
-                    tmp[ref.ib[ip]] += tb
+                    np.add.at(tmp, cells, t)
         return tmp
 
     def _uses_exact_primary(self):

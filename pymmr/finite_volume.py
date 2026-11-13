@@ -1629,7 +1629,7 @@ class GridFV(BaseFV):
             return np.ones((pts.shape[0],), dtype=bool)
         return self.below_surface(pts)
 
-    def u_homog_at(self, c1c2, pts, sigma, cs):
+    def u_homog_at(self, c1c2, pts, sigma, cs, check=True):
         """3D potential of a homogeneous half-space, source of row i evaluated at point of row i.
 
         Exact solution at the true positions of the electrodes and points (surface electrodes have no
@@ -1645,6 +1645,8 @@ class GridFV(BaseFV):
             Conductivity, scalar or one value per current electrode (n x 2 for dipoles, n for poles).
         cs : ndarray
             Current intensity, n.
+        check : bool
+            Raise an error if a point is at the position of a current electrode (inf otherwise).
         """
         c1c2 = np.atleast_2d(np.array(c1c2, dtype=float))
         pts = np.atleast_2d(np.array(pts, dtype=float))
@@ -1667,9 +1669,283 @@ class GridFV(BaseFV):
         if c1c2.shape[1] == 6:
             u = u - pot(c1c2[:, 3:6], s2)
         u = cs / np.pi * u
-        if np.any(np.isinf(u)):
+        if check and np.any(np.isinf(u)):
             raise ValueError('Evaluation point at the position of a current electrode')
         return u
+
+    # ------------------------------------------------------------------------------------------------
+    # Electrodes on conductivity contrasts (GridDC.contact_interp, see docs/contacts.md)
+
+    def _flux_local(self, x, y, z, s):
+        """Weights of the 8 cells of the stencil and contrast factor (see flux_interp).
+
+        s : n x 8 conductivity of the cells, x fastest then y then z (may be complex)
+        """
+        ix0, ix1 = Grid25FV._stencil(self.xc, x)
+        iy0, iy1 = Grid25FV._stencil(self.yc, y)
+        iz0, iz1 = Grid25FV._stencil(self.zc, z)
+        fw = Grid25FV._flux_weights
+        n = x.size
+        W = np.zeros((n, 8), dtype=s.dtype)
+        c = np.ones((n,), dtype=s.dtype)
+        s_lev, w_lev = [], []
+        for kz in range(2):
+            s_row, w_row, c_row = [], [], []
+            for ky in range(2):
+                j = 2 * (ky + 2 * kz)
+                sa, sb = s[:, j], s[:, j + 1]
+                wa, wb, phi = fw(x, self.xc[ix0], self.xc[ix1], self.x[ix1], sa, sb)
+                w_row.append((wa, wb))
+                s_row.append(wa * sa + wb * sb)
+                c_row.append(1 - phi * (sa - sb)**2 / (sa + sb)**2)
+            wa, wb, phi = fw(y, self.yc[iy0], self.yc[iy1], self.y[iy1], s_row[0], s_row[1])
+            # factor of the faces along x: average of the 2 rows along y, with the (positive) weights along y
+            ta, tb = wa * np.sign(wa.real), wb * np.sign(wb.real)   # analytic (complex step)
+            c = c * (ta * c_row[0] + tb * c_row[1]) / (ta + tb)
+            c = c * (1 - phi * (s_row[0] - s_row[1])**2 / (s_row[0] + s_row[1])**2)
+            w_lev.append(((wa, wb), w_row))
+            s_lev.append(wa * s_row[0] + wb * s_row[1])
+        wa, wb, phi = fw(z, self.zc[iz0], self.zc[iz1], self.z[iz1], s_lev[0], s_lev[1])
+        c = c * (1 - phi * (s_lev[0] - s_lev[1])**2 / (s_lev[0] + s_lev[1])**2)
+        for kz, wz in enumerate((wa, wb)):
+            (wy0, wy1), w_row = w_lev[kz]
+            for ky, wy in enumerate((wy0, wy1)):
+                j = 2 * (ky + 2 * kz)
+                W[:, j] = wz * wy * w_row[ky][0]
+                W[:, j + 1] = wz * wy * w_row[ky][1]
+        return W, c
+
+    def flux_interp(self, x, y, z, sigma, derivatives=False):
+        """Interpolation of the cell-centred potential accounting for conductivity contrasts.
+
+        3D version of Grid25FV.flux_interp: flux continuity along x, then along y (conductivities of the
+        rows interpolated along x), then along z.  The contrast factor of the faces along x is averaged over
+        the 2 rows along y, so that it is the same as in 2.5D for a model invariant along y.
+
+        Returns
+        -------
+        Q, c, and if derivatives: cells (npts x 8), dW (npts x 8 x 8), dc (npts x 8)
+        """
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        y = np.atleast_1d(np.asarray(y, dtype=float))
+        z = np.atleast_1d(np.asarray(z, dtype=float))
+        sigma = np.asarray(sigma, dtype=float) * np.ones((self.nc,))
+        n = x.size
+        ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        xo, yo, zo = x[ok], y[ok], z[ok]
+        ix = Grid25FV._stencil(self.xc, xo)
+        iy = Grid25FV._stencil(self.yc, yo)
+        iz = Grid25FV._stencil(self.zc, zo)
+        cells_ok = np.stack([ix[a] + self.nx * (iy[b] + self.ny * iz[d])
+                             for d in range(2) for b in range(2) for a in range(2)], axis=1)
+        s = sigma[cells_ok]
+        W, c_ok = self._flux_local(xo, yo, zo, s)
+        rows = np.repeat(np.where(ok)[0], 8)
+        Q = sp.coo_array((W.ravel(), (rows, cells_ok.ravel())), shape=(n, self.nc)).tocsr()
+        c = np.ones((n,))
+        c[ok] = c_ok
+        if not derivatives:
+            return Q, c
+        cells = np.zeros((n, 8), dtype=np.int64)
+        cells[ok] = cells_ok
+        dW = np.zeros((n, 8, 8))
+        dc = np.zeros((n, 8))
+        h = 1e-30
+        for j in range(8):
+            sj = s.astype(complex)
+            sj[:, j] *= np.exp(1j * h)      # complex step on ln sigma_j
+            Wj, cj = self._flux_local(xo, yo, zo, sj)
+            dW[ok, :, j] = Wj.imag / h
+            dc[ok, j] = cj.imag / h
+        return Q, c, cells, dW, dc
+
+    def contact_reference(self, poles, sigma):
+        """Reference model of the boundary correction for each current electrode (3D).
+
+        - Electrode on a vertical edge of the grid (node of x and y): 4 quarter-spaces around the edge, with
+          the conductivities of the 4 cells around it in the row of the electrode.  The field of the
+          electrode is that of a half-space of conductivity equal to the mean of the 4 (exact solution:
+          the boundaries are radial planes through the electrode).
+        - Otherwise: 2 quarter-spaces separated by the vertical face (node of x or of y) nearest to the
+          electrode, as in Grid25FV.contact_reference (one image across the face).
+        - Electrode beyond the outer nodes: homogeneous with the conductivity of its cell.
+
+        Returns
+        -------
+        ContactRef3
+        """
+        poles = np.atleast_2d(np.asarray(poles, dtype=float))
+        n = poles.shape[0]
+        ok = np.all(np.isfinite(poles), axis=1)
+        e = self.process_surface_elec(poles.copy())
+        kind = np.zeros((n,), dtype=np.int64)
+        cells = -np.ones((n, 4), dtype=np.int64)
+        f = np.zeros((n, 2))
+        for i in np.where(ok)[0]:
+            jx = int(np.argmin(np.abs(e[i, 0] - self.x)))
+            jy = int(np.argmin(np.abs(e[i, 1] - self.y)))
+            dx, dy = abs(e[i, 0] - self.x[jx]), abs(e[i, 1] - self.y[jy])
+            vx, vy = 0 < jx < self.nx, 0 < jy < self.ny
+            ixc = int(np.clip(np.searchsorted(self.x, e[i, 0]) - 1, 0, self.nx - 1))
+            iyc = int(np.clip(np.searchsorted(self.y, e[i, 1]) - 1, 0, self.ny - 1))
+            iz = int(np.clip(np.searchsorted(self.z, e[i, 2]) - 1, 0, self.nz - 1))
+            tol = 1e-9 * max(self.x[-1] - self.x[0], self.y[-1] - self.y[0])
+            if vx and vy and dx < tol and dy < tol:
+                kind[i] = 3
+                cells[i] = [self.ind(jx - 1 + a, jy - 1 + b, iz) for b in range(2) for a in range(2)]
+                f[i] = self.x[jx], self.y[jy]
+            elif vx and (dx <= dy or not vy):
+                kind[i] = 1
+                cells[i, :2] = [self.ind(jx - 1, iyc, iz), self.ind(jx, iyc, iz)]
+                f[i, 0] = self.x[jx]
+            elif vy:
+                kind[i] = 2
+                cells[i, :2] = [self.ind(ixc, jy - 1, iz), self.ind(ixc, jy, iz)]
+                f[i, 1] = self.y[jy]
+            else:
+                cells[i, 0] = self.ind(ixc, iyc, iz)
+        if np.isscalar(sigma) or np.size(sigma) == 1:
+            s = float(sigma) * np.ones((n, 4))
+            homogeneous = True
+        else:
+            sigma = np.asarray(sigma, dtype=float).ravel()
+            s = np.where(cells >= 0, sigma[np.maximum(cells, 0)], 1.0)
+            homogeneous = False
+        return ContactRef3(kind, cells, s, f, homogeneous)
+
+    @staticmethod
+    def _n_regions(kind):
+        return (1, 2, 2, 4)[kind]
+
+    def _ref_regions(self, ref, i):
+        """Masks of the cells of each region of the reference model of row i of ref."""
+        x, y, _ = self.centre_voxels()
+        k = ref.kind[i]
+        if k == 0:
+            return [np.ones((self.nc,), dtype=bool)]
+        if k in (1, 2):
+            v, fv = (x, ref.f[i, 0]) if k == 1 else (y, ref.f[i, 1])
+            return [v <= fv, v > fv]
+        mx, my = x <= ref.f[i, 0], y <= ref.f[i, 1]
+        return [mx & my, ~mx & my, mx & ~my, ~mx & ~my]
+
+    def _ref_sigma(self, ref, i):
+        """Conductivity of the reference model of row i of ref, and masks of its regions."""
+        masks = self._ref_regions(ref, i)
+        s_ref = np.zeros((self.nc,))
+        for j, m in enumerate(masks):
+            s_ref[m] = ref.s[i, j]
+        return s_ref, masks
+
+    def _ref_field(self, pole, ref, i, cs, pts=None, derivatives=False):
+        """Field of current electrode pole (3,) in its reference model (row i of ref), at the cell centres or
+        at the points pts (n x 3).
+
+        With derivatives, returns (u, du/d ln s_0, ..., du/d ln s_3), s_j being the conductivities of the
+        regions (zeros for unused regions).
+        """
+        m = self.nc if pts is None else pts.shape[0]
+        if not np.all(np.isfinite(pole)):
+            z = np.zeros((m,))
+            return (z,) * 5 if derivatives else z
+
+        def field(c):
+            if pts is None:
+                return self.compute_u_homog(np.atleast_2d(c), 1.0, np.array([cs]))[:, 0]
+            return self.u_homog_at(np.tile(c, (m, 1)), pts, 1.0, cs, check=False)
+
+        k = ref.kind[i]
+        s = ref.s[i]
+        h = field(pole)
+        du = [np.zeros((m,)) for _ in range(4)]
+        if k in (0, 3):
+            nr = self._n_regions(k)
+            sm = np.mean(s[:nr])
+            u = h / sm
+            for j in range(nr):
+                du[j] = -u * s[j] / (nr * sm)
+        else:
+            a = k - 1                                   # axis of the face normal
+            fa = ref.f[i, a]
+            img = np.array(pole, dtype=float)
+            img[a] = 2 * fa - img[a]
+            hi = field(img) if s[0] != s[1] or derivatives else np.zeros((m,))
+            v = (self.centre_voxels()[a] if pts is None else pts[:, a])
+            left = pole[a] <= fa
+            ss, so = (s[0], s[1]) if left else (s[1], s[0])
+            same = v <= fa if left else v > fa
+            S = s[0] + s[1]
+            kap = (ss - so) / S
+            hi = np.where(same, hi, 0.0)
+            u = np.where(same, (h + kap * hi) / ss, 2 * h / S)
+            if derivatives:
+                dk = 2 * ss * so / S**2
+                du_ss = np.where(same, -(h + kap * hi) / ss + hi * dk / ss, -2 * h * ss / S**2)
+                du_so = np.where(same, -hi * dk / ss, -2 * h * so / S**2)
+                du[0], du[1] = (du_ss, du_so) if left else (du_so, du_ss)
+        if pts is not None and np.any(np.isinf(u)):
+            raise ValueError('Evaluation point at the position of a current electrode')
+        if derivatives:
+            return (u, *du)
+        return u
+
+    def ref_cells(self, ref, i):
+        """Cells whose conductivity defines the reference model of row i of ref (-1: unused)."""
+        return ref.cells[i]
+
+    def _ref_rhs(self, s_ref, u):
+        """A(s_ref) u, without building A (see build_A)."""
+        q = -(self.D @ (self.build_M(s_ref).diagonal() * (self.G @ u)))
+        q[0] += u[0] / self.volume_voxels()[0]
+        return q
+
+    def contact_source(self, c1c2, refs, cs):
+        """Source terms of the boundary correction with the reference models of contact_reference (3D).
+
+        q = A(sigma_ref) u0 for each current electrode, so that the solution is exact for its reference model.
+
+        Returns
+        -------
+        tuple of 2 ndarray: q (nc x n), u0 (nc x n)
+        """
+        n = c1c2.shape[0]
+        cs = cs * np.ones((n,))
+        q = np.zeros((self.nc, n))
+        u0 = np.zeros((self.nc, n))
+        for e, sign in ((0, 1.0), (1, -1.0)):
+            if e >= len(refs):
+                break
+            for i in range(n):
+                pole = c1c2[i, 3 * e:3 * e + 3]
+                if not np.all(np.isfinite(pole)):
+                    continue
+                s_ref, _ = self._ref_sigma(refs[e], i)
+                u = self._ref_field(pole, refs[e], i, cs[i])
+                q[:, i] += sign * self._ref_rhs(s_ref, u)
+                u0[:, i] += sign * u
+        return q, u0
+
+    def contact_source_derivatives(self, pole, ref, i, cs, Gf=None):
+        """Derivatives of the source term of current electrode pole with respect to ln s_j (row i of ref).
+
+        Returns
+        -------
+        ndarray, 4 x nc (zeros for unused regions)
+        """
+        s_ref, masks = self._ref_sigma(ref, i)
+        M = self.build_M(s_ref).diagonal()
+        if Gf is None:
+            Gf = self.build_G_faces()
+        u, *du = self._ref_field(pole, ref, i, cs, derivatives=True)
+        Gu = self.G @ u
+        iv0 = 1.0 / self.volume_voxels()[0]
+        dq = np.zeros((4, self.nc))
+        for j, mask in enumerate(masks):
+            # d m_f / d ln sigma_i = m_f^2 w_fi / sigma_i (harmonic average)
+            dM = M**2 * (Gf @ (mask / s_ref))
+            dq[j] = -(self.D @ (dM * Gu + M * (self.G @ du[j])))
+            dq[j, 0] += du[j][0] * iv0
+        return dq
 
     def toVTK(self, fields, filename, component="s", on_face=True, metadata=None):
         """
@@ -3331,7 +3607,8 @@ class Grid25FV(BaseFV):
     # current (flux_interp).  Current electrodes: reference model of the boundary correction made of two
     # quarter-spaces separated by the vertical face nearest to the electrode (contact_reference).
 
-    def _stencil(self, c, p):
+    @staticmethod
+    def _stencil(c, p):
         """Indices of the 2 nodes of c bracketing each p, as in linear_interp (extrapolation at the ends)."""
         im = np.argmin(np.abs(p[:, None] - c[None, :]), axis=1)
         lower = ((p <= c[im]) & (im > 0)) | (im == c.size - 1)
@@ -3983,6 +4260,31 @@ class Grid25FV(BaseFV):
 
 
 # %% Solver
+
+
+class ContactRef3:
+    """Reference models of current electrodes in 3D, see GridFV.contact_reference.
+
+    Attributes
+    ----------
+    kind : ndarray of int
+        0: homogeneous (cell of the electrode), 1: vertical face normal to x, 2: normal to y, 3: vertical edge.
+    cells : ndarray of int, n x 4
+        Cells defining the conductivity of the regions (-1: unused).
+    s : ndarray, n x 4
+        Conductivity of the regions.
+    f : ndarray, n x 2
+        Position of the face (x or y) or of the edge (x, y).
+    homogeneous : bool
+        True if the reference conductivity does not come from the model cells.
+    """
+
+    def __init__(self, kind, cells, s, f, homogeneous=False):
+        self.kind = kind
+        self.cells = cells
+        self.s = s
+        self.f = f
+        self.homogeneous = homogeneous
 
 
 class ContactRef:

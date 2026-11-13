@@ -14,8 +14,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 import pymmr.finite_volume as fvm  # noqa: E402
-from pymmr.finite_volume import calc_padding  # noqa: E402
-from pymmr.dc import GridDC  # noqa: E402
+from pymmr.finite_volume import calc_padding, GridFV, Grid25FV  # noqa: E402
+from pymmr.dc import GridDC, VerticalDyke  # noqa: E402
 from pymmr.mmr import GridMMR, normal_field  # noqa: E402
 
 SOLVER = 'mumps' if fvm.has_mumps else 'superlu'
@@ -152,6 +152,197 @@ class TestSensitivity(unittest.TestCase):
                     self.assertLess(np.max(np.abs(S[c] - fd)) / np.max(np.abs(fd)), 1e-4)
 
 
+class TestContact(unittest.TestCase):
+    """Electrodes on conductivity contrasts (contact_interp)."""
+
+    def test_flux_interp(self):
+        rng = np.random.default_rng(0)
+        x = np.r_[0, np.cumsum(rng.uniform(0.5, 1.5, 10))]
+        y = np.r_[0, np.cumsum(rng.uniform(0.5, 1.5, 9))]
+        z = -np.r_[0, np.cumsum(rng.uniform(0.5, 1.5, 7))][::-1]
+        fv = GridFV((x, y, z))
+        n = 12
+        xp, yp = rng.uniform(fv.xc[0], fv.xc[-1], n), rng.uniform(fv.yc[0], fv.yc[-1], n)
+        zp = rng.uniform(fv.zc[0], fv.zc[-1], n)
+        xp[:4], yp[:2], zp[:4] = x[3:7], y[4:6], fv.zc[-1]      # on faces and edges, at the surface
+        # homogeneous: linear interpolation
+        Q, c = fv.flux_interp(xp, yp, zp, 0.3)
+        self.assertLess(abs(Q - fv.linear_interp(xp, yp, zp)).max(), 1e-14)
+        np.testing.assert_array_equal(c, 1.0)
+        # model invariant along y: same as 2.5D
+        f2 = Grid25FV((x, z))
+        s2 = np.exp(rng.normal(0, 1, f2.nc))
+        s3 = np.tile(s2.reshape(f2.nz, 1, f2.nx), (1, fv.ny, 1)).ravel()
+        Q2, c2 = f2.flux_interp(xp, zp, s2)
+        Q3, c3 = fv.flux_interp(xp, yp, zp, s3)
+        np.testing.assert_allclose(c3, c2, rtol=1e-12)
+        # derivatives (complex step) vs finite differences
+        s = np.exp(rng.normal(0, 1, fv.nc))
+        Q, c, cells, dW, dc = fv.flux_interp(xp, yp, zp, s, derivatives=True)
+        np.testing.assert_allclose(Q.sum(axis=1), 1.0)
+        eps = 1e-6
+        for i in range(6):
+            for j in range(8):
+                sp_, sm = s.copy(), s.copy()
+                sp_[cells[i, j]] *= np.exp(eps)
+                sm[cells[i, j]] *= np.exp(-eps)
+                Qp, cp = fv.flux_interp(xp[i:i + 1], yp[i:i + 1], zp[i:i + 1], sp_)
+                Qm, cm = fv.flux_interp(xp[i:i + 1], yp[i:i + 1], zp[i:i + 1], sm)
+                np.testing.assert_allclose((Qp - Qm).toarray()[0, cells[i]] / (2 * eps), dW[i, :, j], atol=1e-8)
+                self.assertAlmostEqual((cp - cm)[0] / (2 * eps), dc[i, j], places=8)
+
+    def test_reference_models_exact(self):
+        """The solution is exact for the reference model of the current electrode: 4 quarter-spaces around
+        a vertical edge (electrode on a node), 2 quarter-spaces (electrode on a face, or near it)."""
+        h = 1.0
+        x = padded(np.arange(-8., 8.01, h), h, 10)
+        y = padded(np.arange(-8., 8.01, h), h, 10)
+        z = padded(np.arange(-8., 0.01, h), h, 10, top=False)
+        inf = np.inf
+        p1p2 = np.array([[-4., -3, 0, 3, 2, 0], [2., -5, 0, inf, inf, inf], [-3., 4, 0, 5, 5, 0]])
+        s4 = np.array([0.01, 0.2, 0.05, 0.003])        # quadrants (x < 0, y < 0), (x > 0, y < 0), ...
+        for c1, model in (([0., 0, 0], 'edge'), ([0., 0.3, 0], 'face x'), ([-0.2, 0., 0], 'face y')):
+            g = GridDC((x, y, z))
+            g.set_solver(SOLVER)
+            g.set_survey_ert(np.tile(c1 + [inf] * 3, (3, 1)), p1p2, 1.0)
+            xc, yc, _ = g.fv.centre_voxels()
+            if model == 'edge':
+                sigma = s4[(xc > 0).astype(int) + 2 * (yc > 0)]
+            elif model == 'face x':
+                sigma = np.where(xc < 0, s4[0], s4[1])
+            else:
+                sigma = np.where(yc < 0, s4[0], s4[2])
+            d = g.fwd_mod(sigma)
+
+            def u(p):
+                p, c = np.asarray(p, float), np.asarray(c1, float)
+                if model == 'edge':
+                    return 1 / (2 * np.pi * s4.mean() * np.linalg.norm(p - c))
+                a = 0 if model == 'face x' else 1
+                sa, sb = (s4[0], s4[1]) if a == 0 else (s4[0], s4[2])
+                ss, so = (sa, sb) if c[a] <= 0 else (sb, sa)
+                if (p[a] <= 0) == (c[a] <= 0):
+                    img = c.copy()
+                    img[a] = -c[a]
+                    return (1 / np.linalg.norm(p - c) + (ss - so) / (sa + sb) / np.linalg.norm(p - img)) / (2 * np.pi * ss)
+                return 1 / (np.pi * (sa + sb) * np.linalg.norm(p - c))
+
+            ref = 1e3 * np.array([u(r[:3]) - (u(r[3:]) if np.isfinite(r[3]) else 0) for r in p1p2])
+            np.testing.assert_allclose(d, ref, rtol=1e-8, err_msg=model)
+
+    def test_dyke_contacts(self):
+        """Dyke with electrodes on the contacts, on grid nodes (y = 0) and on faces (y = 0.5)."""
+        h = 1.0
+        x = padded(np.arange(-24., 33.01, h), h, 14)
+        y = padded(np.arange(-8., 8.01, h), h, 14)
+        z = padded(np.arange(-12., 0.01, h), h, 14, top=False)
+        xs = np.arange(-6.0, 15.0, 2.0).reshape(-1, 1)
+        zero = np.zeros(xs.shape)
+        A = np.c_[xs, zero, zero, 1.0 + xs, zero, zero]
+        B = np.c_[2.0 + xs, zero, zero, 3.0 + xs, zero, zero]
+        rho = (100.0, 1000.0, 50.0)
+        for y0 in (0.0, 0.5):
+            off = np.array([0, y0, 0, 0, y0, 0])
+            for name, (c1c2, p1p2) in (('direct', (A + off, B + off)), ('reciprocal', (B + off, A + off))):
+                va = VerticalDyke(*rho, 10.0).fwd_mod(c1c2, p1p2)
+                err = {}
+                for ci in (True, False):
+                    g = GridDC((x, y, z))
+                    g.set_solver(SOLVER)
+                    g.set_survey_ert(c1c2, p1p2, 1.0)
+                    g.contact_interp = ci
+                    xc = g.fv.centre_voxels()[0]
+                    v = 1e-3 * g.fwd_mod(np.where(xc < 0, 1 / rho[0], np.where(xc < 10, 1 / rho[1], 1 / rho[2])))
+                    err[ci] = np.abs(v / va - 1)
+                with self.subTest(name, y=y0):
+                    # 1 m cells: errors at the contacts divided by more than 10
+                    self.assertLess(err[True].max(), 0.7)
+                    self.assertGreater(err[False].max(), 4.0)
+
+    def test_homogeneous_unchanged(self):
+        """In a homogeneous model, same data as the previous method."""
+        h = 1.0
+        x = padded(np.arange(-6., 6.01, h), h, 8)
+        z = padded(np.arange(-5., 0.01, h), h, 8, top=False)
+        inf = np.inf
+        c1c2 = np.array([[-3., 0, 0, -2, 0.5, 0], [-1., 0.3, 0, inf, inf, inf]])
+        p1p2 = np.array([[1., 0, 0, 2, 0, 0], [2., 0.5, 0, 3, -1, 0]])
+        for bc in (True, False):
+            d = []
+            for ci in (True, False):
+                g = GridDC((x, x, z))
+                g.set_solver(SOLVER)
+                g.set_survey_ert(c1c2, p1p2, 1.0)
+                g.contact_interp, g.apply_bc = ci, bc
+                d.append(g.fwd_mod(0.01 * np.ones(g.fv.nc)))
+            np.testing.assert_allclose(d[0], d[1], rtol=1e-9, err_msg=f'apply_bc={bc}')
+
+    def test_reciprocity(self):
+        h = 1.0
+        x = padded(np.arange(-6., 6.01, h), h, 8)
+        z = padded(np.arange(-5., 0.01, h), h, 8, top=False)
+        A = np.array([[-3., 0, 0, -2, 0.5, 0], [-1., 0.3, 0, 1, 0, 0]])
+        B = np.array([[1., 0, 0, 2, 0, 0], [2., 0.5, 0, 3, -1, 0]])
+        rng = np.random.default_rng(2)
+        sig = None
+        v = []
+        for c1c2, p1p2 in ((A, B), (B, A)):
+            g = GridDC((x, x, z))
+            g.set_solver(SOLVER)
+            g.set_survey_ert(c1c2, p1p2, 1.0)
+            g.apply_bc = False
+            if sig is None:
+                sig = 0.01 * 10**rng.uniform(-0.5, 0.5, g.fv.nc)
+            v.append(g.fwd_mod(sig))
+        np.testing.assert_allclose(v[0], v[1], rtol=1e-8)
+
+    def test_sensitivity_contacts(self):
+        """d(data)/d(ln sigma) vs finite differences in the cells around the electrodes, on contacts (nodes
+        and faces), for several contrasts."""
+        h = 1.0
+        x = padded(np.arange(-5., 5.01, h), h, 6)
+        y = padded(np.arange(-3., 3.01, h), h, 6)
+        z = padded(np.arange(-3., 0.01, h), h, 6, top=False)
+        inf = np.inf
+        c1c2 = np.array([[-2., 0, 0, 2, 0.5, 0], [0.5, 1, 0, inf, inf, inf], [-3., 0.3, 0, -2, 0, 0]])
+        p1p2 = np.array([[-1., 0, 0, 3.5, 0, 0], [2., 0, 0, -2, 1, 0], [2., 0.5, 0, 4, 0, 0]])
+        rng = np.random.default_rng(11)
+
+        def grid(opts):
+            g = GridDC((x, y, z))
+            g.set_solver(SOLVER)
+            g.set_survey_ert(c1c2, p1p2, cs=1.5)
+            for key, val in opts.items():
+                setattr(g, key, val)
+            return g
+
+        fv = grid({}).fv
+        xc, yc, zc = fv.centre_voxels()
+        e = np.vstack((c1c2[:, :3], c1c2[:, 3:], p1p2[:, :3], p1p2[:, 3:]))
+        e = e[np.all(np.isfinite(e), axis=1)]
+        near = np.zeros(fv.nc, dtype=bool)
+        for p in e:
+            near |= (np.abs(xc - p[0]) < 1.1) & (np.abs(yc - p[1]) < 1.1) & (zc > -1.6)
+        cells = np.where(near)[0]
+        noise = 10**rng.uniform(-0.1, 0.1, fv.nc)
+        inside = (xc > -2) & (xc < 2) & (yc < 1)
+        cases = [('homogeneous', 0.01 * np.ones(fv.nc), {})]
+        for contrast in (3.0, 25.0, 1 / 25.0):
+            sig = np.where(inside, 0.05 / contrast, 0.05) * noise
+            cases += [(contrast, sig, opts) for opts in ({}, {'local_sigma0': False}, {'apply_bc': False})]
+        for contrast, sig, opts in cases:
+            with self.subTest(contrast=contrast, **opts):
+                d1, S = grid(opts).fwd_mod(sig, calc_sens=True)
+                np.testing.assert_allclose(d1, grid(opts).fwd_mod(sig), rtol=1e-10)
+                for c in cells:
+                    eps = 1e-5
+                    s2, s3 = sig.copy(), sig.copy()
+                    s2[c] *= np.exp(eps)
+                    s3[c] *= np.exp(-eps)
+                    fd = (grid(opts).fwd_mod(s2) - grid(opts).fwd_mod(s3)) / (2 * eps)
+                    self.assertLess(np.max(np.abs(S[c] - fd)) / np.max(np.abs(fd)), 1e-5, msg=f'cell {c}')
+
+
 class TestMMR(unittest.TestCase):
 
     def test_mmr_without_images(self):
@@ -174,6 +365,30 @@ class TestMMR(unittest.TestCase):
         Bn = normal_field(xs, xo)
         Bn = np.array(Bn)
         np.testing.assert_allclose(B[0][:, :2].T, Bn, rtol=0.15, atol=1e-3 * np.abs(Bn).max())
+
+    def test_mmr_contact_interp(self):
+        """The MMR data (fields, pod_e, sensitivity) do not depend on dc.contact_interp (previous method)."""
+        h = 20.0
+        x = padded(np.arange(-200., 200.1, h), h, 6)
+        y = padded(np.arange(-100., 100.1, h), h, 6)
+        z = padded(np.arange(-120., 0.1, h), h, 6, top=False)
+        xs = np.array([[-140., 0, 0, 140., 0, 0]])
+        xo = np.array([[0., 40., 0], [60., -40., 0], [-80., 60., 0]])
+        res = []
+        for ci in (True, False):
+            g = GridMMR((x, y, z))
+            g.set_solver(SOLVER)
+            g.set_survey_mmr(xs=xs, xo=xo, cs=1.0, pod_e=(20.0, 20.0, -20.0))
+            g.dc.contact_interp = ci
+            xc = g.dc.fv.centre_voxels()[0]
+            sigma = np.where(np.abs(xc) < 40, 0.1, 0.01)    # contacts at the electrodes of pod_e (x = -40, 40)
+            res.append(g.fwd_mod(sigma, calc_sens=True))
+            self.assertEqual(g.dc.contact_interp, ci)   # setting restored
+        (B0, J0), v0 = res[0]
+        (B1, J1), v1 = res[1]
+        np.testing.assert_allclose(B0, B1, rtol=1e-10, atol=1e-10 * np.abs(B1).max())
+        np.testing.assert_allclose(J0, J1, rtol=1e-10, atol=1e-10 * np.abs(J1).max())
+        np.testing.assert_allclose(v0, v1, rtol=1e-10, atol=1e-10 * np.abs(v1).max())
 
     def test_air_thickness(self):
         """Air at least as thick as the earth part of the grid, whatever the size of the top cells."""
@@ -211,8 +426,11 @@ class TestMMR(unittest.TestCase):
                 B, v = g.fwd_mod(sigma)
                 for n in range(3):
                     if layered:
+                        # linear interpolation, as for pod_e: the lower ends are on the layer boundary, where
+                        # GridDC.contact_interp changes the interpolation
                         gd = GridDC((x, x, z))
                         gd.set_solver(SOLVER)
+                        gd.contact_interp = False
                         gd.set_survey_ert(np.tile(xs, (4, 1)), np.c_[xo, xo + dls[n]], 1.0)
                         ref = gd.fwd_mod(sigma)
                     else:
@@ -226,6 +444,7 @@ class TestMMR(unittest.TestCase):
             gd = GridDC((x, x, z))
             gd.set_solver(SOLVER)
             gd.exact_primary = False
+            gd.contact_interp = False
             gd.set_survey_ert(np.tile(xs, (4, 1)), np.c_[xo, xo + dls[2]], 1.0)
             np.testing.assert_allclose(v[:, 2], gd.fwd_mod(sigma), rtol=1e-6)
             # MMR data unchanged by the electric dipoles
