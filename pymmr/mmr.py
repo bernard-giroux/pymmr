@@ -498,12 +498,17 @@ class GridMMR:
         if images is not None:
             self.dc.fv.surface_images = False
         self.dc.exact_primary = False
+        # the MMR fields, their sensitivity and pod_e use the previous treatment of the electrodes (the DC data
+        # of a joint inversion, computed above, use contact_interp)
+        contact_interp = self.dc.contact_interp
+        self.dc.contact_interp = False
         try:
             _, Jdc = self.dc.fwd_mod(sigma, calc_J=True)
         finally:
             if images is not None:
                 self.dc.fv.surface_images = images
             self.dc.exact_primary = exact_primary
+            self.dc.contact_interp = contact_interp
         u_dc = self.dc.u.copy()
 
         if self.verbose and self.fv.comm.rank == 0:
@@ -550,10 +555,14 @@ class GridMMR:
         data[:, 1] = (Qy @ By).T.flatten()
         data[:, 2] = (Qz @ Bz).T.flatten()
 
-        if self.Q_pod_e is not None:
-            data_pod_e = self.dc._units_scaling * self._pod_e3d(sigma, u_dc)[self.ind_back, :]
-        else:
-            data_pod_e = None
+        self.dc.contact_interp = False
+        try:
+            if self.Q_pod_e is not None:
+                data_pod_e = self.dc._units_scaling * self._pod_e3d(sigma, u_dc)[self.ind_back, :]
+            else:
+                data_pod_e = None
+        finally:
+            self.dc.contact_interp = contact_interp
 
         if not self.in_inv:
             data = data[self.ind_back, :]

@@ -1,4 +1,4 @@
-# Electrodes on conductivity contrasts in 2.5D DC (`GridDC.contact_interp`)
+# Electrodes on conductivity contrasts in DC modelling (`GridDC.contact_interp`)
 
 ## Problem
 
@@ -73,27 +73,54 @@ Without the boundary correction (`apply_bc = False`), the point sources are dist
 weights of `flux_interp`, so that reciprocity holds exactly (swapping current and potential
 electrodes gives the same data).
 
+## 3D
+
+The same method is used on 3D rectilinear grids (`GridFV`).
+
+- `GridFV.flux_interp`: flux continuity along x, then along y (conductivities of the rows interpolated
+  along x), then along z. The factor of the faces along x is averaged over the 2 rows along y, so that
+  c is the same as in 2.5D for a model invariant along y.
+- `GridFV.contact_reference`: an electrode on a vertical edge of the grid (node of x and y) touches 4
+  columns of cells. The reference model is made of the 4 quarter-spaces around the edge, with the
+  conductivities of the 4 cells in the row of the electrode. The boundaries are radial planes through
+  the electrode, so the potential I / (2π σ̄ r), σ̄ being the mean of the 4 conductivities, is the exact
+  solution. Otherwise, as in 2.5D, 2 quarter-spaces separated by the nearest vertical face (normal to
+  x or to y), with one image. The source term is q = A(σref) u0 (`GridFV.contact_source`). In 3D, it
+  includes the reference potential term of A (A[0, 0]), which is proportional to u0, so q depends on
+  the conductivity of the reference model even when it is homogeneous.
+
+Dyke with electrodes on the contacts (on nodes, y = 0, and on faces, y = 0.5), 1 m cells: maximum
+error 460–815 % with the previous method, 19–66 % with `contact_interp`, and 10–16 % with 0.5 m cells
+(second order). On a random 3D model (electrodes on nodes and faces), the error relative to a grid
+4 times finer, normalized by the largest datum, is 2.2 and 0.83 % (6.3 and 4.6 % with the previous
+method) with the cells divided by 1 and 2. Convergence is closer to first order there: electrodes near
+the corners where 4 blocks of different conductivity meet are not exactly described by either reference
+model.
+
 ## Sensitivity
 
 In addition to the usual adjoint term (adjoint sources Qfᵀ at the potential electrodes):
 
-- the weights Qf and the factor c depend on the 4 cells around each potential electrode. Their
+- the weights Qf and the factor c depend on the 4 cells (8 in 3D) around each potential electrode. Their
   derivatives are computed by complex step (`flux_interp(..., derivatives=True)`);
-- P, u0 and q_k depend on σa and σb of each current electrode (cells ia and ib). q_k depends on the
-  ratio σa/σb only: its term is the product of the adjoint fields with dq_k/d ln σa
-  (`contact_source_derivative`);
+- P, u0 and q_k depend on the conductivities of the reference model of each current electrode (2 or 4
+  cells). In 2.5D, q_k depends on the ratio σa/σb only: its term is the product of the adjoint fields
+  with dq_k/d ln σa (`Grid25FV.contact_source_derivative`). In 3D, see
+  `GridFV.contact_source_derivatives`;
 - without the boundary correction, the point sources depend on the cells around the current
   electrodes (reciprocal of the term of Qf).
 
-These terms are added in `GridDC._contact_sens_term` (on-line) and in `_fwd_offline25` (off-line,
-with the weights W_i(Δy) instead of g_i/2). They are checked against finite differences in
-`tests/test_dc25.py` (`TestContact`, `TestOffLineSensitivity`).
+These terms are added in `GridDC._contact_sens_term` (on-line 2.5D and 3D) and in `_fwd_offline25`
+(off-line, with the weights W_i(Δy) instead of g_i/2). They are checked against finite differences in
+`tests/test_dc25.py` (`TestContact`, `TestOffLineSensitivity`) and `tests/test_dc3d.py`
+(`TestContact`).
 
 ## Scope and limitations
 
-- `GridDC` with a 2.5D grid, on-line and off-line measurements. Set `g.contact_interp = False` for
-  the previous method.
-- Not yet in 3D (`GridFV`), on tetrahedral meshes, or for MMR (`GridMMR`, including `pod_e`).
+- `GridDC` with a 2.5D grid (on-line and off-line measurements) or a 3D rectilinear grid. Set
+  `g.contact_interp = False` for the previous method.
+- Not on tetrahedral meshes, nor for MMR (`GridMMR`, including `pod_e`): the MMR fields use the previous
+  method (in a joint inversion, the DC data use `contact_interp`).
 - The reference model handles vertical contacts only. A buried current electrode on a horizontal
   contact keeps a homogeneous reference along z (the interpolation at potential electrodes handles
   both directions: a potential electrode on the boundary of a two-layer earth is within 1 % of the
