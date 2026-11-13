@@ -84,7 +84,7 @@ sigma = 0.001 + np.zeros((g.dc.nc,))
 ix = np.where(np.logical_and(g.fv.xc > -200, g.fv.xc < 200))[0]
 iy = np.where(np.logical_and(g.fv.yc > -200, g.fv.yc < 200))[0]
 iz = np.where(np.logical_and(g.dc.fv.zc < -80, g.dc.fv.zc > -480))[0]
-sigma[g.dc.fv.ind(ix, iy, iz)] = 0.1
+sigma[g.dc.fv.ind((ix, iy, iz))] = 0.1
 
 # %%
 

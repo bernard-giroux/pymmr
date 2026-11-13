@@ -25,7 +25,8 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.stats.mstats import gmean
 
-from pymmr.finite_volume import GridFV, Grid25FV, MeshFV, Solver, KSource
+from pymmr.finite_volume import Grid25FV, KSource
+from pymmr.finite_element import GridFE, MeshFE, Solver
 
 # TODO: généraliser ROI pour voxels arbitraires
 
@@ -121,9 +122,9 @@ class GridDC:
 
         if len(param_fv) == 3:
             if param_fv[0].ndim == 1:
-                self.fv = GridFV(param_fv, comm, n_threads)
+                self.fv = GridFE(param_fv, comm, n_threads)
             else:
-                self.fv = MeshFV(param_fv, comm, n_threads)
+                self.fv = MeshFE(param_fv, comm, n_threads)
         else:
             # we have 2
             if param_fv[0].ndim == 1:
@@ -426,7 +427,7 @@ class GridDC:
             self._check_cs()
 
         if calc_sens is True:
-            if not isinstance(self.fv, (GridFV, Grid25FV)):
+            if not isinstance(self.fv, (GridFE, Grid25FV)):
                 # tetrahedral meshes lack the face operators
                 raise NotImplementedError('Sensitivity computation implemented only for rectilinear grids')
             if self.fv.dim == 2.5 and self.apply_bc and self.correct_quadrature:
@@ -736,7 +737,7 @@ class GridDC:
         """
         x, y, z = self.get_roi_nodes()
         # grille temporaire pour sauvegarder sens
-        g2 = Grid25FV((x, z)) if self.fv.dim == 2.5 else GridFV((x, y, z))
+        g2 = Grid25FV((x, z)) if self.fv.dim == 2.5 else GridFE((x, y, z))
         # make 1 file for each injection dipole
         for n in range(self.n_c1c2_u):
             (ind,) = np.where(n == self.ind_c1c2)
@@ -844,7 +845,7 @@ class GridDC:
         self._sigma0 = avg_cond
         self._sigma0_w = None
 
-        if isinstance(self.fv, GridFV):
+        if isinstance(self.fv, GridFE):
             if self.local_sigma0:
                 # reference fields with the conductivity at each current electrode
                 self._sigma0, self._sigma0_w = self._electrode_sigma(c1c2, ref_model, return_weights=True)
@@ -1164,7 +1165,7 @@ class GridDC:
 
     def _uses_exact_primary(self):
         """True if the data include the analytic primary field (rectilinear grids with boundary correction)."""
-        return (isinstance(self.fv, (GridFV, Grid25FV)) and self.exact_primary and self.u0 is not None and
+        return (isinstance(self.fv, (GridFE, Grid25FV)) and self.exact_primary and self.u0 is not None and
                 self._sigma0 is not None)
 
     def _reference_term_matrix(self):
@@ -1178,7 +1179,7 @@ class GridDC:
         for ns in range(self.n_c1c2_u):
             ind = np.where(self.ind_c1c2 == ns)[0]
             R[ind, 0], R[ind, 1] = self._reference_terms(ns)
-        if isinstance(self.fv, GridFV):
+        if isinstance(self.fv, GridFE):
             # source term (3D): the reference potential term A[0, 0] acts on u0 (see _boundary_correction),
             # which contributes W_n[0] u0_e[0] to the data, W_n being the field of unit sources at the
             # measurement electrodes (A^-T = Vc A^-1 Vc^-1)
