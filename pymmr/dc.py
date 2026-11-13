@@ -1313,7 +1313,16 @@ class GridDC:
 
         if contact:
             if calc_sens:
-                extra = np.zeros((fv.nc, n_data))
+                # these terms involve a few cells per datum: added directly to sens (rows of the ROI)
+                roi_row = -np.ones((fv.nc,), dtype=np.int64)
+                roi_row[self.ind_roi] = np.arange(self.ind_roi.size)
+
+                def add(cells, cols, val):
+                    r = roi_row[cells]
+                    cols, val = np.broadcast_arrays(cols, val)
+                    r = np.broadcast_to(r, val.shape)
+                    keep = r >= 0
+                    np.add.at(sens, (r[keep], cols[keep]), val[keep])
             for j, t in enumerate(plan['pairs']):
                 rows, ipt, ipo = t['rows'], t['pt'], t['pole']
                 w = t['sign'] * cs[rows]
@@ -1328,22 +1337,20 @@ class GridDC:
                     continue
                 cells = cells_r[ipt]                                   # rows x 4
                 # weights of Qf: sum over the cells i of the stencil of dW[i, j] sum_k W_k U_k(cell i)
-                np.add.at(extra, (cells, rows[:, None]), np.einsum('ni,nij->nj', acc_u[j], dW_r[ipt]))
+                add(cells, rows[:, None], np.einsum('ni,nij->nj', acc_u[j], dW_r[ipt]))
                 if acc_v is not None:
-                    np.add.at(extra, (cells_s[ipo], rows[:, None]), np.einsum('ni,nij->nj', acc_v[j], dW_s[ipo]))
+                    add(cells_s[ipo], rows[:, None], np.einsum('ni,nij->nj', acc_v[j], dW_s[ipo]))
                 if not exact:
                     continue
                 Rj = R[j] + w * u0
-                np.add.at(extra, (cells, rows[:, None]), Rj[:, None] * dc_r[ipt])
+                add(cells, rows[:, None], Rj[:, None] * dc_r[ipt])
                 ta = Tq[j] + c_r[ipt] * (dRa[j] + w * du0a)
                 tb = -Tq[j] + c_r[ipt] * (dRb[j] + w * du0b)
                 if ref.homogeneous:
-                    extra[:, rows] += (ta + tb) / fv.nc     # a datum appears at most once in a pair
+                    sens[:, rows] += (ta + tb) / fv.nc      # a datum appears at most once in a pair
                 else:
-                    np.add.at(extra, (ref.ia[ipo], rows), ta)
-                    np.add.at(extra, (ref.ib[ipo], rows), tb)
-            if calc_sens:
-                sens += extra[self.ind_roi, :]
+                    add(ref.ia[ipo], rows, ta)
+                    add(ref.ib[ipo], rows, tb)
         elif exact:
             for j, t in enumerate(plan['pairs']):
                 s0 = sigma0 if np.isscalar(sigma0) else np.asarray(sigma0).ravel()[t['pole']]

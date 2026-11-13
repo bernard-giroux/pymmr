@@ -335,6 +335,19 @@ class TestContact(unittest.TestCase):
                 self.assertLess(err[True].max(), tol)
                 self.assertGreater(err[False].max(), 2.0)
 
+    def test_homogeneous_unchanged(self):
+        """In a homogeneous model, same data as the previous method (on-line and off-line)."""
+        xg, z = dyke_grid(1.0)
+        A, B = dyke_survey()
+        B_off = B + [0.0, 5.0, 0.0, 0.0, 5.0, 0.0]
+        for p1p2, bc in ((B, True), (B, False), (B_off, True)):
+            d = []
+            for ci in (True, False):
+                g = make_grid(xg, z, A, p1p2, 'mumps' if fvm.has_mumps else 'superlu')
+                g.contact_interp, g.apply_bc = ci, bc
+                d.append(g.fwd_mod(0.01 * np.ones(g.fv.nc)))
+            np.testing.assert_allclose(d[0], d[1], rtol=1e-9, err_msg=f'apply_bc={bc}')
+
     def test_receiver_on_layer_boundary(self):
         """Buried potential electrodes on the boundary of a two-layer earth (flux continuity along z)."""
         rho1, rho2, hl = 100.0, 10.0, 10.0
@@ -398,13 +411,19 @@ class TestContact(unittest.TestCase):
 
         fv = grid({}).fv
         xc, _, zc = fv.centre_voxels()
-        sig = np.where((xc > -2) & (xc < 3), 0.002, 0.05) * 10**rng.uniform(-0.1, 0.1, fv.nc)
         e = np.vstack((c1c2[:, :3], c1c2[:, 3:], p1p2[:, :3], p1p2[:, 3:]))
         e = np.unique(e[np.all(np.isfinite(e), axis=1)], axis=0)
         cells = np.unique([fv.ind(i, 0, k) for xe in e[:, 0] for i in range(fv.nx) for k in (fv.nz - 1, fv.nz - 2)
                            if abs(fv.xc[i] - xe) < 1.6])
-        for opts in ({}, {'local_sigma0': False}, {'apply_bc': False}):
-            with self.subTest(**opts):
+        noise = 10**rng.uniform(-0.1, 0.1, fv.nc)
+        inside = (xc > -2) & (xc < 3)
+        # contrast of the block between the contacts: homogeneous (exactly), moderate, strong, reversed
+        cases = [('homogeneous', 0.01 * np.ones(fv.nc), {})]
+        for contrast in (3.0, 25.0, 1 / 25.0):
+            sig = np.where(inside, 0.05 / contrast, 0.05) * noise
+            cases += [(contrast, sig, opts) for opts in ({}, {'local_sigma0': False}, {'apply_bc': False})]
+        for contrast, sig, opts in cases:
+            with self.subTest(contrast=contrast, **opts):
                 d1, S = grid(opts).fwd_mod(sig, calc_sens=True)
                 np.testing.assert_allclose(d1, grid(opts).fwd_mod(sig), rtol=1e-10)
                 for c in cells:
