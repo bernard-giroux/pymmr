@@ -249,6 +249,192 @@ class TestForward(unittest.TestCase):
             g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO1, 1 / RHO1), calc_sens=True)
 
 
+class TestContact(unittest.TestCase):
+    """Electrodes on conductivity contrasts (contact_interp)."""
+
+    def test_flux_interp_homogeneous(self):
+        rng = np.random.default_rng(0)
+        x = np.r_[0, np.cumsum(rng.uniform(0.5, 1.5, 20))]
+        z = -np.r_[0, np.cumsum(rng.uniform(0.5, 1.5, 12))][::-1]
+        fv = Grid25FV((x, z))
+        xp = np.r_[x[3:8], rng.uniform(x[0], x[-1], 20)]
+        zp = np.r_[fv.zc[-1] * np.ones(5), rng.uniform(fv.zc[0], fv.zc[-1], 20)]
+        Q, c = fv.flux_interp(xp, zp, 0.3)
+        self.assertLess(abs(Q - fv.linear_interp(xp, 0 * xp, zp)).max(), 1e-14)
+        np.testing.assert_array_equal(c, 1.0)
+
+    def test_flux_interp_derivatives(self):
+        rng = np.random.default_rng(1)
+        fv = Grid25FV((np.arange(0., 10.1), np.arange(-5., 0.1)))
+        s = np.exp(rng.normal(0, 1, fv.nc))
+        xp, zp = np.r_[2., 3.5, 7.2], np.r_[fv.zc[-1], -1.3, -2.]
+        Q, c, cells, dW, dc = fv.flux_interp(xp, zp, s, derivatives=True)
+        np.testing.assert_allclose(Q.sum(axis=1), 1.0)
+        eps = 1e-6
+        for i in range(xp.size):
+            for j in range(4):
+                sp_, sm = s.copy(), s.copy()
+                sp_[cells[i, j]] *= np.exp(eps)
+                sm[cells[i, j]] *= np.exp(-eps)
+                Qp, cp = fv.flux_interp(xp[i:i + 1], zp[i:i + 1], sp_)
+                Qm, cm = fv.flux_interp(xp[i:i + 1], zp[i:i + 1], sm)
+                np.testing.assert_allclose((Qp - Qm).toarray()[0, cells[i]] / (2 * eps), dW[i, :, j], atol=1e-8)
+                self.assertAlmostEqual((cp - cm)[0] / (2 * eps), dc[i, j], places=8)
+
+    def test_flux_interp_contact(self):
+        """At a face, the potential is the flux-weighted average of the 2 cells."""
+        fv = Grid25FV((np.arange(0., 10.1), np.arange(-5., 0.1)))
+        s = np.where(fv.centre_voxels()[0] < 5, 1.0, 20.0)
+        Q, c = fv.flux_interp(np.r_[5.], np.r_[fv.zc[-1]], s)
+        ia, ib = fv.ind(4, 0, fv.nz - 1), fv.ind(5, 0, fv.nz - 1)
+        self.assertAlmostEqual(Q[0, ia], 1 / 21)
+        self.assertAlmostEqual(Q[0, ib], 20 / 21)
+        self.assertAlmostEqual(c[0], (4 * 20 / 21**2)**2)   # one factor per row of the stencil
+
+    def test_reference_model_exact(self):
+        """Two quarter-spaces with the contact at the face nearest the current electrode: exact solution."""
+        x = np.arange(-20., 20.1)
+        z = np.arange(-20., 0.1)
+        pad = np.cumsum(calc_padding(1.0, 15))
+        x = np.r_[x[0] - pad[::-1], x, x[-1] + pad]
+        z = np.r_[z[0] - pad[::-1], z]
+        sa, sb = 0.01, 0.2
+        for xs in (0.0, 0.3, -0.4):
+            c1c2 = np.array([[xs, 0, 0, np.inf, np.inf, np.inf]] * 4)
+            p1p2 = np.array([[-5., 0, 0, -3, 0, 0], [3., 0, 0, 6, 0, 0], [-4., 0, 0, 4, 0, 0], [2., 0, 0, np.inf, np.inf, np.inf]])
+            g = make_grid(x, z, c1c2, p1p2)
+            g.correct_quadrature = True
+            d = g.fwd_mod(np.where(g.fv.centre_voxels()[0] < 0, sa, sb))
+
+            def u(xp):
+                ss, so = (sa, sb) if xs <= 0 else (sb, sa)
+                kap = (ss - so) / (sa + sb)
+                same = (xp <= 0) == (xs <= 0)
+                if same:
+                    return (1 / abs(xp - xs) + kap / abs(xp + xs)) / (2 * np.pi * ss)
+                return 1 / (np.pi * (sa + sb) * abs(xp - xs))
+
+            ref = 1e3 * np.array([u(-5) - u(-3), u(3) - u(6), u(-4) - u(4), u(2)])
+            np.testing.assert_allclose(d, ref, rtol=1e-8, atol=1e-8 * np.abs(ref).max(), err_msg=f'xs = {xs}')
+
+    def test_dyke_contacts(self):
+        """Electrodes on the contacts of the dyke (current and potential electrodes), against the analytic
+        solution; without contact_interp, errors of several hundred %."""
+        xg, z = dyke_grid(0.5)
+        solver = 'mumps' if fvm.has_mumps else 'superlu'
+        A, B = dyke_survey()
+        for name, (c1c2, p1p2), tol in (('direct', (A, B), 0.06), ('reciprocal', (B, A), 0.1)):
+            va = VerticalDyke(RHO1, RHO2, RHO3, 10.0).fwd_mod(c1c2, p1p2)
+            err = {}
+            for ci in (True, False):
+                g = make_grid(xg, z, c1c2, p1p2, solver)
+                g.contact_interp = ci
+                v = 1e-3 * g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3))
+                err[ci] = np.abs(v - va) / np.abs(va)
+            with self.subTest(name):
+                self.assertLess(err[True].max(), tol)
+                self.assertGreater(err[False].max(), 2.0)
+
+    def test_homogeneous_unchanged(self):
+        """In a homogeneous model, same data as the previous method (on-line and off-line)."""
+        xg, z = dyke_grid(1.0)
+        A, B = dyke_survey()
+        B_off = B + [0.0, 5.0, 0.0, 0.0, 5.0, 0.0]
+        for p1p2, bc in ((B, True), (B, False), (B_off, True)):
+            d = []
+            for ci in (True, False):
+                g = make_grid(xg, z, A, p1p2, 'mumps' if fvm.has_mumps else 'superlu')
+                g.contact_interp, g.apply_bc = ci, bc
+                d.append(g.fwd_mod(0.01 * np.ones(g.fv.nc)))
+            np.testing.assert_allclose(d[0], d[1], rtol=1e-9, err_msg=f'apply_bc={bc}')
+
+    def test_receiver_on_layer_boundary(self):
+        """Buried potential electrodes on the boundary of a two-layer earth (flux continuity along z)."""
+        rho1, rho2, hl = 100.0, 10.0, 10.0
+        kk = (rho2 - rho1) / (rho2 + rho1)
+        nn = np.arange(1, 2000)
+        h = 2.5
+        x = np.arange(-150.0, 150.0 + h / 2, h)
+        z = np.arange(-100.0, h / 2, h)
+        pad = np.cumsum(calc_padding(h, 20))
+        x, z = np.r_[x[0] - pad[::-1], x, x[-1] + pad], np.r_[z[0] - pad[::-1], z]
+
+        def V(r, depth):
+            """surface source, unit current: surface (depth 0) or layer boundary (depth hl)"""
+            r = np.abs(r)[:, None]
+            if depth == 0:
+                return rho1 / (2 * np.pi) * (1 / r[:, 0] + 2 * np.sum(kk**nn / np.sqrt(r**2 + (2 * nn * hl)**2), axis=1))
+            n = np.r_[0, nn]
+            return rho1 / (2 * np.pi) * (1 + kk) * np.sum(kk**n / np.sqrt(r**2 + ((2 * n + 1) * hl)**2), axis=1)
+
+        c1c2 = np.array([-60.0, 0.0, 0.0, 60.0, 0.0, 0.0])
+        xr = np.array([-40.0, -20.0, -10.0, 10.0, 30.0])
+        ref = sum(s * (V(xr - c, 0) - V(xr - c, hl)) for s, c in ((1, c1c2[0]), (-1, c1c2[3])))
+        zc = 0.5 * (z[1:] + z[:-1])
+        sigma = np.repeat(np.where(zc > -hl, 1 / rho1, 1 / rho2), x.size - 1)
+        xo = np.c_[xr, 0 * xr, 0 * xr]
+        g = make_grid(x, z, np.tile(c1c2, (xr.size, 1)), np.c_[xo, xo + [0.0, 0.0, -hl]],
+                      'mumps' if fvm.has_mumps else 'superlu')
+        d = g.fwd_mod(sigma) / g._units_scaling
+        self.assertLess(np.abs(d / ref - 1).max(), 0.015)   # 10 % with linear interpolation
+
+    def test_reciprocity(self):
+        """Without boundary correction, point sources distributed as the interpolation: exact reciprocity."""
+        xg, z = dyke_grid(1.0)
+        A, B = dyke_survey()
+        v = []
+        for c1c2, p1p2 in ((A, B), (B, A)):
+            g = make_grid(xg, z, c1c2, p1p2, 'mumps' if fvm.has_mumps else 'superlu')
+            g.apply_bc = False
+            v.append(g.fwd_mod(dyke_model(g.fv, 1 / RHO1, 1 / RHO2, 1 / RHO3)))
+        np.testing.assert_allclose(v[0], v[1], rtol=1e-8)
+
+    def test_sensitivity_contacts(self):
+        """d(data)/d(ln sigma) vs finite differences in all the cells around the electrodes, at contacts."""
+        x = np.arange(-8., 8.01)
+        z = np.arange(-5., 0.01)
+        pad = np.cumsum(calc_padding(1.0, 8))
+        x = np.r_[x[0] - pad[::-1], x, x[-1] + pad]
+        z = np.r_[z[0] - pad[::-1], z]
+        # electrodes on the contacts at x = -2 and 3, and at cell centres (x = 0.5, 4.5), pole-dipole
+        c1c2 = np.array([[-2., 0, 0, 3, 0, 0], [0.5, 0, 0, np.inf, np.inf, np.inf], [-4., 0, 0, -2, 0, 0]])
+        p1p2 = np.array([[-1., 0, 0, 4.5, 0, 0], [3., 0, 0, -2, 0, 0], [3., 0, 0, 6, 0, 0]])
+        rng = np.random.default_rng(11)
+
+        def grid(opts):
+            g = GridDC((x, z))
+            g.set_solver('superlu')
+            g.set_survey_ert(c1c2, p1p2, cs=1.5)
+            for key, val in opts.items():
+                setattr(g, key, val)
+            return g
+
+        fv = grid({}).fv
+        xc, _, zc = fv.centre_voxels()
+        e = np.vstack((c1c2[:, :3], c1c2[:, 3:], p1p2[:, :3], p1p2[:, 3:]))
+        e = np.unique(e[np.all(np.isfinite(e), axis=1)], axis=0)
+        cells = np.unique([fv.ind(i, 0, k) for xe in e[:, 0] for i in range(fv.nx) for k in (fv.nz - 1, fv.nz - 2)
+                           if abs(fv.xc[i] - xe) < 1.6])
+        noise = 10**rng.uniform(-0.1, 0.1, fv.nc)
+        inside = (xc > -2) & (xc < 3)
+        # contrast of the block between the contacts: homogeneous (exactly), moderate, strong, reversed
+        cases = [('homogeneous', 0.01 * np.ones(fv.nc), {})]
+        for contrast in (3.0, 25.0, 1 / 25.0):
+            sig = np.where(inside, 0.05 / contrast, 0.05) * noise
+            cases += [(contrast, sig, opts) for opts in ({}, {'local_sigma0': False}, {'apply_bc': False})]
+        for contrast, sig, opts in cases:
+            with self.subTest(contrast=contrast, **opts):
+                d1, S = grid(opts).fwd_mod(sig, calc_sens=True)
+                np.testing.assert_allclose(d1, grid(opts).fwd_mod(sig), rtol=1e-10)
+                for c in cells:
+                    eps = 1e-5
+                    s2, s3 = sig.copy(), sig.copy()
+                    s2[c] *= np.exp(eps)
+                    s3[c] *= np.exp(-eps)
+                    fd = (grid(opts).fwd_mod(s2) - grid(opts).fwd_mod(s3)) / (2 * eps)
+                    self.assertLess(np.max(np.abs(S[c] - fd)) / np.max(np.abs(fd)), 1e-5, msg=f'cell {c}')
+
+
 class TestPlumbing(unittest.TestCase):
     """Input/output and code shared with 3D (VTK files, ROI, regularization, run_job)."""
 

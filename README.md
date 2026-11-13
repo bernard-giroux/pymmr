@@ -11,6 +11,8 @@ Modelling and inversion of magnetometric resistivity (MMR) and DC resistivity (E
   - MMR: current electrodes and B-field sensors can be anywhere along y ([docs/mmr25.md](docs/mmr25.md))
   - ERT: off-line measurements, i.e. current and potential electrodes at different y such as on parallel
     lines ([docs/dc25_offline.md](docs/dc25_offline.md))
+  - ERT: electrodes on conductivity contrasts (e.g. on grid nodes) handled by the interpolation and the
+    boundary correction ([docs/contacts.md](docs/contacts.md))
 - Gauss-Newton or quasi-Newton inversion with smooth, blocky, Ekblom or minimum-support regularization.
   The Gauss-Newton step is solved with a preconditioned CG solver ([docs/cglscd.md](docs/cglscd.md))
 - Direct (MUMPS, Pardiso, UMFPACK, SuperLU) or iterative (`scipy.sparse.linalg`) solvers
@@ -147,6 +149,7 @@ cell along y gives a 2.5D model.
 
 - [docs/mmr25.md](docs/mmr25.md): 2.5D MMR formulation, sensitivity, electric dipoles at the sensors, validation
 - [docs/dc25_offline.md](docs/dc25_offline.md): off-line measurements in 2.5D DC
+- [docs/contacts.md](docs/contacts.md): electrodes on conductivity contrasts in 2.5D DC
 - [docs/cglscd.md](docs/cglscd.md): solving the Gauss-Newton step, preconditioner, Jacobian weighting
 - Docstrings of the modules (`pymmr/run_job.py` for parameter and data file formats)
 

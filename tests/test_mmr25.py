@@ -425,10 +425,12 @@ class TestPlumbing(unittest.TestCase):
             ref = u(xo) - u(xo + dl)
             ok = np.abs(ref) > 1e-6 * np.abs(ref).max()
             self.assertLess(np.abs(v[ok, n] / ref[ok] - 1).max(), 0.02, msg='component {0:d}'.format(n))
-        # vertical dipoles on the line: same as GridDC
+        # vertical dipoles on the line: same as GridDC (linear interpolation, as for pod_e: the lower ends are
+        # on the layer boundary, where GridDC.contact_interp changes the interpolation)
         on = xo[:, 1] == 0.0
         gd = GridDC((x, z))
         gd.set_solver(SOLVER)
+        gd.contact_interp = False
         gd.set_survey_ert(np.tile(C1C2, (xr.size, 1)), np.c_[xo[on], xo[on] + [0.0, 0.0, -10.0]], np.ones(xr.size))
         ddc = gd.fwd_mod(sigma) / gd._units_scaling
         ok = np.abs(ddc) > 1e-6 * np.abs(ddc).max()
