@@ -25,8 +25,9 @@ Requirements: Python ≥ 3.11 and the packages listed in `requirements.txt`: num
 vtk, discretize, pandas, cython and mpi4py.
 
 pymmr includes a Cython extension (`pymmr/legendre.pyx`) that needs the
-[Boost](https://www.boost.org) headers.  Their location is set in `setup.py`; adapt `include_dirs` to
-your installation.  Then, from the root of the repository:
+[Boost](https://www.boost.org) headers.  `setup.py` looks for them in the usual locations (MacPorts,
+Homebrew, `/usr/local/include`, `/usr/include`, or a `boost_1_*` source tree next to the repository); set
+the environment variable `BOOST_INCLUDE` to use another directory.  Then, from the root of the repository:
 
 ```
 pip install -e .
