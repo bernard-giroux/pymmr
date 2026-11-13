@@ -53,9 +53,10 @@ The keywords are :
 - **pod dipole y** : distance of potential electrode from MMR pod, along Y axis (0 by default)
 - **pod dipole z** : distance of potential electrode from MMR pos, along Z axis (0 by default, values must be negative
                      for buried electrode, as z is elevation)
-- **number of threads** : Number of threads for parallelizing iterative solvers (1 by default)
-                          if the interpreter is running without the GIL ()free-threading), `threading` is used,
-                          otherwise `multiprocessing` is used
+- **number of threads** : Number of threads for parallelizing iterative solvers (1 by default).
+                          Effective only with a free-threaded Python running without the GIL (e.g.
+                          python3.14t with PYTHON_GIL=0); otherwise the right-hand sides are solved one
+                          after the other
 
 
 File formats

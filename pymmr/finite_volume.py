@@ -3842,7 +3842,6 @@ class Solver:
         self.Mpre = None
         self.perm = None
         self.inv_perm = None
-        self.x0 = None
         self.verbose = verbose
         self.ctx = None
         self.want_pardiso = False
@@ -3901,8 +3900,8 @@ class Solver:
                 if self.verbose:
                     print("done.")
 
-            self.solver = lambda A, b: self.it_slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol,
-                                                   maxiter=self.max_it, M=self.Mpre)
+            self.solver = lambda A, b, x0=None: self.it_slv(A, b, x0=x0, atol=self.atol, rtol=self.rtol,
+                                                            maxiter=self.max_it, M=self.Mpre)
         elif solver_par[0] == "mumps":
             self.ctx = mumps.DMumpsContext(sym=0, par=1, comm=comm)
             self.ctx.set_icntl(4, 1)  # print only error messages by default
@@ -4085,20 +4084,16 @@ class Solver:
                 msg = pre_msg + "        iteration " + str(ns + 1) + "/" + str(rhs.shape[1]) + " "
                 print(msg, end="", flush=True)
 
-            if x0 is not None:
-                if self.do_perm:
-                    self.x0 = x0[self.perm, ns]
-                else:
-                    self.x0 = x0[:, ns]
-            else:
-                self.x0 = None
-
             if self.do_perm:
                 qi = rhs[self.perm, ns]
             else:
                 qi = rhs[:, ns]
 
-            u = self.solver(self._A, qi)
+            if x0 is not None and hasattr(self, "it_slv"):
+                # starting guess passed to each solve (not stored in self: _chunk_solve runs in parallel threads)
+                u = self.solver(self._A, qi, x0=x0[self.perm, ns] if self.do_perm else x0[:, ns])
+            else:
+                u = self.solver(self._A, qi)
             if type(u) == tuple:
                 u, info = u
             else:
@@ -4225,8 +4220,8 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
                 raise ValueError("Unknown preconditioning solver")
             if self.verbose:
                 print("done.")
-        self.solver = lambda A, b: self.it_slv(A, b, x0=self.x0, atol=self.atol, rtol=self.rtol, maxiter=self.max_it,
-                                               M=self.Mpre)
+        self.solver = lambda A, b, x0=None: self.it_slv(A, b, x0=x0, atol=self.atol, rtol=self.rtol,
+                                                        maxiter=self.max_it, M=self.Mpre)
 
     def _mumps_factorize(self, job, max_retry=5):
         """Run MUMPS factorization (job=2) or analysis & factorization (job=4).
