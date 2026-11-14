@@ -97,6 +97,19 @@ method) with the cells divided by 1 and 2. Convergence is closer to first order 
 the corners where 4 blocks of different conductivity meet are not exactly described by either reference
 model.
 
+## MMR (`GridMMR`)
+
+- Electric dipoles at the measurement points (`pod_e`, 2.5D and 3D): potentials, treated as in
+  `GridDC` when `g.dc.contact_interp` is True (reference models of the current electrodes,
+  flux-continuity interpolation at the ends of the dipoles, contrast factor), on and off the line.
+  Dyke (100, 1000, 50 Ω·m), dipoles with an end on a contact and the current electrode on the other
+  contact, 1 m cells: 387 % error before, 0.06 % now (2.5D).
+- B: the fields keep the previous treatment of the current electrodes. B depends on the current
+  density, not on the potential at a point. With the current electrode on a contact of a dyke, the
+  new reference model changes Bz by less than 0.1 % (the error, up to 27 % with 5 m cells at the
+  receiver across the contact, comes from the resolution of the field near the contact, and decreases
+  with the cell size). The sensitivity of B is therefore unchanged.
+
 ## Sensitivity
 
 In addition to the usual adjoint term (adjoint sources Qfᵀ at the potential electrodes):
@@ -119,8 +132,9 @@ These terms are added in `GridDC._contact_sens_term` (on-line 2.5D and 3D) and i
 
 - `GridDC` with a 2.5D grid (on-line and off-line measurements) or a 3D rectilinear grid. Set
   `g.contact_interp = False` for the previous method.
-- Not on tetrahedral meshes, nor for MMR (`GridMMR`, including `pod_e`): the MMR fields use the previous
-  method (in a joint inversion, the DC data use `contact_interp`).
+- `GridMMR`: the electric dipoles (`pod_e`) follow `g.dc.contact_interp`; the B fields use the previous
+  method (see above). In a joint inversion, the DC data use `contact_interp`.
+- Not on tetrahedral meshes.
 - The reference model handles vertical contacts only. A buried current electrode on a horizontal
   contact keeps a homogeneous reference along z (the interpolation at potential electrodes handles
   both directions: a potential electrode on the boundary of a two-layer earth is within 1 % of the

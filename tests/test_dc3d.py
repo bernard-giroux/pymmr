@@ -367,7 +367,7 @@ class TestMMR(unittest.TestCase):
         np.testing.assert_allclose(B[0][:, :2].T, Bn, rtol=0.15, atol=1e-3 * np.abs(Bn).max())
 
     def test_mmr_contact_interp(self):
-        """The MMR data (fields, pod_e, sensitivity) do not depend on dc.contact_interp (previous method)."""
+        """B and its sensitivity do not depend on dc.contact_interp; pod_e follows it (same as GridDC)."""
         h = 20.0
         x = padded(np.arange(-200., 200.1, h), h, 6)
         y = padded(np.arange(-100., 100.1, h), h, 6)
@@ -388,7 +388,15 @@ class TestMMR(unittest.TestCase):
         (B1, J1), v1 = res[1]
         np.testing.assert_allclose(B0, B1, rtol=1e-10, atol=1e-10 * np.abs(B1).max())
         np.testing.assert_allclose(J0, J1, rtol=1e-10, atol=1e-10 * np.abs(J1).max())
-        np.testing.assert_allclose(v0, v1, rtol=1e-10, atol=1e-10 * np.abs(v1).max())
+        for v, ci in ((v0, True), (v1, False)):
+            for n, dl in enumerate(np.diag((20.0, 20.0, -20.0))):
+                gd = GridDC((x, y, z))
+                gd.set_solver(SOLVER)
+                gd.contact_interp = ci
+                gd.set_survey_ert(np.tile(xs[0], (xo.shape[0], 1)), np.c_[xo, xo + dl], 1.0)
+                ref = gd.fwd_mod(sigma)
+                np.testing.assert_allclose(v[:, n], ref, rtol=1e-8, atol=1e-10 * np.abs(ref).max(),
+                                           err_msg=f'contact {ci}, {n}')
 
     def test_air_thickness(self):
         """Air at least as thick as the earth part of the grid, whatever the size of the top cells."""
@@ -426,11 +434,9 @@ class TestMMR(unittest.TestCase):
                 B, v = g.fwd_mod(sigma)
                 for n in range(3):
                     if layered:
-                        # linear interpolation, as for pod_e: the lower ends are on the layer boundary, where
-                        # GridDC.contact_interp changes the interpolation
+                        # lower ends of the vertical dipoles on the layer boundary
                         gd = GridDC((x, x, z))
                         gd.set_solver(SOLVER)
-                        gd.contact_interp = False
                         gd.set_survey_ert(np.tile(xs, (4, 1)), np.c_[xo, xo + dls[n]], 1.0)
                         ref = gd.fwd_mod(sigma)
                     else:
@@ -444,7 +450,6 @@ class TestMMR(unittest.TestCase):
             gd = GridDC((x, x, z))
             gd.set_solver(SOLVER)
             gd.exact_primary = False
-            gd.contact_interp = False
             gd.set_survey_ert(np.tile(xs, (4, 1)), np.c_[xo, xo + dls[2]], 1.0)
             np.testing.assert_allclose(v[:, 2], gd.fwd_mod(sigma), rtol=1e-6)
             # MMR data unchanged by the electric dipoles

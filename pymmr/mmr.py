@@ -498,8 +498,9 @@ class GridMMR:
         if images is not None:
             self.dc.fv.surface_images = False
         self.dc.exact_primary = False
-        # the MMR fields, their sensitivity and pod_e use the previous treatment of the electrodes (the DC data
-        # of a joint inversion, computed above, use contact_interp)
+        # the fields used for B (and its sensitivity) keep the previous treatment of the current electrodes: B
+        # does not depend on it (see docs/contacts.md); pod_e and the DC data of a joint inversion use
+        # contact_interp
         contact_interp = self.dc.contact_interp
         self.dc.contact_interp = False
         try:
@@ -555,14 +556,10 @@ class GridMMR:
         data[:, 1] = (Qy @ By).T.flatten()
         data[:, 2] = (Qz @ Bz).T.flatten()
 
-        self.dc.contact_interp = False
-        try:
-            if self.Q_pod_e is not None:
-                data_pod_e = self.dc._units_scaling * self._pod_e3d(sigma, u_dc)[self.ind_back, :]
-            else:
-                data_pod_e = None
-        finally:
-            self.dc.contact_interp = contact_interp
+        if self.Q_pod_e is not None:
+            data_pod_e = self.dc._units_scaling * self._pod_e3d(sigma, u_dc)[self.ind_back, :]
+        else:
+            data_pod_e = None
 
         if not self.in_inv:
             data = data[self.ind_back, :]
@@ -753,20 +750,37 @@ class GridMMR:
         """
         U, U0 = pod['U'], pod['U0']
         poles = self._plan25['poles']
+        fv = self.dc.fv
+        contact = self.dc.contact_interp
         data = np.zeros((self._plan25['n_data'], 3))
         for n, ends in enumerate(self._plan25['pod']):
             if ends is None:
                 continue
             pts_end = (self.pod_p1p2[n][:, :3], self.pod_p1p2[n][:, 3:6])
             for sign_end, (Q, W), pts in zip((1.0, -1.0), ends, pts_end):
-                F = U if U0 is None else U - U0
-                QU = np.stack([Q @ F[i] for i in range(self.k.size)])       # n_k x n_obs x n_poles
+                if contact:
+                    # Qf U + c (u0 - Q U0), see GridDC._contact_data
+                    p = fv.process_surface_elec(pts.copy())
+                    Qf, c_r = fv.flux_interp(p[:, 0], p[:, 2], pod['sigma'])
+                    QU = np.stack([Qf @ U[i] - (0.0 if U0 is None else c_r[:, None] * (Q @ U0[i]))
+                                   for i in range(self.k.size)])
+                else:
+                    F = U if U0 is None else U - U0
+                    QU = np.stack([Q @ F[i] for i in range(self.k.size)])       # n_k x n_obs x n_poles
                 for t, Wt in zip(self._plan25['terms'], W):
                     vals = np.einsum('dk,kd->d', Wt, QU[:, t['rec'], t['pole']])
                     if U0 is not None:
                         c = np.c_[poles[t['pole'], 0], t['ys'], poles[t['pole'], 2]]
-                        s0 = pod['sigma0'] if np.isscalar(pod['sigma0']) else pod['sigma0'][t['pole']]
-                        vals = vals + self.dc.fv.u_homog_at(c, pts[t['rec']], s0, 1.0, offset_y=True)
+                        if contact:
+                            u0 = np.zeros((t['rec'].size,))
+                            for ip in np.unique(t['pole']):
+                                sel = t['pole'] == ip
+                                u0[sel] = fv._ref_field(c[sel], pod['ref'], ip, 1.0, pts=pts[t['rec'][sel]],
+                                                        offset_y=True)
+                            vals = vals + c_r[t['rec']] * u0
+                        else:
+                            s0 = pod['sigma0'] if np.isscalar(pod['sigma0']) else pod['sigma0'][t['pole']]
+                            vals = vals + fv.u_homog_at(c, pts[t['rec']], s0, 1.0, offset_y=True)
                     data[t['rows'], n] += sign_end * t['w'] * vals
         return data
 
@@ -820,20 +834,29 @@ class GridMMR:
             q = src.q
             pod = None
             if pod_fields:
-                pod = {'sigma0': sigma0, 'U0': None}
+                pod = {'sigma0': sigma0, 'U0': None, 'ref': None, 'sigma': sigma}
                 exact = self.dc.exact_primary
-                if images != self.surface_images or exact:
+                if self.dc.contact_interp:
+                    # reference model with a contact at each current electrode (see Grid25FV.contact_reference)
+                    pod['ref'] = fv.contact_reference(poles, sigma if self.dc.local_sigma0 else gmean(sigma))
+                    src_pod, _ = fv.contact_source(poles, [pod['ref']], cs, correct_quadrature=exact, k=self.k)
+                elif images != self.surface_images or exact:
                     src_pod, _ = fv.boundary_source(poles, sigma0, cs, correct_quadrature=exact, k=self.k)
+                if self.dc.contact_interp or images != self.surface_images or exact:
                     if exact:
                         pod['U0'] = src_pod.U0
-                    if images != self.surface_images:
+                    if self.dc.contact_interp or images != self.surface_images:
                         q = np.concatenate((q, src_pod.q), axis=2)     # n_k x nc x 2 n_poles
         else:
             p = fv.process_surface_elec(poles.copy())
             q0 = (fv.linear_interp(p[:, 0], p[:, 1], p[:, 2]).T.toarray() /
                   fv.volume_voxels()[:, None])
             q = np.broadcast_to(q0, (self.k.size,) + q0.shape)
-            pod = {'sigma0': None, 'U0': None} if pod_fields else None
+            pod = {'sigma0': None, 'U0': None, 'ref': None, 'sigma': sigma} if pod_fields else None
+            if pod_fields and self.dc.contact_interp:
+                # point sources distributed with the weights of flux_interp (reciprocity, see GridDC._build_q)
+                q0 = fv.flux_interp(p[:, 0], p[:, 2], sigma)[0].T.toarray() / fv.volume_voxels()[:, None]
+                q = np.concatenate((q, np.broadcast_to(q0, (self.k.size,) + q0.shape)), axis=2)
 
         U = np.empty((self.k.size, fv.nc, q.shape[2]))
         par = fv.get_solver_params()
@@ -1069,7 +1092,8 @@ class GridMMR:
         horizontal dipoles near the electrodes up to 4 times too small without them, in a half-space).
         With apply_bc, the fields are solved again with the image setting of the DC grid (same matrix,
         already factorized), and the data are Q (u - u0) + u0 at the true positions of the dipole ends
-        if dc.exact_primary is True, Q u otherwise (as in GridDC._get_data).
+        if dc.exact_primary is True, Q u otherwise (as in GridDC._get_data).  With dc.contact_interp, the
+        reference models and the interpolation of GridDC.contact_interp (see GridDC._contact_data).
 
         Returns
         -------
@@ -1081,17 +1105,35 @@ class GridMMR:
         ns_src = self.xs_u.shape[0]
         out = np.zeros((no * ns_src, 3))
         exact = False
+        contact = dc._contact()
         if dc.apply_bc and isinstance(dc.fv, GridFV):
             # fields with images; dc.c1c2_u is xs_u and keep_c1c2 is True here (set by fwd_mod)
             dc._boundary_correction(sigma)
             F = dc.fv.solve(dc.q)
             exact = dc._uses_exact_primary()
-            if exact:
+            if exact and not contact:
                 F = F - dc.u0
+        elif contact:
+            # point sources distributed with the weights of flux_interp
+            dc._build_q()
+            F = dc.fv.solve(dc.q)
         else:
             F = u_dc
         for n in range(3):
             if self.pod_p1p2[n] is None:
+                continue
+            if contact:
+                v = np.zeros((no, ns_src))
+                for sign, c0 in ((1.0, 0), (-1.0, 3)):
+                    pts = self.pod_p1p2[n][:, c0:c0 + 3]
+                    p = dc.fv.process_surface_elec(pts.copy())
+                    Qf, c = dc._flux(p)
+                    v += sign * (Qf @ F)
+                    if exact:
+                        Ql = dc.fv.linear_interp(p[:, 0], p[:, 1], p[:, 2])
+                        for ns in range(ns_src):
+                            v[:, ns] += sign * c * (dc._contact_primary(ns, pts) - Ql @ dc.u0[:, ns])
+                out[:, n] = v.T.flatten()
                 continue
             v = self.Q_pod_e[n] @ F
             if exact:
