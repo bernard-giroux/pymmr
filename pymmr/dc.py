@@ -34,9 +34,6 @@ from pymmr.kquad import KQuadrature, select_k
 
 # %% Some functions
 
-def all(a: np.ndarray) -> bool:
-    return a.sum() == a.size
-
 
 def _weights(w, n):
     """Return weights as a 1D array of size n.
