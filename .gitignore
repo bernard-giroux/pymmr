@@ -4,6 +4,10 @@ __pycache__/
 *$py.class
 
 examples/*sens*vtr
+# written by the example notebooks
+examples/data_*.dat
+examples/*.vtr
+examples/topo.vtk
 free-threading.env
 
 # C extensions

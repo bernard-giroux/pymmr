@@ -235,7 +235,7 @@ Usage in the rest of the package (phase 6):
 - `run_job.py`: a VTK model one cell thick along y gives a 2.5D model for MMR as for DC (`fwd mmr`,
   `compute sensitivity`, `inv` with MMR and/or ERT data). `save_sensitivity` writes 2.5D grids.
 - `Inversion.run` needs no change: the joint balancing of MMR and ERT data (Jacobian weighting)
-  does not depend on the dimension. Example: `examples/example_mmr25.py`, forward modelling of the
+  does not depend on the dimension. Example: `examples/example_mmr25.ipynb`, forward modelling of the
   dyke and inversion of synthetic Bx, By, Bz data.
 
 ### Half-space test (`tests/test_mmr25.py`)

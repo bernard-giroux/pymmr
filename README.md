@@ -50,7 +50,7 @@ iterative solver such as `scipy.sparse.linalg.bicgstab`).
 
 ## Quick start
 
-2.5D MMR inversion of synthetic data (adapted from `examples/example_mmr25.py`):
+2.5D MMR inversion of synthetic data (adapted from `examples/example_mmr25.ipynb`):
 
 ```python
 import numpy as np
@@ -134,16 +134,15 @@ cell along y gives a 2.5D model.
 
 | File | Content |
 |---|---|
-| `examples/example_dc_fwd.py` | 3D DC forward modelling and sensitivity |
-| `examples/example_dc.py` | 3D DC inversion, surface and borehole electrodes |
-| `examples/example_dc_bicgstab.py` | 3D DC inversion with an iterative solver (`bicgstab`, multithreaded) |
-| `examples/example_dc_tet.py` | DC on a tetrahedral mesh with topography (`topo.vtu`, made by `mk_mesh.py`) |
-| `examples/example_dc25.py` | 2.5D DC compared with 3D and with the analytic vertical dyke |
+| `examples/example_dc.ipynb` | 3D DC inversion, surface and borehole electrodes |
+| `examples/example_dc_bicgstab.ipynb` | 3D DC inversion with an iterative solver (`bicgstab`, multithreaded with a free-threaded Python) |
+| `examples/example_dc_tet.py` | DC on a tetrahedral mesh with topography (`topo.vtu`, made by the gmsh script `mk_mesh.py`) |
+| `examples/example_dc25.ipynb` | 2.5D DC compared with 3D and with the analytic vertical dyke |
 | `examples/example_dc25_regularization.ipynb` | 2.5D DC inversion, comparison of regularizations |
-| `examples/example_mmr.py` | 3D MMR modelling and inversion |
-| `examples/example_mmr25.py` | 2.5D MMR: dyke validation and inversion |
-| `examples/example_joint.py` | Joint MMR–ERT inversion |
-| `examples/example_joint_blocky.py` | Joint inversion with blocky regularization |
+| `examples/example_mmr.ipynb` | 3D MMR modelling and inversion |
+| `examples/example_mmr25.ipynb` | 2.5D MMR: dyke validation and inversion |
+| `examples/example_joint.ipynb` | Joint MMR–ERT inversion (run `example_mmr` and `example_dc` first) |
+| `examples/example_joint_blocky.ipynb` | Joint inversion with blocky regularization (same prerequisites) |
 
 ## Documentation
 

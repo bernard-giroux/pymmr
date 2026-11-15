@@ -462,7 +462,7 @@ class Inversion:
     >>> inv.beta = 100.0
     >>> sigma_inv, data_inv, rms, misfit, smy = inv.run(g, m0=m0, m_ref=m0, data_mmr=data_mmr)
 
-    See also `examples/example_mmr25.py`, `examples/example_joint.py`, and `docs/cglscd.md` for the
+    See also `examples/example_mmr25.ipynb`, `examples/example_joint.ipynb`, and `docs/cglscd.md` for the
     solution of the Gauss-Newton system.
     """
 

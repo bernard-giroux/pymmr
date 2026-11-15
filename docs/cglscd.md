@@ -38,7 +38,7 @@ Parameters (`Inversion` attributes, `run_job` keywords):
 
 If the factorization fails, `Inversion` warns and uses `'jacobi'`.
 
-## Example (`examples/example_mmr25.py`, 297 data, 1000 cells, 6 iterations)
+## Example (`examples/example_mmr25.ipynb`, 297 data, 1000 cells, 6 iterations)
 
 Iterations of `cglscd` at each Gauss-Newton iteration, misfit after 6 iterations, and distance
 between the final and true models (log σ), relative to the starting model:
