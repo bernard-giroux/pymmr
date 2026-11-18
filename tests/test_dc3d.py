@@ -384,8 +384,8 @@ class TestMMR(unittest.TestCase):
             sigma = np.where(np.abs(xc) < 40, 0.1, 0.01)    # contacts at the electrodes of pod_e (x = -40, 40)
             res.append(g.fwd_mod(sigma, calc_sens=True))
             self.assertEqual(g.dc.contact_interp, ci)   # setting restored
-        (B0, J0), v0 = res[0]
-        (B1, J1), v1 = res[1]
+        (B0, J0), (v0, _) = res[0]
+        (B1, J1), (v1, _) = res[1]
         np.testing.assert_allclose(B0, B1, rtol=1e-10, atol=1e-10 * np.abs(B1).max())
         np.testing.assert_allclose(J0, J1, rtol=1e-10, atol=1e-10 * np.abs(J1).max())
         for v, ci in ((v0, True), (v1, False)):
@@ -397,6 +397,53 @@ class TestMMR(unittest.TestCase):
                 ref = gd.fwd_mod(sigma)
                 np.testing.assert_allclose(v[:, n], ref, rtol=1e-8, atol=1e-10 * np.abs(ref).max(),
                                            err_msg=f'contact {ci}, {n}')
+
+    def test_pod_e_sensitivity(self):
+        """Sensitivity of the electric dipoles at the receivers against finite differences."""
+        h = 20.0
+        x = padded(np.arange(-120., 120.1, h), h, 5)
+        y = padded(np.arange(-60., 60.1, h), h, 5)
+        z = padded(np.arange(-80., 0.1, h), h, 5, top=False)
+        xs_all = np.array([[-90., 0, 0, 90., 0, 0], [-50., 20., 0, 70., -20., 0]])
+        xo_all = np.array([[-10., 30., 0], [30., -30., 0], [50., 10., 0]])
+        surveys = {'all': (xs_all, xo_all, np.array([1.0, 2.5]), (15., 12., -20.), (0, 1, 2)),
+                   'pairs': (xs_all[[0, 0, 1]], xo_all, 1.0, (0., 12., -20.), (1, 2)),
+                   'pole': (np.r_[xs_all[0, :3], [np.inf] * 3], xo_all, 1.0, (15., 0., 0.), (0,))}
+        for label, opts in (('all', {}), ('all', {'contact_interp': False}), ('all', {'apply_bc': False}),
+                            ('all', {'exact_primary': False}), ('pairs', {}), ('pole', {})):
+            with self.subTest(survey=label, **opts):
+                xs, xo, cs, pod_e, active = surveys[label]
+                g = GridMMR((x, y, z))
+                g.set_solver(SOLVER)
+                for key, val in opts.items():
+                    setattr(g.dc, key, val)
+                g.set_survey_mmr(xs=xs, xo=xo, cs=cs, pod_e=pod_e)
+                xc, yc, zc = g.dc.fv.centre_voxels()
+                sigma = np.where((xc > 0) & (xc < 40) & (zc > -40), 0.05, 0.01)
+                sigma = sigma * np.exp(0.2 * np.random.default_rng(1).standard_normal(sigma.shape))
+                (B, S), (v, Se) = g.fwd_mod(sigma, calc_sens=True)
+                self.assertEqual(Se.shape, S.shape)
+
+                def data(s):
+                    mod = np.empty((g.mask.size, 3))
+                    mod[g.ind_back] = g.fwd_mod(s, keep_solver=True)[1]
+                    return g.data_to_obs(mod, False).ravel()
+
+                cols, i0 = [], 0
+                for m in g.nobs_xs:
+                    cols += [3 * i0 + n * m + np.arange(m) for n in active]
+                    i0 += m
+                cols = np.concatenate(cols)
+                self.assertTrue(np.all(np.abs(Se[:, cols]).max(axis=0) > 0))
+                self.assertTrue(np.all(np.delete(Se, cols, axis=1) == 0))
+                eps = 1e-4
+                for c in (np.argmin(np.abs(xc - 10) + np.abs(yc - 10) + np.abs(zc + 10)),
+                          np.argmin(np.abs(xc + 50) + np.abs(yc + 10) + np.abs(zc + 30))):
+                    s2, s3 = sigma.copy(), sigma.copy()
+                    s2[c] *= np.exp(eps)
+                    s3[c] *= np.exp(-eps)
+                    fd = (data(s2) - data(s3)) / (2 * eps)
+                    np.testing.assert_allclose(Se[c], fd, rtol=0, atol=1e-5 * np.abs(fd).max())
 
     def test_air_thickness(self):
         """Air at least as thick as the earth part of the grid, whatever the size of the top cells."""

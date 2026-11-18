@@ -156,6 +156,7 @@ class GridDC:
         # data are then computed as if all electrodes were at y = 0)
         self.offline25 = 'auto'
         self.n_k_offline = 30
+        self._k_offline = None           # wavenumbers imposed for the off-line modelling (GridMMR, pod_e)
         self._off25 = None               # plan of the off-line modelling (see _plan_offline25)
         self._sigma0 = None              # conductivity of reference model used for boundary correction
         self.keep_c1c2 = True  # keep dipoles for forming RHS term of equation
@@ -1106,7 +1107,8 @@ class GridDC:
         The plan depends on the electrodes (reset by the c1c2 and p1p2 setters) and on n_k_offline (checked
         here); the current intensity is applied in _fwd_offline25.
         """
-        if self._off25 is not None and self._off25['k'].size == self.n_k_offline:
+        n_k = self.n_k_offline if self._k_offline is None else self._k_offline.size
+        if self._off25 is not None and self._off25['k'].size == n_k:
             return self._off25
         fv = self.fv
         c1c2 = np.atleast_2d(self.c1c2)
@@ -1146,7 +1148,7 @@ class GridDC:
         h_min = min(np.min(fv.hx), np.min(fv.hz))
         r_min = max(r_xz.min() if r_xz.size else h_min, h_min / 2)
         r_max = max(4 * np.concatenate(r_3d).max(), 100 * r_min)
-        k = select_k(r_min, r_max, self.n_k_offline)
+        k = select_k(r_min, r_max, self.n_k_offline) if self._k_offline is None else self._k_offline
         kq = KQuadrature(k)
         for t in pairs:
             t['W'] = kq.weights(t['dy'], 'even')     # n x n_k

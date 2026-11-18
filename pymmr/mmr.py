@@ -422,11 +422,16 @@ class GridMMR:
         data : ndarray
             components Bx, By & Bz (pT)
         sens : ndarray
-            Sensitivity matrix if `calc_sens` is True.
+            Sensitivity matrix of B if `calc_sens` is True.
         data_pod_e : ndarray
             Potential differences of the electric dipoles at the measurement points if `pod_e` was
-            given to `set_survey_mmr` (not in inversion).  The function then returns
-            `data, data_pod_e`, or `(data, sens), data_pod_e` if `calc_sens` is True.
+            given to `set_survey_mmr` (not in inversion), n_data x 3, in the units of `dc.units`.
+            The function then returns `data, data_pod_e`.
+        sens_pod_e : ndarray
+            Sensitivity matrix of `data_pod_e` if `pod_e` was given and `calc_sens` is True.  The
+            function then returns `(data, sens), (data_pod_e, sens_pod_e)`.  The columns are ordered
+            as those of `sens`, the x, y and z dipoles taking the place of Bx, By and Bz; the columns
+            of a dipole of length 0 are zero.
 
         Notes
         -----
@@ -610,7 +615,7 @@ class GridMMR:
                 data = np.r_[data, res_dc[0].reshape(-1, 1)]
                 sens = np.c_[sens, res_dc[1]]
             if data_pod_e is not None:
-                return (data, sens), data_pod_e
+                return (data, sens), (data_pod_e, self._sens_pod_e(sigma))
             return data, sens
         else:
             if self.in_inv and self.dc.c1c2 is not None:
@@ -671,11 +676,56 @@ class GridMMR:
             print('End of modelling.')
         if calc_sens:
             if data_pod_e is not None:
-                return (data, sens), data_pod_e
+                return (data, sens), (data_pod_e, self._sens_pod_e(sigma))
             return data, sens
         if data_pod_e is not None:
             return data, data_pod_e
         return data
+
+    def _sens_pod_e(self, sigma):
+        """Sensitivity of the electric dipoles at the measurement points, d(data_pod_e)/d(ln sigma).
+
+        The dipoles are DC data for the current dipoles of the survey: the sensitivity is the one of
+        GridDC, with the options of `self.dc` (in 2.5D, the off-line method with the wavenumbers of the
+        MMR modelling, which gives the potentials of _pod_e25).  The computation is done on a shallow
+        copy of `self.dc`, whose survey is not changed.
+
+        Returns
+        -------
+        ndarray
+            n_roi x (3 n_data), columns ordered as those of the sensitivity of B (data_to_obs: for each
+            current dipole, dipoles along x, then y, then z at its measurement points)
+        """
+        active = [n for n in range(3) if self.pod_p1p2[n] is not None]
+        no = self.xo_all.shape[0]
+        n_s = self.xs_u.shape[0]
+        c1c2 = np.repeat(self.xs_u, no, axis=0)[self.mask]
+        cs = np.repeat(self.cs_u, no)[self.mask]     # the data are proportional to the current
+        n_data = c1c2.shape[0]
+
+        dc = copy.copy(self.dc)
+        # attributes set directly: current electrodes can be at infinity
+        dc._c1c2 = np.tile(c1c2, (len(active), 1))
+        dc._p1p2 = np.vstack([np.tile(self.pod_p1p2[n], (n_s, 1))[self.mask] for n in active])
+        dc._cs = np.ones((dc._c1c2.shape[0],))
+        dc.in_inv = False
+        dc.verbose = 0
+        dc.sort_electrodes = True
+        dc.electrodes_sorted = False
+        dc.sort_back = None
+        dc.c1c2_u = dc.cs12_u = dc.Q = dc._Qc = dc._off25 = None
+        if self.fv.dim == 2.5:
+            dc.offline25 = True
+            dc._k_offline = self.k
+        _, S = dc.fwd_mod(sigma, calc_sens=True)
+
+        sens = np.zeros((S.shape[0], 3 * n_data))
+        i0 = 0
+        for m in self.nobs_xs:
+            for i, n in enumerate(active):
+                sens[:, 3 * i0 + n * m:3 * i0 + (n + 1) * m] = S[:, i * n_data + i0:i * n_data + i0 + m] * cs[i0:i0 + m]
+            i0 += m
+        return sens
 
     def _setup25(self):
         """Air layers, current electrodes, wavenumbers and inverse transform weights (once per survey)."""
@@ -979,16 +1029,26 @@ class GridMMR:
     def get_roi_nodes(self):
         return self.dc.get_roi_nodes()
 
-    def save_sensitivity(self, sens, basename):
+    def save_sensitivity(self, sens, basename, sens_pod_e=None):
         """Save sensitivity to VTK files.
 
         Parameters
         ----------
         sens : ndarray
-            Sensitivity
+            Sensitivity of B
         basename : str
-            basename for output files (1 per dipole).
+            basename for output files (1 per dipole): `basename`_mmr_sens_dip*, and
+            `basename`_mmr_e_sens_dip* for `sens_pod_e`.
+        sens_pod_e : ndarray, optional
+            Sensitivity of the electric dipoles at the measurement points (see `fwd_mod`)
         """
+        self._save_sens(sens, basename + '_mmr_sens_dip', ('Bx', 'By', 'Bz'), (0, 1, 2))
+        if sens_pod_e is not None:
+            comps = [n for n in range(3) if self.pod_p1p2[n] is not None]
+            self._save_sens(sens_pod_e, basename + '_mmr_e_sens_dip', ('Ex', 'Ey', 'Ez'), comps)
+
+    def _save_sens(self, sens, basename, names, comps):
+        """Write the components `comps` of a sensitivity matrix, one file per injection dipole."""
         x, y, z = self.dc.get_roi_nodes()
         # grille temporaire pour sauvegarder sens (2.5D: grid one cell thick along y)
         g2 = Grid25FV((x, z)) if self.fv.dim == 2.5 else GridFV((x, y, z))
@@ -998,28 +1058,18 @@ class GridMMR:
 
         # make 1 file for each injection dipole
         for ns in range(self.xs_u.shape[0]):
-            if ns == 0:
-                i = i0 = 0
-            else:
-                i = np.sum(self.nobs_xs[:ns])
-                i0 = np.sum(self.nobs_xs[:ns] * 3)
+            i = np.sum(self.nobs_xs[:ns])
+            i0 = 3 * i
             sens_data = {}
             for nr in range(self.nobs_xs[ns]):
-                xo_x = xo[i + nr, 0]
-                xo_y = xo[i + nr, 1]
-                xo_z = xo[i + nr, 2]
-                name = '∂d/∂m - Bx: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
-                sens_data[name] = sens[:, i0 + nr]
-                name = '∂d/∂m - By: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
-                sens_data[name] = sens[:, i0 + nr + self.nobs_xs[ns]]
-                name = '∂d/∂m - Bz: {0:4.1f} {1:4.1f} {2:4.1f}'.format(xo_x, xo_y, xo_z)
-                sens_data[name] = sens[:, i0 + nr + 2 * self.nobs_xs[ns]]
+                for n in comps:
+                    name = '∂d/∂m - {0:s}: {1:4.1f} {2:4.1f} {3:4.1f}'.format(names[n], *xo[i + nr])
+                    sens_data[name] = sens[:, i0 + nr + n * self.nobs_xs[ns]]
 
             src = "C1: " + str(self.xs_u[ns, 0]) + " " + str(self.xs_u[ns, 1]) + " " + str(self.xs_u[ns, 2])
             src += ", C2: " + str(self.xs_u[ns, 3]) + " " + str(self.xs_u[ns, 4]) + " " + str(self.xs_u[ns, 5])
             metadata = {"Source dipole": src}
-            filename = basename+'_mmr_sens_dip'+str(ns+1)
-            g2.toVTK(sens_data, filename, metadata=metadata)
+            g2.toVTK(sens_data, basename + str(ns + 1), metadata=metadata)
 
     def _add_air(self, n_const_cells=4, n_crois_cells=15, factor=1.3, min_thickness=0.0):
         """Add air layers above the DC grid.
