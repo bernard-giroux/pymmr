@@ -46,7 +46,9 @@ SuperLU (from SciPy) is always available.  A faster direct solver is strongly re
 - **UMFPACK**, through `scikit-umfpack`
 
 Choose the solver with `g.set_solver('mumps')` (or `'pardiso'`, `'umfpack'`, `'superlu'`, or an
-iterative solver such as `scipy.sparse.linalg.bicgstab`).
+iterative solver such as `scipy.sparse.linalg.bicgstab`).  With `pyamg` installed, the iterative solvers
+can use an algebraic multigrid preconditioner, `g.set_solver(bicgstab, precon='amg')`, the fastest option
+tested for the MMR system (see [docs/solvers.md](docs/solvers.md)).
 
 ## Quick start
 
@@ -150,6 +152,7 @@ cell along y gives a 2.5D model.
 - [docs/dc25_offline.md](docs/dc25_offline.md): off-line measurements in 2.5D DC
 - [docs/contacts.md](docs/contacts.md): electrodes on conductivity contrasts in DC modelling
 - [docs/cglscd.md](docs/cglscd.md): solving the Gauss-Newton step, preconditioner, Jacobian weighting
+- [docs/solvers.md](docs/solvers.md): iterative solvers for the MMR system, AMG preconditioner, running in parallel
 - Docstrings of the modules (`pymmr/run_job.py` for parameter and data file formats)
 
 ## Tests

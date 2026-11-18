@@ -39,13 +39,15 @@ References
 """
 import copy
 import sys
+import sysconfig
+import time
 import warnings
 from threading import Thread
 
 import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import bicgstab, spsolve, use_solver, factorized
-from scipy.sparse.csgraph import reverse_cuthill_mckee
+from scipy.sparse.csgraph import connected_components, reverse_cuthill_mckee
 from scipy.special import kv, k0
 from scipy.optimize import minimize
 
@@ -92,6 +94,12 @@ try:
 except (ImportError, OSError):
     has_pastix = False
 
+try:
+    import pyamg
+    has_pyamg = True
+except ImportError:
+    has_pyamg = False
+
 
 # %% Some functions
 
@@ -101,6 +109,99 @@ def is_free_threading():
         return False
     else:
         return not sys._is_gil_enabled()
+
+
+def parallel_status(n_threads):
+    """Describe how the right-hand sides of an iterative solver will be distributed over threads.
+
+    The state of the GIL is the one at the time of the call: on a free-threaded Python, importing an
+    extension module that does not declare free-threading support enables the GIL, unless PYTHON_GIL=0.
+    """
+    if n_threads <= 1:
+        return "1 thread, right-hand sides solved sequentially"
+    if is_free_threading():
+        return "{0:d} threads, GIL disabled, right-hand sides solved in parallel".format(n_threads)
+    if sysconfig.get_config_var("Py_GIL_DISABLED"):
+        return ("{0:d} requested, but the GIL is enabled (set PYTHON_GIL=0, an imported module enabled it): "
+                "right-hand sides solved sequentially".format(n_threads))
+    return ("{0:d} requested, but this Python is not a free-threaded build: "
+            "right-hand sides solved sequentially".format(n_threads))
+
+
+def print_solve_report(solvers):
+    """Print how the last solve of iterative solvers actually ran, if more than one thread was requested.
+
+    CPU time / wall time is close to the number of threads when they all run at the same time, and close
+    to 1 when they do not.  It measures the use of the processors, not the speedup, which is lower when
+    the threads compete for memory bandwidth.
+
+    Parameters
+    ----------
+    solvers : iterable of Solver
+        The statistics are summed over the solvers (e.g. one solver per wavenumber in 2.5D).
+    """
+    stats = [s.last_solve for s in solvers if s.last_solve is not None]
+    if len(stats) == 0:
+        return
+    n_threads = max(s['n_threads'] for s in stats)
+    if n_threads <= 1:
+        return
+    n_rhs = sum(s['n_rhs'] for s in stats)
+    n_workers = max(s['n_workers'] for s in stats)
+    wall = sum(s['wall'] for s in stats)
+    cpu = sum(s['cpu'] for s in stats)
+    if n_workers > 1:
+        ratio = cpu / wall if wall > 0.0 else 0.0
+        msg = ("      Parallel solve: {0:d} right-hand sides on {1:d} threads, wall time {2:.2f} s, CPU time "
+               "{3:.2f} s, CPU/wall = {4:.1f}".format(n_rhs, n_workers, wall, cpu, ratio))
+        if wall > 0.5 and ratio < 0.5 * n_workers:
+            msg += " (WARNING: the threads are not running concurrently)"
+    elif is_free_threading():
+        msg = "      Sequential solve: one right-hand side per solve, {0:d} threads not used".format(n_threads)
+    else:
+        msg = "      Sequential solve: " + parallel_status(n_threads).replace(": right-hand sides solved sequentially", "")
+    print(msg, flush=True)
+
+
+def _amg_preconditioner(A):
+    """Algebraic multigrid preconditioner: one classical (Ruge-Stuben) V-cycle per decoupled block of A.
+
+    Blocks are the connected components of A once entries at the level of round-off are ignored.  The MMR
+    matrix on a rectilinear grid has three of them, one per face orientation, whereas the DC matrix has one.
+    See docs/solvers.md.
+
+    Returns
+    -------
+    LinearOperator
+        Can be applied from several threads: the only state built on first use, the factorization on the
+        coarsest level, is computed here.
+    """
+    if not has_pyamg:
+        raise RuntimeError("Preconditioner 'amg' needs pyamg (pip install pyamg)")
+
+    C = sp.coo_array(A)
+    diag = np.abs(A.diagonal())
+    keep = np.abs(C.data) > 1e-12 * np.sqrt(diag[C.row] * diag[C.col])
+    C = sp.csr_array((C.data[keep], (C.row[keep], C.col[keep])), shape=A.shape)
+    n_blocks, labels = connected_components(C, directed=False)
+    order = np.argsort(labels, kind='stable')
+    blocks = np.split(order, np.cumsum(np.bincount(labels))[:-1])
+
+    cycles = []
+    for ind in blocks:
+        ind = np.sort(ind)
+        ml = pyamg.ruge_stuben_solver(sp.csr_matrix(C[ind, :][:, ind]), max_coarse=500)
+        cycles.append((ind, ml.aspreconditioner(cycle='V')))
+
+    def matvec(r):
+        r = np.ravel(r)
+        x = np.empty(r.shape)
+        for ind, cycle in cycles:
+            x[ind] = cycle(r[ind])
+        return x
+
+    matvec(np.ones(A.shape[0]))   # coarse level factorization, before any thread uses it
+    return sp.linalg.LinearOperator(A.shape, matvec=matvec, dtype=float)
 
 
 def calc_padding(dx, n_cells=15, factor=1.3):
@@ -300,7 +401,8 @@ class BaseFV:
     def set_system(self, A, keep_solver=True, verbose=False):
         """Instantiate the solver for matrix A, or update it if it exists and keep_solver is True."""
         if self.solver_A is None or keep_solver is False:
-            self.solver_A = Solver(self.get_solver_params(), A, verbose=verbose)
+            self.solver_A = Solver(self.get_solver_params(), A, verbose=verbose, comm=self.comm,
+                                   n_threads=self.n_threads)
         else:
             self.A = A
 
@@ -319,7 +421,8 @@ class BaseFV:
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : string, optional
-            Apply preconditioning, possible values are 'ilu', 'diag', or '0' for no preconditionning.
+            Apply preconditioning, possible values are 'amg' (needs pyamg, see docs/solvers.md), 'ilu', 'diag',
+            or '0' for no preconditionning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
 
@@ -4440,6 +4543,9 @@ class Solver25:
         self.solvers[0].print_info(file)
         print('    2.5D: {0:d} wavenumbers'.format(self.k.size), file=file)
 
+    def print_solve_report(self):
+        print_solve_report(self.solvers)
+
 
 class Solver:
     """
@@ -4479,6 +4585,7 @@ class Solver:
         if comm is not None:
             self.verbose = verbose and (comm.rank == 0)
         self.n_threads = n_threads
+        self.last_solve = None   # how the last solve ran (iterative solvers), see print_solve_report
         if callable(solver_par[0]):
             # solveur itératif
 
@@ -4504,26 +4611,7 @@ class Solver:
                 if self.verbose:
                     print("done.")
 
-            if self.precon != '0':
-                if self.verbose:
-                    print("  Computing preconditioning matrix ... ", end="", flush=True)
-                if self.precon == 'diag':
-                    Ainv = sp.diags_array(1.0 / self.A.diagonal())
-                    self.Mpre = sp.linalg.aslinearoperator(Ainv)
-                elif self.precon == 'ilu':
-                    try:
-                        self.Mpre = sp.linalg.spilu(self.A.tocsc())
-                        self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
-                    except RuntimeError as err:
-                        if self.verbose:
-                            print(err)
-                            print("Switching to using diagonal of A")
-                        Ainv = sp.diags_array(1.0 / self.A.diagonal())
-                        self.Mpre = sp.linalg.aslinearoperator(Ainv)
-                else:
-                    raise ValueError("Unknown preconditioning solver")
-                if self.verbose:
-                    print("done.")
+            self._set_preconditioner()
 
             self.solver = lambda A, b, x0=None: self.it_slv(A, b, x0=x0, atol=self.atol, rtol=self.rtol,
                                                             maxiter=self.max_it, M=self.Mpre)
@@ -4609,6 +4697,41 @@ class Solver:
             return
         self.ctx.set_icntl(4, level)
 
+    def _set_preconditioner(self):
+        """Compute the preconditioner of the iterative solver for the current matrix."""
+        if self.precon == '0':
+            return
+        if self.verbose:
+            print("  Computing preconditioning matrix ... ", end="", flush=True)
+        if self.precon == 'diag':
+            Ainv = sp.diags_array(1.0 / self.A.diagonal())
+            self.Mpre = sp.linalg.aslinearoperator(Ainv)
+        elif self.precon == 'ilu':
+            try:
+                self.Mpre = sp.linalg.spilu(self.A.tocsc())
+                self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
+            except RuntimeError as err:
+                if self.verbose:
+                    print(err)
+                    print("Switching to using diagonal of A")
+                Ainv = sp.diags_array(1.0 / self.A.diagonal())
+                self.Mpre = sp.linalg.aslinearoperator(Ainv)
+        elif self.precon == 'amg':
+            self.Mpre = _amg_preconditioner(self.A)
+        else:
+            raise ValueError("Unknown preconditioning solver")
+        if self.verbose:
+            print("done.")
+
+    def _n_workers(self, n_rhs):
+        """Number of threads actually used to solve n_rhs right-hand sides."""
+        if hasattr(self, "it_slv") and is_free_threading():
+            return max(1, min(self.n_threads, n_rhs))
+        return 1
+
+    def print_solve_report(self):
+        print_solve_report([self])
+
     def solve(self, rhs, x0=None, verbose=None):
         """
         Solve Ax = b
@@ -4681,17 +4804,35 @@ class Solver:
 
         sz = rhs.shape[1]
         v = np.empty((self._A.shape[0], sz))
-        if is_free_threading():
-            chunklen = (sz + self.n_threads - 1) // self.n_threads
-            threads = [Thread(target=Solver._chunk_solve, args=(self, x, x + chunklen if x + chunklen < sz else sz, rhs, v, x0, verbose)) for x in range(0, sz, chunklen)]
+        n_workers = self._n_workers(sz)
+        wall = time.perf_counter()
+        cpu = time.process_time()
+        if n_workers > 1:
+            errors = []
+
+            def work(n0, n1):
+                try:
+                    self._chunk_solve(n0, n1, rhs, v, x0, verbose)
+                except Exception as err:   # otherwise lost with the thread, leaving v uninitialized
+                    errors.append(err)
+
+            edges = [i * sz // n_workers for i in range(n_workers + 1)]
+            threads = [Thread(target=work, args=(edges[i], edges[i + 1])) for i in range(n_workers)]
             for i in threads:
                 i.start()
             for i in threads:
                 i.join()
+            if errors:
+                raise errors[0]
         else:
             Solver._chunk_solve(self, 0, sz, rhs, v, x0, verbose)
 
+        if hasattr(self, "it_slv"):
+            self.last_solve = {'n_rhs': sz, 'n_threads': self.n_threads, 'n_workers': n_workers,
+                               'wall': time.perf_counter() - wall, 'cpu': time.process_time() - cpu}
+
         if verbose:
+            self.print_solve_report()
             print("      done.")
 
         return v
@@ -4825,26 +4966,7 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             if self.verbose:
                 print("done.")
 
-        if self.precon != '0':
-            if self.verbose:
-                print("  Computing preconditioning matrix ... ", end="", flush=True)
-            if self.precon == 'diag':
-                Ainv = sp.diags_array(1.0 / self.A.diagonal())
-                self.Mpre = sp.linalg.aslinearoperator(Ainv)
-            elif self.precon == 'ilu':
-                try:
-                    self.Mpre = sp.linalg.spilu(self.A.tocsc())
-                    self.Mpre = sp.linalg.LinearOperator(self.A.shape, self.Mpre.solve)
-                except RuntimeError as err:
-                    if self.verbose:
-                        print(err)
-                        print("Switching to using diagonal of A")
-                    Ainv = sp.diags_array(1.0 / self.A.diagonal())
-                    self.Mpre = sp.linalg.aslinearoperator(Ainv)
-            else:
-                raise ValueError("Unknown preconditioning solver")
-            if self.verbose:
-                print("done.")
+        self._set_preconditioner()
         self.solver = lambda A, b, x0=None: self.it_slv(A, b, x0=x0, atol=self.atol, rtol=self.rtol,
                                                         maxiter=self.max_it, M=self.Mpre)
 
@@ -4904,8 +5026,12 @@ iterations for atol = {2:g}, rtol = {3:g}, with ||b|| = {4:3.2e} and residuals =
             else:
                 print("    Preconditioning: not used")
 
-            if is_free_threading() and self.n_threads > 1:
-                print("    Number of threads: " + str(self.n_threads))
+            if self.n_threads > 1:
+                print("    Threads: " + parallel_status(self.n_threads))
+            return
+
+        if self.n_threads > 1:
+            print("    Threads: {0:d} requested, not used by direct solvers".format(self.n_threads))
 
 
 if __name__ == "__main__":
