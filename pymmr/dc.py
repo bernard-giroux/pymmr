@@ -409,7 +409,8 @@ class GridDC:
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : string, optional
-            Apply preconditioning, possible values are 'ilu', 'diag', or '0' for no preconditioning.
+            Apply preconditioning, possible values are 'amg' (needs pyamg, see docs/solvers.md), 'ilu', 'diag',
+            or '0' for no preconditioning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
 
@@ -568,6 +569,8 @@ class GridDC:
         else:
             self.u = np.empty((self.fv.nc, self.q.shape[1]))
             self.u[:, :c1c2.shape[0]] = self.fv.solve(self.q[:, :c1c2.shape[0]])
+        if self.verbose == 1 and self.fv.comm.rank == 0:   # with verbose > 1, printed by the solver
+            self.fv.solver_A.print_solve_report()
 
         if self.p1p2 is None or q is not None:
             # user-supplied source terms (e.g. MMR adjoint): no data

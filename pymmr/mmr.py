@@ -35,7 +35,7 @@ from scipy.special import legendre_p_all
 from scipy.stats.mstats import gmean
 
 from pymmr.dc import GridDC
-from pymmr.finite_volume import calc_padding, GridFV, Grid25FV, MeshFV, Solver, Solver25
+from pymmr.finite_volume import calc_padding, GridFV, Grid25FV, MeshFV, Solver, Solver25, print_solve_report
 from pymmr.kquad import KQuadrature, select_k
 from pymmr.legendre import p_prime
 
@@ -356,7 +356,8 @@ class GridMMR:
         max_it : int, optional
             Max nbr of iteration for the iterative solver
         precon : string, optional
-            Apply preconditioning, possible values are 'ilu', 'diag', or '0' for no preconditionning.
+            Apply preconditioning, possible values are 'amg' (needs pyamg, see docs/solvers.md), 'ilu', 'diag',
+            or '0' for no preconditionning.
         do_perm : bool, optional
             Apply inverse Cuthill-McKee permutation.
 
@@ -539,7 +540,8 @@ class GridMMR:
             q[(self.fv.nfx+self.fv.nfy):(self.fv.nfx+self.fv.nfy+self.dc.fv.nfz), i] = Jz[:, i]
 
         if self.fv.solver_A is None or keep_solver is False:
-            self.fv.solver_A = Solver(self.fv.get_solver_params(), self._build_A(), verbose=(self.verbose>1))
+            self.fv.solver_A = Solver(self.fv.get_solver_params(), self._build_A(), verbose=(self.verbose>1),
+                                      comm=self.fv.comm, n_threads=self.fv.n_threads)
         if self.fv.solver_A.A is None:
             self.fv.solver_A.A = self._build_A()
         if self.verbose and self.fv.comm.rank == 0:
@@ -549,6 +551,8 @@ class GridMMR:
 
             print("      Memory footprint of A : {0:4.2f} MB".format(float(total_memory_bytes)/1048576), flush=True)
         self.u = self.fv.solver_A.solve(q)
+        if self.verbose == 1 and self.fv.comm.rank == 0:   # with verbose > 1, printed by the solver
+            self.fv.solver_A.print_solve_report()
 
         B = self.C_f @ self.u
         Bx = self._units_scaling * B[:self.fv.nex, :]
@@ -949,6 +953,8 @@ class GridMMR:
             Bk[0, i] = Qx @ B[:fv.nex]
             Bk[1, i] = Qy @ B[fv.nex:fv.nex + fv.ney]
             Bk[2, i] = Qz @ B[fv.nex + fv.ney:]
+        if self.verbose == 1 and fv.comm.rank == 0:   # with verbose > 1, printed by the solvers
+            print_solve_report(self._solvers_k[2])
         return Bk
 
     def _transform25(self, Bk):

@@ -36,7 +36,8 @@ The keywords are :
 - **solver max_it** : Maximum number of iteration for iterative solvers
 - **solver atol** : Target absolute tolerance for iterative solvers
 - **solver rtol** : Target relative tolerance for iterative solvers
-- **precon** : Apply preconditioning when using iterative solvers ('ilu', 'diag', or '0' for no preconditionning)
+- **precon** : Apply preconditioning when using iterative solvers ('amg', which needs pyamg, 'ilu', 'diag', or '0'
+               for no preconditionning, see docs/solvers.md)
 - **permut** : Apply inverse Cuthill-McKee permutation when using iterative solvers
 - **region of interest** : Extents of region of interest for inversion or sensitivity calculation
                            (xmin xmax ymin ymax zmin zmax, or xmin xmax zmin zmax in 2.5D)
@@ -56,7 +57,7 @@ The keywords are :
                      for buried electrode, as z is elevation)
 - **number of threads** : Number of threads for parallelizing iterative solvers (1 by default).
                           Effective only with a free-threaded Python running without the GIL (e.g.
-                          python3.14t with PYTHON_GIL=0); otherwise the right-hand sides are solved one
+                          python3.15t with PYTHON_GIL=0); otherwise the right-hand sides are solved one
                           after the other
 
 
