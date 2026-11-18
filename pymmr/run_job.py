@@ -47,7 +47,8 @@ The keywords are :
 - **save plots** : Save plots produced during inversion
 - **boundary correction** : Apply correction described in Pidlisecky et al. 2007
 - **compute current** : Compute and save current density (dc forward modelling)
-- **compute sensitivity** : Compute and save sensitivity (forward modelling)
+- **compute sensitivity** : Compute and save sensitivity (forward modelling); with MMR, for B and, if a pod dipole is
+                           defined, for the voltages of the pod dipoles
 - **units** : units of voltage for forward modelling, "mV" or "V"
 - **pod dipole x** : distance of potential electrode from MMR pod, along X axis (0 by default)
 - **pod dipole y** : distance of potential electrode from MMR pod, along Y axis (0 by default)
@@ -119,7 +120,8 @@ modelling, sensitivity and inversion (MMR, DC and joint) are available in 2.5D.
 It is possible to save ∆V values for predetermined dipoles, in addition to the Bx, By, and Bz values, when
 performing MMR simulations.  Dipoles are generated using the observation point as reference electrode, and
 measurement electrodes at distances equal to "pod dipole x", "pod dipole y", and "pod dipole z" _if_ these
-values are != 0.
+values are != 0.  With "compute sensitivity", the sensitivity of B is saved in <basename>_mmr_sens_dip*.vtr and the
+sensitivity of these ∆V values in <basename>_mmr_e_sens_dip*.vtr (fields Ex, Ey, Ez), one file per injection dipole.
 
 """
 try:
@@ -410,8 +412,11 @@ if __name__ == "__main__":
         g.set_survey_mmr(c1c2, meas, cs, pod_e=pod_e)
         g.dc.units = units
         data = g.fwd_mod(sigma, calc_sens=calc_sens)
+        sens_pod_e = None
         if pod_e is not None:
             data, data_pod_e = data
+            if calc_sens:
+                data_pod_e, sens_pod_e = data_pod_e
 
         if verbose and rank == 0:
             endtime = datetime.now()
@@ -423,7 +428,7 @@ if __name__ == "__main__":
                 if verbose:
                     print("Saving sensitivity ... ", end="", flush=True)
                 data, sens = data
-                g.save_sensitivity(sens, basename)
+                g.save_sensitivity(sens, basename, sens_pod_e=sens_pod_e)
                 if verbose:
                     print("done.")
 

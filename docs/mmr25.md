@@ -203,7 +203,9 @@ weights of `KQuadrature`, as for the MMR (forward modelling, sensitivity and inv
 ### Electric dipoles at the receivers (`pod_e`)
 
 `set_survey_mmr(..., pod_e=(dx, dy, dz))` adds dipoles of length dx, dy, dz along x, y, z at each
-receiver; `fwd_mod` then returns `(data, data_pod_e)`, as in 3D (forward modelling only). The
+receiver; `fwd_mod` then returns `(data, data_pod_e)`, as in 3D, or
+`(data, sens), (data_pod_e, sens_pod_e)` with `calc_sens=True` (`sens_pod_e` has the column order of
+`sens`, and comes from the sensitivity of `GridDC` for these dipoles). The
 receivers are usually off the line of the source, so the potentials need the offset along y. They
 are computed from the DC fields U_k of the MMR wavenumbers with the even weights of `KQuadrature`:
 the potential of a current electrode at a point is

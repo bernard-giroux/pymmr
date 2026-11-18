@@ -171,6 +171,17 @@ class TestVerticalDykeAnalytic(unittest.TestCase):
             np.testing.assert_allclose(vd.fwd_mod(xo, xs), -vm.fwd_mod(xm, 30.0 - xs), rtol=1e-10, atol=1e-14)
 
 
+def read_vtr(filename):
+    """Cell arrays of a VTK rectilinear grid file."""
+    import vtk
+    from vtk.util.numpy_support import vtk_to_numpy
+    reader = vtk.vtkXMLRectilinearGridReader()
+    reader.SetFileName(filename)
+    reader.Update()
+    cd = reader.GetOutput().GetCellData()
+    return {cd.GetArrayName(i): vtk_to_numpy(cd.GetArray(i)) for i in range(cd.GetNumberOfArrays())}
+
+
 def sens_model():
     """Small heterogeneous model for the sensitivity tests (h = 10 m)."""
     h = 10.0
@@ -241,6 +252,67 @@ class TestSensitivity(unittest.TestCase):
             np.testing.assert_allclose(S[c, n:], fd[n:], rtol=0, atol=1e-6 * np.abs(fd[n:]).max())
 
 
+    def check_pod_e(self, g, sigma, cells, xs, xo, cs, pod_e, active):
+        g.set_survey_mmr(xs, xo, cs, pod_e=pod_e)
+        (d, S), (v, Se) = g.fwd_mod(sigma, calc_sens=True)
+        self.assertEqual(Se.shape, S.shape)
+        n_col = S.shape[1] // 3
+
+        def data(s):   # electric data in the order of the columns of Se
+            mod = np.empty((g.mask.size, 3))
+            mod[g.ind_back] = g.fwd_mod(s, keep_solver=True)[1]
+            return g.data_to_obs(mod, False).ravel()
+
+        np.testing.assert_allclose(data(sigma), g.data_to_obs(self.to_mod(g, v), False).ravel(), rtol=1e-10,
+                                   atol=1e-10 * np.abs(v).max())
+        for c in cells:
+            fd = self.fd(g, sigma, c, data)
+            np.testing.assert_allclose(Se[c], fd, rtol=0, atol=2e-6 * np.abs(fd).max())
+        self.assertTrue(np.all(np.abs(Se).max(axis=0)[self.columns(g, active)] > 0))
+        inactive = np.setdiff1d(np.arange(3 * n_col), self.columns(g, active))
+        self.assertTrue(np.all(Se[:, inactive] == 0))
+
+    @staticmethod
+    def to_mod(g, v):
+        mod = np.empty((g.mask.size, 3))
+        mod[g.ind_back] = v
+        return mod
+
+    @staticmethod
+    def columns(g, active):
+        cols, i0 = [], 0
+        for m in g.nobs_xs:
+            for n in active:
+                cols.append(3 * i0 + n * m + np.arange(m))
+            i0 += m
+        return np.concatenate(cols)
+
+    def test_fd_pod_e(self):
+        # all combinations, receivers off the line, dipole and pole sources, different currents
+        xs = np.array([[-80.0, 5.0, 0.0, 70.0, -10.0, 0.0], [-40.0, 0.0, 0.0, np.inf, np.inf, np.inf]])
+        xo = np.array([[a, b, 0.0] for b in (0.0, 15.0) for a in (-50.0, -5.0, 45.0)])
+        cs = np.array([1.0, 2.5])
+        pod_e = (7.0, 7.0, -10.0)
+        for opts in ({}, {'contact_interp': False}, {'apply_bc': False}, {'exact_primary': False},
+                     {'local_sigma0': False}):
+            with self.subTest(**opts):
+                g, sigma, cells = sens_model()
+                for key, val in opts.items():
+                    setattr(g.dc, key, val)
+                self.check_pod_e(g, sigma, cells[:2], xs, xo, cs, pod_e, (0, 1, 2))
+
+    def test_fd_pod_e_pairs(self):
+        # pairs of dipoles and measurement points, some dipoles of length 0, region of interest
+        g, sigma, cells = sens_model()
+        xs = np.array([[-80.0, 0.0, 0.0, 70.0, 0.0, 0.0]] * 3 + [[-40.0, 10.0, 0.0, 40.0, 10.0, 0.0]] * 2)
+        xo = np.array([[-20.0, 0.0, 0.0], [10.0, 20.0, 0.0], [30.0, -30.0, 0.0], [-20.0, 0.0, 0.0], [0.0, 30.0, 0.0]])
+        self.check_pod_e(g, sigma, cells[:2], xs, xo, 1.0, (0.0, 5.0, -10.0), (1, 2))
+        full = g.fwd_mod(sigma, calc_sens=True)[1][1]
+        g.set_roi((-100.0, 100.0, -80.0, 0.0))
+        roi = g.fwd_mod(sigma, calc_sens=True)[1][1]
+        np.testing.assert_allclose(roi, full[g.dc.ind_roi], rtol=1e-8, atol=1e-8 * np.abs(full).max())
+
+
 class TestRunJob(unittest.TestCase):
     """2.5D MMR through run_job.py and a parameter file."""
 
@@ -276,6 +348,53 @@ class TestRunJob(unittest.TestCase):
             np.testing.assert_allclose(out[:, 9:12], d_ref, rtol=1e-5, atol=1e-5 * np.abs(d_ref).max())
             for n in (1, 2):
                 self.assertTrue(os.path.isfile(os.path.join(d, 'job_mmr_sens_dip{0:d}.vtr'.format(n))))
+
+    def test_fwd_mmr_sens_pod_e(self):
+        # B and E sensitivities with the three pod dipoles, and only the requested E components
+        g, sigma, _ = sens_model()
+        c1c2 = np.array([[-80.0, 5.0, 0.0, 70.0, -10.0, 0.0], [-40.0, 0.0, 0.0, 60.0, 0.0, 0.0]])
+        xo = np.array([[a, b, 0.0] for b in (0.0, 15.0) for a in np.arange(-50.0, 51.0, 25.0)])
+        pod_e = (2.0, 3.0, -5.0)
+        g.set_survey_mmr(c1c2, xo, 1.0, pod_e=pod_e)
+        (d_ref, S_ref), (v_ref, Se_ref) = g.fwd_mod(sigma, calc_sens=True)
+        # (B: Bx and Bz are 0 on the line of a source, E: no such column)
+        self.assertTrue(np.any(np.abs(S_ref).max(axis=0) > 0))
+        self.assertTrue(np.all(np.abs(Se_ref).max(axis=0) > 0))
+        with tempfile.TemporaryDirectory() as d:
+            g.dc.fv.toVTK({'Conductivity': sigma}, os.path.join(d, 'job_model'))
+            np.savetxt(os.path.join(d, 'job_c1c2.dat'), c1c2)
+            np.savetxt(os.path.join(d, 'job_xo.dat'), xo)
+            with open(os.path.join(d, 'job.par'), 'w') as f:
+                f.write('fwd mmr   # job,\n'
+                        'job       # basename,\n'
+                        'job_model.vtr    # model,\n'
+                        'job_c1c2.dat     # source file,\n'
+                        'job_xo.dat       # measurement file,\n'
+                        '1.0       # source current,\n'
+                        '1         # compute sensitivity,\n'
+                        '2.0       # pod dipole x,\n'
+                        '3.0       # pod dipole y,\n'
+                        '-5.0      # pod dipole z,\n'
+                        f'{SOLVER}   # solver name,\n'
+                        '0         # verbose,\n')
+            root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+            env = dict(os.environ, PYTHONPATH=root + os.pathsep + os.environ.get('PYTHONPATH', ''))
+            res = subprocess.run([sys.executable, '-m', 'pymmr.run_job', 'job.par'], cwd=d, env=env,
+                                 capture_output=True, text=True, timeout=600)
+            self.assertEqual(res.returncode, 0, res.stderr[-2000:])
+            np.testing.assert_allclose(np.loadtxt(os.path.join(d, 'job_mmr_e.dat'))[:, 12],
+                                       v_ref[:, :3].T.ravel(), rtol=1e-4, atol=1e-4 * np.abs(v_ref).max())
+            no = xo.shape[0]
+            for ns in range(2):
+                for names, S, stem in ((('Bx', 'By', 'Bz'), S_ref, 'job_mmr_sens_dip'),
+                                       (('Ex', 'Ey', 'Ez'), Se_ref, 'job_mmr_e_sens_dip')):
+                    fields = read_vtr(os.path.join(d, '{0:s}{1:d}.vtr'.format(stem, ns + 1)))
+                    self.assertEqual(len(fields), 3 * no)
+                    for c, name in enumerate(names):
+                        for nr in range(no):
+                            key = '∂d/∂m - {0:s}: {1:4.1f} {2:4.1f} {3:4.1f}'.format(name, *g.xo_all[nr])
+                            ref = S[:, 3 * ns * no + c * no + nr]
+                            np.testing.assert_allclose(fields[key], ref, rtol=1e-6, atol=1e-6 * np.abs(ref).max())
 
     def test_cglscd_keywords(self):
         # 'cglscd preconditioner' must not be read as the 'precon' keyword of the iterative solvers
@@ -386,12 +505,13 @@ class TestPlumbing(unittest.TestCase):
         g2.set_solver(SOLVER)
         g2.set_survey_mmr(C1C2, xo, 2.0)
         np.testing.assert_allclose(d, g2.fwd_mod(SIGMA * np.ones((g2.dc.fv.nc,))), rtol=1e-10, atol=1e-12 * np.abs(d).max())
-        # with the sensitivity: (data, sens), data_pod_e (shape expected by run_job)
-        (d_s, sens), v_s = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)), calc_sens=True)
+        # with the sensitivity: (data, sens), (data_pod_e, sens_pod_e) (shape expected by run_job)
+        (d_s, sens), (v_s, sens_e) = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)), calc_sens=True)
         # (round-off: components that are 0 by symmetry differ by ~1e-16 of the data)
         np.testing.assert_allclose(d_s, d, rtol=1e-10, atol=1e-12 * np.abs(d).max())
         np.testing.assert_allclose(v_s, v, rtol=1e-10, atol=1e-12 * np.abs(v).max())
         self.assertEqual(sens.shape[1], d.size)
+        self.assertEqual(sens_e.shape, sens.shape)
         # new survey without electric dipoles: the previous ones must not be kept
         g.set_survey_mmr(C1C2, xo, 1.0)
         d = g.fwd_mod(SIGMA * np.ones((g.dc.fv.nc,)))
