@@ -488,7 +488,7 @@ class GridMMR:
         reference_point = np.array([
             0.0,
             0.0,
-            -self.DIMZ,
+            -(self.fv.z[-1]-self.fv.z[0]),
         ])
 
         distance_to_reference = np.linalg.norm(
@@ -504,12 +504,12 @@ class GridMMR:
         )
 
         self.bc_ground = fem.dirichletbc(
-            fem.Constant(self.domain, PETSc.ScalarType(0.0)),
+            fem.Constant(self.fv.domain, PETSc.ScalarType(0.0)),
             self.dof_ground,
             self.V_space,
         )
 
-        if self.domain.comm.rank == 0:
+        if self.fv.domain.comm.rank == 0:
             print(
                 "Point de référence du potentiel :",
                 dof_coordinates[reference_dof],
@@ -517,7 +517,8 @@ class GridMMR:
 
         self.A = None
         print("Début assemblage de la matrice...", flush=True)
-        self.assemble_system_matrix()
+        self.A = fem.petsc.assemble_matrix(self.a_form, bcs=[self.bc_ground])
+        self.A.assemble()
         print("Assemblage terminé", flush=True) # Assembler la matrice de système
         self.uh = fem.Function(self.V_space) # Matrice de solution (initialisé)
 
@@ -531,20 +532,32 @@ class GridMMR:
 
         coordinates = self.V_space.tabulate_dof_coordinates()
 
+        print(coordinates)
+
         def nearest_dof(position: np.ndarray) -> tuple[int, float]:
-            distances = np.linalg.norm(
-                coordinates - position,
-                axis=1,
-            )
+            distances = []
+            for i in coordinates:
+                if np.round(i[2], 10) == 0.0:
+                    print("dans le if")
+                    distances.append(np.linalg.norm(
+                        coordinates - position,
+                        axis=1,
+                    ))
+
+                else:
+                    break
+
+            print(len(distances), len(position))
 
             dof = int(np.argmin(distances))
             distance = float(distances[dof])
 
             return dof, distance
-          
 
-        dof_A, distance_A = nearest_dof(self.dc.c1c2[0, :3])
-        dof_B, distance_B = nearest_dof(self.dc.c1c2[1, :3])
+        print(self.xs)
+
+        dof_A, distance_A = nearest_dof(self.xs)
+        dof_B, distance_B = nearest_dof(self.xs)
 
         if dof_A == dof_B:
             raise RuntimeError(
