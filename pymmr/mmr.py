@@ -532,47 +532,37 @@ class GridMMR:
 
         coordinates = self.V_space.tabulate_dof_coordinates()
 
-        print(coordinates)
-
         def nearest_dof(position: np.ndarray) -> tuple[int, float]:
-            distances = []
-            for i in coordinates:
-                if np.round(i[2], 10) == 0.0:
-                    print("dans le if")
-                    distances.append(np.linalg.norm(
+
+            distances = np.linalg.norm(
                         coordinates - position,
                         axis=1,
-                    ))
-
-                else:
-                    break
-
-            print(len(distances), len(position))
+                    )
 
             dof = int(np.argmin(distances))
             distance = float(distances[dof])
 
             return dof, distance
 
-        print(self.xs)
 
-        dof_A, distance_A = nearest_dof(self.xs)
-        dof_B, distance_B = nearest_dof(self.xs)
+        dof_A, distance_A = nearest_dof(self.xs[0, :3]) ###
+        dof_B, distance_B = nearest_dof(self.xs[0, 3:]) ###
 
         if dof_A == dof_B:
             raise RuntimeError(
                 "Les deux électrodes ont été associées au même degré de liberté."
             )
 
+
         self.b.setValueLocal(
             dof_A,
-            PETSc.ScalarType(+self.cs),
+            PETSc.ScalarType(+self.cs[0]), ###
             addv=PETSc.InsertMode.ADD_VALUES,
         )
 
         self.b.setValueLocal(
             dof_B,
-            PETSc.ScalarType(-self.cs),
+            PETSc.ScalarType(-self.cs[0]), ###
             addv=PETSc.InsertMode.ADD_VALUES,
         )
 
@@ -603,7 +593,7 @@ class GridMMR:
         self.b.assemblyBegin()
         self.b.assemblyEnd()
 
-        if self.domain.comm.rank == 0:
+        if self.fv.domain.comm.rank == 0:
             print(
                 f"Électrode A : dof={dof_A}, "
                 f"distance={distance_A:.3f} m, "
@@ -615,7 +605,7 @@ class GridMMR:
                 f"position={coordinates[dof_B]}"
             )
 
-        solver = PETSc.KSP().create(self.domain.comm)
+        solver = PETSc.KSP().create(self.fv.domain.comm)
         solver.setOperators(self.A)
 
         solver_name = 'pardiso'
@@ -675,7 +665,7 @@ class GridMMR:
         reason = solver.getConvergedReason()
         its = solver.getIterationNumber()
 
-        if self.domain.comm.rank == 0:
+        if self.fv.domain.comm.rank == 0:
             print(f"Solver: {solver_name}")
             print(f"Iterations: {its}")
             print(f"Convergence reason: {reason}")
@@ -685,10 +675,10 @@ class GridMMR:
 
 
         # On calcule la densité de courant J = -sigma * grad(u)
-        num_cells = self.domain.topology.index_map(self.domain.topology.dim).size_local
-        W_smooth = fem.functionspace(self.domain, ("DG", 0, (self.domain.geometry.dim,)))
+        num_cells = self.fv.domain.topology.index_map(self.fv.domain.topology.dim).size_local
+        W_smooth = fem.functionspace(self.fv.domain, ("DG", 0, (self.fv.domain.geometry.dim,)))
         j_smooth = fem.Function(W_smooth)
-        j_expr = fem.Expression(-self.sigma * ufl.grad(self.uh), W_smooth.element.interpolation_points, comm=self.domain.comm)
+        j_expr = fem.Expression(-self.sigma * ufl.grad(self.uh), W_smooth.element.interpolation_points, comm=self.fv.domain.comm)
         j_smooth.interpolate(j_expr)
         J = j_smooth.x.array.reshape(-1, 3)[:num_cells]
 
@@ -722,11 +712,34 @@ class GridMMR:
         )
         surface_xyz = np.vstack(coords_list)[indices]
 
+        print(coords.shape)
+
         z_top = 0.0  # Adapt to your box
         mask = np.isclose(surface_xyz[:, 2], z_top)
 
         top_tags = surface_tags[mask]
         top_xyz = surface_xyz[mask]
+
+        ## Biot-Savart law to compute magnetic field B from current density J
+        mu0 = 4*np.pi*1e-7
+        cst = mu0 / (4*np.pi)
+        
+        pts = np.array(self.fv.centre_voxels()).T
+        vols = self.fv.volume_voxels()
+
+
+        Bx, By, Bz = np.zeros(len(top_xyz)), np.zeros(len(top_xyz)), np.zeros(len(top_xyz))
+
+        for i, obs in enumerate(top_xyz):
+            R = obs[None, :] - pts
+            r3 = (np.sum(R**2, axis=1))**1.5
+            cross = np.cross(J, R)
+            Bx[i] = cst * np.sum(cross[:, 0] * vols / r3) * 1e12
+            By[i] = cst * np.sum(cross[:, 1] * vols / r3) * 1e12
+            Bz[i] = cst * np.sum(cross[:, 2] * vols / r3) * 1e12
+
+
+        return np.column_stack((Bx, By, Bz))
 
 
         # if self.fv.nc == self.dc.fv.nc:

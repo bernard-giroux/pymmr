@@ -92,6 +92,7 @@ dobs1 = g.fwd_mod(sigma)
 
 filename = "data_mmr.dat"
 header = "c1_x c1_y c1_z c2_x c2_y c2_z obs_x obs_y obs_z Bx By Bz cs"
+print(c1c2.shape, xo.shape, dobs1.shape)
 np.savetxt(filename, np.c_[c1c2, xo, dobs1, np.ones((dobs1.shape[0],))], header=header, fmt="%g")
 
 # %%
